@@ -6,7 +6,7 @@ This first version is intentionally simple:
 
 - no login
 - local PIN unlock
-- local SQLite storage
+- local JSON storage
 - no HTTP client traffic
 - optional local AI command integration
 - PySide6 desktop UI for macOS and Windows
@@ -31,7 +31,7 @@ python -m szzx_local
 ```
 
 The default PIN is `1234`. Change it after first unlock from the app settings panel.
-In development, local data is stored in `local_data/szzx.db`.
+In development, local data is stored in `local_data/szzx.json`.
 In packaged builds, it is stored in the user's application data directory.
 Override it with `SZZX_LOCAL_DATA_DIR`.
 
@@ -87,24 +87,27 @@ Output:
 dist\SZZXLocalDesk.exe
 ```
 
-GitHub Actions builds the Windows exe on every push. To upload the exe to
-Tencent Cloud COS after each build, add these repository secrets:
+Windows one-command publish to Tencent COS:
 
-```text
-TENCENT_COS_SECRET_ID
-TENCENT_COS_SECRET_KEY
-TENCENT_COS_BUCKET
-TENCENT_COS_REGION
-TENCENT_COS_PUBLIC_BASE_URL
+```powershell
+$env:TENCENT_COS_SECRET_ID="..."
+$env:TENCENT_COS_SECRET_KEY="..."
+$env:TENCENT_COS_BUCKET="your-bucket-1250000000"
+$env:TENCENT_COS_REGION="ap-shanghai"
+$env:TENCENT_COS_PUBLIC_BASE_URL="https://your-public-download-domain"
+
+.\scripts\publish_windows_cos.ps1 -Version "0.1.1" -Notes "本次更新说明"
 ```
 
-The uploaded object key is:
+The script runs `git pull`, builds `dist\SZZXLocalDesk.exe`, uploads:
 
 ```text
-windows/<branch-or-tag>/SZZXLocalDesk.exe
+windows/latest/SZZXLocalDesk.exe
+windows/latest/update.json
+windows/<version>/SZZXLocalDesk.exe
 ```
 
-The workflow also publishes the latest Windows build and update manifest:
+The script publishes the latest Windows build and update manifest:
 
 ```text
 windows/latest/SZZXLocalDesk.exe
@@ -112,12 +115,18 @@ windows/latest/update.json
 ```
 
 The app compares `windows/latest/update.json` with `szzx_local/version.py`.
-When `version` is newer than the installed app version, the app opens the COS
+When `version` is newer than the installed app version, the app opens the
 `download_url` for the user to download the Windows exe. Set
 `TENCENT_COS_PUBLIC_BASE_URL` to a custom CDN or custom COS domain, for example
-`https://download.example.com`, to avoid exposing the default high-risk COS
-access domain. The COS objects must be publicly readable, or fronted by a
-public CDN URL, for direct browser downloads to work.
+`https://download.example.com`. The COS objects must be publicly readable, or
+fronted by a public CDN URL, for direct browser downloads to work.
+
+Before distributing the first Windows exe, set `DEFAULT_UPDATE_URL` in
+`szzx_local/update_config.py` to:
+
+```text
+https://your-public-download-domain/windows/latest/update.json
+```
 
 ## Share With The Department
 
@@ -151,7 +160,7 @@ szzx_local/
   __main__.py       app entry
   app.py            Qt bootstrap
   ai.py             local AI adapter
-  database.py       SQLite persistence
+  database.py       JSON persistence
   models.py         shared dataclasses
   pet.py            transparent desktop pet
   pin.py            PIN hashing/verification
