@@ -1,0 +1,32 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build exe
+        shell: pwsh
+        env:
+          SKIP_SMOKE_TEST: "1"
+        run: .\scripts\build_windows.ps1
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: SZZXLocalDesk-windows
+          path: dist/SZZXLocalDesk.exe

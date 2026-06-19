@@ -1,0 +1,13 @@
+.DS_Store
+.venv/
+.venv-old/
+__pycache__/
+.pycache-check/
+*.pyc
+local_data/
+.pyinstaller-cache/
+.smoke-data/
+build/
+dist/
+*.spec
+ui-preview.png
