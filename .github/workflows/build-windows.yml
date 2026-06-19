@@ -11,6 +11,12 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    env:
+      TENCENT_COS_SECRET_ID: ${{ secrets.TENCENT_COS_SECRET_ID }}
+      TENCENT_COS_SECRET_KEY: ${{ secrets.TENCENT_COS_SECRET_KEY }}
+      TENCENT_COS_BUCKET: ${{ secrets.TENCENT_COS_BUCKET }}
+      TENCENT_COS_REGION: ${{ secrets.TENCENT_COS_REGION }}
+      TENCENT_COS_PUBLIC_BASE_URL: ${{ secrets.TENCENT_COS_PUBLIC_BASE_URL }}
 
     steps:
       - name: Checkout
@@ -20,6 +26,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Configure default update URL
+        if: ${{ env.TENCENT_COS_BUCKET != '' && env.TENCENT_COS_REGION != '' }}
+        shell: pwsh
+        run: |
+          $publicBaseUrl = $env:TENCENT_COS_PUBLIC_BASE_URL.TrimEnd("/")
+          if ($publicBaseUrl -eq "") {
+            $publicBaseUrl = "https://$env:TENCENT_COS_BUCKET.cos.$env:TENCENT_COS_REGION.myqcloud.com"
+          }
+          $updateUrl = "$publicBaseUrl/windows/latest/update.json"
+          @"
+          from __future__ import annotations
+
+
+          DEFAULT_UPDATE_URL = "$updateUrl"
+          "@ | Set-Content -Encoding UTF8 szzx_local/update_config.py
+          Write-Host "Default update URL: $updateUrl"
 
       - name: Build exe
         shell: pwsh
@@ -32,3 +55,66 @@ jobs:
         with:
           name: SZZXLocalDesk-windows
           path: dist/SZZXLocalDesk.exe
+
+      - name: Upload exe to Tencent COS
+        if: ${{ env.TENCENT_COS_SECRET_ID != '' && env.TENCENT_COS_SECRET_KEY != '' && env.TENCENT_COS_BUCKET != '' && env.TENCENT_COS_REGION != '' }}
+        shell: pwsh
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          python -m pip install cos-python-sdk-v5
+          $safeRef = $env:GITHUB_REF_NAME -replace '[^A-Za-z0-9._-]', '-'
+          $cosKey = "windows/$safeRef/SZZXLocalDesk.exe"
+          $latestExeKey = "windows/latest/SZZXLocalDesk.exe"
+          $latestManifestKey = "windows/latest/update.json"
+          $publicBaseUrl = $env:TENCENT_COS_PUBLIC_BASE_URL.TrimEnd("/")
+          if ($publicBaseUrl -eq "") {
+            $publicBaseUrl = "https://$env:TENCENT_COS_BUCKET.cos.$env:TENCENT_COS_REGION.myqcloud.com"
+          }
+          $downloadUrl = "$publicBaseUrl/$latestExeKey"
+          $appVersion = python -c "from szzx_local.version import APP_VERSION; print(APP_VERSION)"
+          $manifest = [ordered]@{
+            version = $appVersion
+            download_url = $downloadUrl
+            notes = "Windows build from $env:GITHUB_REF_NAME"
+          } | ConvertTo-Json -Depth 3
+          $manifest | Set-Content -Encoding UTF8 update.json
+          @"
+          import os
+          from qcloud_cos import CosConfig, CosS3Client
+
+          config = CosConfig(
+              Region=os.environ["TENCENT_COS_REGION"],
+              SecretId=os.environ["TENCENT_COS_SECRET_ID"],
+              SecretKey=os.environ["TENCENT_COS_SECRET_KEY"],
+          )
+          client = CosS3Client(config)
+          client.upload_file(
+              Bucket=os.environ["TENCENT_COS_BUCKET"],
+              LocalFilePath="dist/SZZXLocalDesk.exe",
+              Key=os.environ["COS_KEY"],
+              PartSize=10,
+              MAXThread=4,
+          )
+          client.upload_file(
+              Bucket=os.environ["TENCENT_COS_BUCKET"],
+              LocalFilePath="dist/SZZXLocalDesk.exe",
+              Key=os.environ["LATEST_EXE_KEY"],
+              PartSize=10,
+              MAXThread=4,
+          )
+          client.upload_file(
+              Bucket=os.environ["TENCENT_COS_BUCKET"],
+              LocalFilePath="update.json",
+              Key=os.environ["LATEST_MANIFEST_KEY"],
+              PartSize=1,
+              MAXThread=1,
+          )
+          print(f"Uploaded to COS: {os.environ['COS_KEY']}")
+          print(f"Uploaded latest exe: {os.environ['LATEST_EXE_KEY']}")
+          print(f"Uploaded update manifest: {os.environ['LATEST_MANIFEST_KEY']}")
+          "@ | Set-Content -Encoding UTF8 upload_to_cos.py
+          $env:COS_KEY = $cosKey
+          $env:LATEST_EXE_KEY = $latestExeKey
+          $env:LATEST_MANIFEST_KEY = $latestManifestKey
+          python upload_to_cos.py

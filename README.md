@@ -87,6 +87,38 @@ Output:
 dist\SZZXLocalDesk.exe
 ```
 
+GitHub Actions builds the Windows exe on every push. To upload the exe to
+Tencent Cloud COS after each build, add these repository secrets:
+
+```text
+TENCENT_COS_SECRET_ID
+TENCENT_COS_SECRET_KEY
+TENCENT_COS_BUCKET
+TENCENT_COS_REGION
+TENCENT_COS_PUBLIC_BASE_URL
+```
+
+The uploaded object key is:
+
+```text
+windows/<branch-or-tag>/SZZXLocalDesk.exe
+```
+
+The workflow also publishes the latest Windows build and update manifest:
+
+```text
+windows/latest/SZZXLocalDesk.exe
+windows/latest/update.json
+```
+
+The app compares `windows/latest/update.json` with `szzx_local/version.py`.
+When `version` is newer than the installed app version, the app opens the COS
+`download_url` for the user to download the Windows exe. Set
+`TENCENT_COS_PUBLIC_BASE_URL` to a custom CDN or custom COS domain, for example
+`https://download.example.com`, to avoid exposing the default high-risk COS
+access domain. The COS objects must be publicly readable, or fronted by a
+public CDN URL, for direct browser downloads to work.
+
 ## Share With The Department
 
 macOS users can open `dist/SZZXLocalDesk-mac.dmg` and drag the app into Applications.

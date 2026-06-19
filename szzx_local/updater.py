@@ -5,10 +5,10 @@ import os
 from dataclasses import dataclass
 from urllib.request import urlopen
 
+from .update_config import DEFAULT_UPDATE_URL
 from .version import APP_VERSION
 
 
-DEFAULT_UPDATE_URL = ""
 UPDATE_URL_ENV = "SZZX_UPDATE_URL"
 
 
@@ -52,4 +52,3 @@ def _version_tuple(version: str) -> tuple[int, ...]:
         digits = "".join(ch for ch in item if ch.isdigit())
         parts.append(int(digits or "0"))
     return tuple(parts)
-
