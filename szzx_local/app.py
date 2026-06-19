@@ -32,7 +32,7 @@ def main() -> int:
 
     pet = DesktopPet()
     summarizer = LocalSummarizer()
-    discovery = LanDiscovery(db.device_id(), db.display_name())
+    discovery = LanDiscovery(db.device_id(), db.display_name(), db=db)
     window = MainWindow(db, summarizer, pet, discovery)
     window.show()
     pet.show()

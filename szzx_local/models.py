@@ -43,12 +43,18 @@ class ProjectWeeklyReport:
 
 
 @dataclass(frozen=True)
-class ProjectDeck:
+class ProjectDocument:
     id: int
     project_id: int
     title: str
+    doc_type: str
+    visibility: str
+    uploader: str
     file_path: str
     created_at: datetime
+
+
+ProjectDeck = ProjectDocument
 
 
 @dataclass(frozen=True)
