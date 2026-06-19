@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 
 PET_KINDS = {
@@ -62,6 +62,7 @@ class DesktopPet(QWidget):
         self.mood = "calm"
         self._drag_pos: QPoint | None = None
         self._tick = 0
+        self._placed_once = False
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
@@ -92,6 +93,28 @@ class DesktopPet(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
         self._drag_pos = None
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        if not self._placed_once:
+            self.move_to_bottom_right()
+            self._placed_once = True
+        super().showEvent(event)
+
+    def show(self) -> None:  # type: ignore[override]
+        if not self._placed_once:
+            self.move_to_bottom_right()
+            self._placed_once = True
+        super().show()
+
+    def move_to_bottom_right(self) -> None:
+        screen = QApplication.screenAt(self.pos()) or QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        margin = 22
+        x = area.right() - self.width() - margin + 1
+        y = area.bottom() - self.height() - margin + 1
+        self.move(max(area.left(), x), max(area.top(), y))
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)

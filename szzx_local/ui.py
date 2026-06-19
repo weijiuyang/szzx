@@ -4,7 +4,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QUrl
+from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -373,7 +373,7 @@ class PetDialog(QDialog):
 
         show_pet = QPushButton("显示桌宠")
         show_pet.setObjectName("primaryButton")
-        show_pet.clicked.connect(self.pet.show)
+        show_pet.clicked.connect(self._show_pet_bottom_right)
         layout.addWidget(show_pet)
 
     def _select_pet(self, kind: str) -> None:
@@ -381,10 +381,14 @@ class PetDialog(QDialog):
         self.pet.set_kind(kind)
         for button_kind, button in self.pet_buttons.items():
             button.setChecked(button_kind == kind)
-        self.pet.show()
+        self._show_pet_bottom_right()
 
     def _play_action(self, action: str) -> None:
         self.pet.set_mood(action)
+        self._show_pet_bottom_right()
+
+    def _show_pet_bottom_right(self) -> None:
+        self.pet.move_to_bottom_right()
         self.pet.show()
 
 
@@ -429,6 +433,23 @@ class VersionDialog(QDialog):
             QDesktopServices.openUrl(QUrl(info.download_url))
 
 
+class UpdateCheckWorker(QThread):
+    update_found = Signal(object)
+    no_update = Signal()
+    failed = Signal(str)
+
+    def run(self) -> None:
+        try:
+            info = check_for_update()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        if info.is_newer:
+            self.update_found.emit(info)
+        else:
+            self.no_update.emit()
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -446,6 +467,8 @@ class MainWindow(QMainWindow):
         self.current_project_id: int | None = None
         self.selected_document_id: int | None = None
         self._metric_labels: dict[str, QLabel] = {}
+        self._update_worker: UpdateCheckWorker | None = None
+        self._notified_update_version: str | None = None
 
         self.setWindowTitle(f"{self.db.display_name()} - 数智中心")
         self.resize(1360, 820)
@@ -481,6 +504,7 @@ class MainWindow(QMainWindow):
         self._load_projects()
         self._load_reports()
         self._refresh_document_library()
+        self._start_update_timer()
 
     def _sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -521,6 +545,31 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         for button_index, button in enumerate(self.nav_buttons):
             button.setChecked(button_index == index)
+
+    def _start_update_timer(self) -> None:
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(10 * 60 * 1000)
+        self.update_timer.timeout.connect(self._auto_check_update)
+        self.update_timer.start()
+        QTimer.singleShot(10 * 1000, self._auto_check_update)
+
+    def _auto_check_update(self) -> None:
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+        self._update_worker = UpdateCheckWorker(self)
+        self._update_worker.update_found.connect(self._notify_update_available)
+        self._update_worker.start()
+
+    def _notify_update_available(self, info: object) -> None:
+        latest_version = getattr(info, "latest_version", "")
+        if not latest_version or self._notified_update_version == latest_version:
+            return
+        self._notified_update_version = latest_version
+        notes = getattr(info, "notes", "")
+        download_url = getattr(info, "download_url", "")
+        message = f"发现新版本 v{latest_version}。\n\n{notes}\n\n是否打开下载地址？"
+        if QMessageBox.question(self, "发现新版本", message) == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl(str(download_url)))
 
     def _project_tab(self) -> QWidget:
         scroll = QScrollArea()
@@ -1612,6 +1661,7 @@ class MainWindow(QMainWindow):
         report = self.db.add_weekly_report(content, result.summary, result.mood)
         self.summary.setPlainText(result.summary)
         self.pet.set_mood(result.mood)
+        self.pet.move_to_bottom_right()
         self.pet.show()
         self.editor.clear()
         self._prepend_report(report)
@@ -1664,6 +1714,7 @@ class MainWindow(QMainWindow):
                 self._refresh_peers(self.discovery.sorted_peers())
 
     def _open_pet(self) -> None:
+        self.pet.move_to_bottom_right()
         self.pet.show()
         dialog = PetDialog(self.db, self.pet)
         dialog.exec()

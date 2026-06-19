@@ -111,20 +111,27 @@ class Database:
         sync["revision"] = int(sync.get("revision", 0)) + 1
         sync["updated_at"] = datetime.now().isoformat(timespec="microseconds")
         sync["origin"] = self.device_id()
+        sync["actor"] = self.display_name()
 
     def _ensure_sync_state(self) -> None:
         sync = self.data.setdefault("sync", {})
         if sync.get("updated_at"):
             return
-        sync["revision"] = int(sync.get("revision", 0)) or 1
-        sync["updated_at"] = datetime.now().isoformat(timespec="microseconds")
-        sync["origin"] = self.device_id()
+        sync["revision"] = int(sync.get("revision", 0))
+        sync["updated_at"] = ""
+        sync["origin"] = ""
+        sync["actor"] = ""
 
     def _next_id(self, table: str) -> int:
         counters = self.data.setdefault("counters", {})
         current = int(counters.get(table, 0)) + 1
         counters[table] = current
         return current
+
+    def _with_operator(self, row: dict[str, Any]) -> dict[str, Any]:
+        row["operator"] = self.display_name()
+        row["operator_device_id"] = self.device_id()
+        return row
 
     def get_setting(self, key: str) -> str | None:
         value = self.data.get("settings", {}).get(key)
@@ -253,14 +260,14 @@ class Database:
 
     def add_project(self, name: str, owner: str, description: str, status: str = "推进中") -> Project:
         created_at = datetime.now()
-        row = {
+        row = self._with_operator({
             "id": self._next_id("projects"),
             "name": name.strip(),
             "owner": owner.strip(),
             "description": description.strip(),
             "status": status.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
-        }
+        })
         self.data["projects"].append(row)
         self._save()
         return self._project_from_row(row)
@@ -303,13 +310,13 @@ class Database:
 
     def add_project_member(self, project_id: int, name: str, role: str) -> ProjectMember:
         created_at = datetime.now()
-        row = {
+        row = self._with_operator({
             "id": self._next_id("project_members"),
             "project_id": project_id,
             "name": name.strip(),
             "role": role.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
-        }
+        })
         self.data["project_members"].append(row)
         self._save()
         return self._member_from_row(row)
@@ -330,14 +337,14 @@ class Database:
 
     def add_daily_report(self, project_id: int, member_name: str, role: str, content: str) -> DailyReport:
         created_at = datetime.now()
-        row = {
+        row = self._with_operator({
             "id": self._next_id("daily_reports"),
             "project_id": project_id,
             "member_name": member_name.strip(),
             "role": role.strip(),
             "content": content.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
-        }
+        })
         self.data["daily_reports"].append(row)
         self._save()
         return self._daily_from_row(row)
@@ -359,13 +366,13 @@ class Database:
 
     def add_project_weekly_report(self, project_id: int, author: str, content: str) -> ProjectWeeklyReport:
         created_at = datetime.now()
-        row = {
+        row = self._with_operator({
             "id": self._next_id("project_weekly_reports"),
             "project_id": project_id,
             "author": author.strip(),
             "content": content.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
-        }
+        })
         self.data["project_weekly_reports"].append(row)
         self._save()
         return self._project_weekly_from_row(row)
@@ -394,7 +401,7 @@ class Database:
         file_path: str,
     ) -> ProjectDocument:
         created_at = datetime.now()
-        row = {
+        row = self._with_operator({
             "id": self._next_id("project_documents"),
             "project_id": project_id,
             "title": title.strip(),
@@ -403,7 +410,7 @@ class Database:
             "uploader": uploader.strip(),
             "file_path": file_path,
             "created_at": created_at.isoformat(timespec="seconds"),
-        }
+        })
         self.data["project_documents"].append(row)
         self._save()
         return self._document_from_row(row)
@@ -488,6 +495,7 @@ class Database:
             "revision": int(sync.get("revision", 0)),
             "updated_at": str(sync.get("updated_at", "")),
             "origin": str(sync.get("origin", "")),
+            "actor": str(sync.get("actor", "")),
         }
 
     def _document_file_payloads(self, documents: Any) -> dict[str, dict[str, str]]:
@@ -536,6 +544,7 @@ class Database:
         for table in SHARED_TABLES:
             if table not in tables:
                 return False
+        self._backup_before_sync()
         files = snapshot.get("files")
         if isinstance(files, dict):
             self._restore_document_files(tables, files)
@@ -549,9 +558,20 @@ class Database:
             "revision": int(sync.get("revision", 0)),
             "updated_at": str(sync.get("updated_at", "")),
             "origin": str(sync.get("origin", "")),
+            "actor": str(sync.get("actor", "")),
         }
         self._save(bump_sync=False)
         return True
+
+    def _backup_before_sync(self) -> None:
+        backup_dir = self.path.parent / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"szzx-before-sync-{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
+        try:
+            with backup_path.open("w", encoding="utf-8") as file:
+                json.dump(self.data, file, ensure_ascii=False, indent=2)
+        except OSError:
+            return
 
     def _restore_document_files(self, tables: dict[str, Any], files: dict[str, Any]) -> None:
         documents = tables.get("project_documents")
@@ -602,13 +622,13 @@ class Database:
 
     def add_weekly_report(self, content: str, summary: str, mood: str) -> WeeklyReport:
         created_at = datetime.now()
-        row = {
+        row = self._with_operator({
             "id": self._next_id("weekly_reports"),
             "content": content,
             "summary": summary,
             "mood": mood,
             "created_at": created_at.isoformat(timespec="seconds"),
-        }
+        })
         self.data["weekly_reports"].append(row)
         self._save()
         return self._weekly_from_row(row)
