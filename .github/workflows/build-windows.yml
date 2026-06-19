@@ -89,18 +89,18 @@ jobs:
           )
           client = CosS3Client(config)
 
-          def upload_with_retry(local_path: str, key: str, part_size: int) -> None:
+          def upload_with_retry(local_path: str, key: str) -> None:
               last_error = None
               for attempt in range(1, 6):
                   try:
                       print(f"Uploading {local_path} -> {key} (attempt {attempt}/5)")
-                      client.upload_file(
-                          Bucket=os.environ["TENCENT_COS_BUCKET"],
-                          LocalFilePath=local_path,
-                          Key=key,
-                          PartSize=part_size,
-                          MAXThread=1,
-                      )
+                      with open(local_path, "rb") as file:
+                          client.put_object(
+                              Bucket=os.environ["TENCENT_COS_BUCKET"],
+                              Body=file,
+                              Key=key,
+                              EnableMD5=False,
+                          )
                       return
                   except Exception as exc:
                       last_error = exc
@@ -109,11 +109,14 @@ jobs:
                       time.sleep(wait_seconds)
               raise last_error
 
-          upload_with_retry("dist/SZZXLocalDesk.exe", os.environ["LATEST_EXE_KEY"], 20)
-          upload_with_retry("update.json", os.environ["LATEST_MANIFEST_KEY"], 1)
+          upload_with_retry("dist/SZZXLocalDesk.exe", os.environ["LATEST_EXE_KEY"])
+          upload_with_retry("dist/SZZXLocalDesk.exe", os.environ["VERSIONED_EXE_KEY"])
+          upload_with_retry("update.json", os.environ["LATEST_MANIFEST_KEY"])
           print(f"Uploaded latest exe: {os.environ['LATEST_EXE_KEY']}")
+          print(f"Uploaded versioned exe: {os.environ['VERSIONED_EXE_KEY']}")
           print(f"Uploaded update manifest: {os.environ['LATEST_MANIFEST_KEY']}")
           "@ | Set-Content -Encoding UTF8 upload_to_cos.py
           $env:LATEST_EXE_KEY = $latestExeKey
+          $env:VERSIONED_EXE_KEY = "windows/$appVersion/SZZXLocalDesk.exe"
           $env:LATEST_MANIFEST_KEY = $latestManifestKey
           python upload_to_cos.py
