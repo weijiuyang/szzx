@@ -12,8 +12,6 @@ on:
         required: false
         default: "Windows build"
   push:
-    branches:
-      - "**"
     tags:
       - "v*"
 
