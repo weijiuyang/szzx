@@ -2,6 +2,15 @@ name: Build Windows App
 
 on:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version, for example 0.1.1. Leave empty to only build an artifact."
+        required: false
+        default: ""
+      release_notes:
+        description: "Release notes"
+        required: false
+        default: "Windows build"
   push:
     branches:
       - "**"
@@ -36,7 +45,11 @@ jobs:
           path: dist/SZZXLocalDesk.exe
 
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', inputs.release_version) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', inputs.release_version) }}
+          body: ${{ github.event_name == 'workflow_dispatch' && inputs.release_notes || '' }}
+          make_latest: true
           files: dist/SZZXLocalDesk.exe

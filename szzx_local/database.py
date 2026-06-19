@@ -33,6 +33,8 @@ def _default_app_dir() -> Path:
 
 APP_DIR = _default_app_dir()
 DB_PATH = APP_DIR / "szzx.json"
+LEGACY_DEMO_PROJECT_NAME = "GEO文库"
+LEGACY_DEMO_PROJECT_DESCRIPTION = "面向 GEO 内容沉淀、检索和复用的项目工作台。"
 SHARED_TABLES = (
     "weekly_reports",
     "projects",
@@ -93,7 +95,7 @@ class Database:
             self.set_setting("device_id", uuid.uuid4().hex, save=False)
         if self.get_setting("display_name") is None:
             self.set_setting("display_name", self._default_display_name(), save=False)
-        self._seed_project_workspace()
+        self._remove_legacy_demo_project()
         self._migrate_project_decks()
         self._ensure_sync_state()
         self._save(bump_sync=False)
@@ -202,36 +204,34 @@ class Database:
             return f"{user}@{host}"
         return user
 
-    def _seed_project_workspace(self) -> None:
-        if self.data["projects"]:
+    def _remove_legacy_demo_project(self) -> None:
+        legacy_project_ids = [
+            int(row["id"])
+            for row in self.data["projects"]
+            if str(row.get("name", "")) == LEGACY_DEMO_PROJECT_NAME
+            and str(row.get("description", "")) == LEGACY_DEMO_PROJECT_DESCRIPTION
+        ]
+        if not legacy_project_ids:
             return
-        created_at = datetime.now().isoformat(timespec="seconds")
-        project_id = self._next_id("projects")
-        self.data["projects"].append(
-            {
-                "id": project_id,
-                "name": "GEO文库",
-                "owner": self.display_name(),
-                "description": "面向 GEO 内容沉淀、检索和复用的项目工作台。",
-                "status": "推进中",
-                "created_at": created_at,
-            }
-        )
-        for name, role in (
-            (self.display_name(), "产品经理"),
-            ("前端开发", "前端开发"),
-            ("后端开发", "后端开发"),
-            ("测试同学", "测试"),
-        ):
-            self.data["project_members"].append(
-                {
-                    "id": self._next_id("project_members"),
-                    "project_id": project_id,
-                    "name": name,
-                    "role": role,
-                    "created_at": created_at,
-                }
+
+        removable_ids = set()
+        content_tables = ("daily_reports", "project_weekly_reports", "project_decks", "project_documents")
+        for project_id in legacy_project_ids:
+            has_content = any(
+                int(row.get("project_id", 0)) == project_id
+                for table in content_tables
+                for row in self.data.get(table, [])
             )
+            if not has_content:
+                removable_ids.add(project_id)
+
+        if not removable_ids:
+            return
+
+        self.data["projects"] = [row for row in self.data["projects"] if int(row["id"]) not in removable_ids]
+        self.data["project_members"] = [
+            row for row in self.data["project_members"] if int(row["project_id"]) not in removable_ids
+        ]
 
     def _migrate_project_decks(self) -> None:
         documents = self.data.setdefault("project_documents", [])

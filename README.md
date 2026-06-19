@@ -87,6 +87,17 @@ Output:
 dist\SZZXLocalDesk.exe
 ```
 
+GitHub Actions can also build and publish the Windows exe to GitHub Releases.
+Open `Actions` -> `Build Windows App` -> `Run workflow`, then fill:
+
+```text
+release_version: 0.1.1
+release_notes: 本次更新说明
+```
+
+The workflow creates release tag `v0.1.1` and uploads `SZZXLocalDesk.exe`.
+Pushing a git tag like `v0.1.1` also publishes a release automatically.
+
 Windows one-command publish to Tencent COS:
 
 ```powershell
