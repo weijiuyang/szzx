@@ -50,7 +50,7 @@ class DesktopPet(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("SZZX Pet")
+        self.setWindowTitle("数智中心桌宠")
         self.setFixedSize(240, 240)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -74,7 +74,7 @@ class DesktopPet(QWidget):
     def set_kind(self, kind: str) -> None:
         kind = LEGACY_PET_KINDS.get(kind, kind)
         self.kind = kind if kind in PET_KINDS else "penguin"
-        self.setWindowTitle(f"{PET_KINDS[self.kind]} - SZZX Pet")
+        self.setWindowTitle(f"{PET_KINDS[self.kind]} - 数智中心桌宠")
         self.update()
 
     def _animate(self) -> None:

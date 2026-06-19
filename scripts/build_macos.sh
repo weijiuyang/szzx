@@ -65,7 +65,7 @@ fi
 
 rm -f dist/SZZXLocalDesk-mac.dmg
 if hdiutil create \
-  -volname "SZZX Local Desk" \
+  -volname "数智中心" \
   -srcfolder dist/SZZXLocalDesk.app \
   -ov \
   -format UDZO \

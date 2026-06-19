@@ -254,7 +254,7 @@ class PinDialog(QDialog):
     def __init__(self, db: Database) -> None:
         super().__init__()
         self.db = db
-        self.setWindowTitle("SZZX")
+        self.setWindowTitle("数智中心")
         self.setFixedWidth(410)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.setStyleSheet(APP_STYLE)
@@ -262,7 +262,7 @@ class PinDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 34, 36, 34)
         layout.setSpacing(16)
-        title = _label("SZZX", "appTitle")
+        title = _label("数智中心", "appTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle = _label("安静地开始今天的记录", "muted")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -399,7 +399,7 @@ class VersionDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
 
-        layout.addWidget(_label("SZZX Local Desk", "appTitle"))
+        layout.addWidget(_label("数智中心", "appTitle"))
         layout.addWidget(_label(f"当前版本：v{APP_VERSION}", "muted"))
         update_url = configured_update_url()
         self.status = _label(
@@ -447,7 +447,7 @@ class MainWindow(QMainWindow):
         self.selected_document_id: int | None = None
         self._metric_labels: dict[str, QLabel] = {}
 
-        self.setWindowTitle(f"{self.db.display_name()} - SZZX Local Desk")
+        self.setWindowTitle(f"{self.db.display_name()} - 数智中心")
         self.resize(1360, 820)
         self.setMinimumSize(1280, 720)
         self.setStyleSheet(APP_STYLE)
@@ -492,7 +492,7 @@ class MainWindow(QMainWindow):
 
         self.app_title = _label(self.db.display_name(), "appTitle")
         self.app_title.setToolTip(self.db.display_name())
-        subtitle = _label("LOCAL DESK", "muted")
+        subtitle = _label("数智中心", "muted")
         layout.addWidget(self.app_title)
         layout.addWidget(subtitle)
         layout.addSpacing(28)
@@ -1407,7 +1407,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title_box.setSpacing(4)
         title_box.addWidget(_label("局域网", "sectionTitle"))
-        self.lan_subtitle = _label("正在寻找同一网络里的 SZZX。", "muted")
+        self.lan_subtitle = _label("正在寻找同一网络里的数智中心。", "muted")
         title_box.addWidget(self.lan_subtitle)
         header.addLayout(title_box)
         header.addStretch()
@@ -1676,7 +1676,7 @@ class MainWindow(QMainWindow):
         name = self.db.display_name()
         self.app_title.setText(name)
         self.app_title.setToolTip(name)
-        self.setWindowTitle(f"{name} - SZZX Local Desk")
+        self.setWindowTitle(f"{name} - 数智中心")
 
     def _announce_presence(self) -> None:
         if self.discovery is not None:
@@ -1701,7 +1701,7 @@ class MainWindow(QMainWindow):
             return
         self.lan_subtitle.setText(f"我的名字：{self.db.display_name()}。发现 {len(peers)} 位在线同事。")
         if not peers:
-            item = QListWidgetItem("暂时没有发现其他人。确认大家在同一局域网，并且都打开了 SZZX。")
+            item = QListWidgetItem("暂时没有发现其他人。确认大家在同一局域网，并且都打开了数智中心。")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.peer_list.addItem(item)
             return

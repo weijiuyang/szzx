@@ -1,6 +1,6 @@
-# SZZX Local Desk
+# 数智中心
 
-A local-first Qt desktop prototype for weekly reports, AI summaries, and a small interactive desktop pet.
+数智中心是一个本地优先的 Qt 桌面原型，用于周报、AI 摘要、项目协作和桌宠陪伴。
 
 This first version is intentionally simple:
 
@@ -140,9 +140,9 @@ If the command is not set, the app uses a local rule-based summary so the protot
 
 ## LAN Discovery
 
-SZZX uses UDP broadcast on port `45454` to discover other running SZZX clients on the same LAN.
-There is no login and no friend request system. Everyone discovered on the LAN is shown by default.
-Change your visible name from the in-app `PIN` settings panel.
+数智中心使用 UDP `45454` 端口发现同一局域网内运行中的客户端。
+应用没有登录和好友申请系统，局域网内发现的同事会默认显示。
+可以在应用内 `PIN` 设置面板修改自己的可见名称。
 
 ## Project Shape
 
