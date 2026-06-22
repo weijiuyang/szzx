@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 from .ai import LocalSummarizer
 from .database import APP_DIR, Database
 from .lan import LanDiscovery, LanPeer
-from .models import DailyReport, Project, ProjectDocument, ProjectMember, RestDay, WeeklyReport
+from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, RestDay, WeeklyReport
 from .pet import DesktopPet, PET_ACTIONS, PET_KINDS
 from .updater import check_for_update, configured_update_url, version_tuple
 from .version import APP_VERSION
@@ -877,17 +877,18 @@ class MainWindow(QMainWindow):
         hero_layout.setSpacing(10)
         self.project_status = _label("推进中", "eyebrow")
         self.project_title = _label("选择一个项目", "heroTitle")
-        self.project_description = _label("项目负责人可以在这里查看所有开发日报、维护项目周报，并归档项目文档。", "muted")
+        self.project_description = _label("项目负责人可以在这里查看所有日报、维护项目周报，并归档项目文档。", "muted")
         hero_layout.addWidget(self.project_status)
         hero_layout.addWidget(self.project_title)
         hero_layout.addWidget(self.project_description)
         metrics = QHBoxLayout()
         metrics.setSpacing(12)
         self.metric_members = self._metric_card("成员", "0")
+        self.metric_todos = self._metric_card("代办", "0")
         self.metric_daily = self._metric_card("日报", "0")
         self.metric_weekly = self._metric_card("周报", "0")
         self.metric_decks = self._metric_card("文档", "0")
-        for card in (self.metric_members, self.metric_daily, self.metric_weekly, self.metric_decks):
+        for card in (self.metric_members, self.metric_todos, self.metric_daily, self.metric_weekly, self.metric_decks):
             metrics.addWidget(card)
         hero_layout.addLayout(metrics)
         overview_layout.addWidget(hero)
@@ -927,7 +928,7 @@ class MainWindow(QMainWindow):
         developer_feed_layout = QVBoxLayout(developer_feed_panel)
         developer_feed_layout.setContentsMargins(0, 0, 0, 0)
         developer_feed_layout.setSpacing(8)
-        developer_feed_layout.addWidget(_label("开发日报流", "eyebrow"))
+        developer_feed_layout.addWidget(_label("日报流", "eyebrow"))
         self.developer_feed = QListWidget()
         self.developer_feed.setMinimumHeight(410)
         developer_feed_layout.addWidget(self.developer_feed)
@@ -982,24 +983,51 @@ class MainWindow(QMainWindow):
         self.delete_project_button.clicked.connect(self._delete_current_project)
         project_danger_layout.addWidget(self.delete_project_button)
 
-        daily_form = _panel()
+        self.todo_panel = _panel()
+        todo_panel = self.todo_panel
+        todo_layout = QVBoxLayout(todo_panel)
+        todo_layout.setContentsMargins(18, 18, 18, 18)
+        todo_layout.setSpacing(10)
+        todo_header = QHBoxLayout()
+        todo_header.addWidget(_label("代办看板", "eyebrow"))
+        todo_header.addStretch()
+        self.todo_count_label = _label("0 个待完成", "muted")
+        todo_header.addWidget(self.todo_count_label)
+        todo_layout.addLayout(todo_header)
+        todo_input_row = QHBoxLayout()
+        todo_input_row.setSpacing(8)
+        self.project_todo_input = QLineEdit()
+        self.project_todo_input.setPlaceholderText("新增一个 todo")
+        self.add_todo_button = QPushButton("添加")
+        self.add_todo_button.clicked.connect(self._add_project_todo)
+        todo_input_row.addWidget(self.project_todo_input, 1)
+        todo_input_row.addWidget(self.add_todo_button)
+        todo_layout.addLayout(todo_input_row)
+        self.todo_board = QListWidget()
+        self.todo_board.setMinimumHeight(168)
+        self.todo_board.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        todo_layout.addWidget(self.todo_board)
+
+        self.daily_form = _panel()
+        daily_form = self.daily_form
         daily_form.setFixedHeight(265)
         daily_layout = QVBoxLayout(daily_form)
         daily_layout.setContentsMargins(18, 18, 18, 18)
         daily_layout.setSpacing(10)
-        daily_layout.addWidget(_label("开发日报", "eyebrow"))
-        self.daily_member = QComboBox()
+        daily_layout.addWidget(_label("日报", "eyebrow"))
+        self.daily_member_label = _label("当前身份：自己", "muted")
         self.daily_editor = QTextEdit()
         self.daily_editor.setFixedHeight(118)
         self.daily_editor.setPlaceholderText("今天完成了什么、遇到什么阻塞、明天准备做什么。")
-        save_daily = QPushButton("保存日报")
-        save_daily.setObjectName("primaryButton")
-        save_daily.clicked.connect(self._save_daily_report)
-        daily_layout.addWidget(self.daily_member)
+        self.save_daily_button = QPushButton("保存日报")
+        self.save_daily_button.setObjectName("primaryButton")
+        self.save_daily_button.clicked.connect(self._save_daily_report)
+        daily_layout.addWidget(self.daily_member_label)
         daily_layout.addWidget(self.daily_editor)
-        daily_layout.addWidget(save_daily)
+        daily_layout.addWidget(self.save_daily_button)
 
-        weekly_form = _panel()
+        self.weekly_form = _panel()
+        weekly_form = self.weekly_form
         weekly_form.setFixedHeight(390)
         weekly_layout = QVBoxLayout(weekly_form)
         weekly_layout.setContentsMargins(18, 18, 18, 18)
@@ -1024,6 +1052,7 @@ class MainWindow(QMainWindow):
         weekly_layout.addWidget(self.project_document_visibility)
         weekly_layout.addWidget(self.upload_deck_button)
 
+        display_side_layout.addWidget(todo_panel, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addWidget(daily_form, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addWidget(weekly_form, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addStretch()
@@ -1219,7 +1248,7 @@ class MainWindow(QMainWindow):
         if not self._can_manage_project(project, current_member):
             QMessageBox.warning(self, "不能删除", "只有这个项目的产品经理可以删除项目。")
             return
-        message = f"确定删除项目「{project.name}」吗？\n\n项目成员、日报、项目周报和文档记录都会一起删除。"
+        message = f"确定删除项目「{project.name}」吗？\n\n项目成员、代办、日报、项目周报和文档记录都会一起删除。"
         if QMessageBox.question(self, "删除项目", message) != QMessageBox.StandardButton.Yes:
             return
         if not self.db.delete_project(project.id):
@@ -1238,17 +1267,48 @@ class MainWindow(QMainWindow):
         project = self._current_project()
         if project is None:
             return
-        member = self.daily_member.currentData()
+        members = self.db.list_project_members(project.id)
+        current_member = self._current_project_member(project, members)
         content = self.daily_editor.toPlainText().strip()
-        if not isinstance(member, tuple):
-            QMessageBox.information(self, "没有成员", "先给项目添加成员。")
+        if current_member is None:
+            QMessageBox.information(self, "不能保存", "只有项目成员可以写日报。")
             return
         if not content:
             QMessageBox.information(self, "日报为空", "先写一点日报内容。")
             return
-        name, role = member
-        self.db.add_daily_report(project.id, str(name), str(role), content)
+        self.db.add_daily_report(project.id, current_member.name, current_member.role, content)
         self.daily_editor.clear()
+        self._refresh_project_workspace()
+
+    def _add_project_todo(self) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        members = self.db.list_project_members(project.id)
+        current_member = self._current_project_member(project, members)
+        if current_member is None:
+            QMessageBox.information(self, "不能添加", "只有项目成员可以添加代办。")
+            return
+        title = self.project_todo_input.text().strip()
+        if not title:
+            QMessageBox.information(self, "代办为空", "先写一个 todo。")
+            return
+        self.db.add_project_todo(project.id, title, self.db.display_name())
+        self.project_todo_input.clear()
+        self._refresh_project_workspace()
+
+    def _complete_project_todo(self, todo: ProjectTodo) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        members = self.db.list_project_members(project.id)
+        current_member = self._current_project_member(project, members)
+        if current_member is None:
+            QMessageBox.information(self, "不能完成", "只有项目成员可以完成代办。")
+            return
+        report = self.db.complete_project_todo(todo.id, current_member.name, current_member.role)
+        if report is None:
+            QMessageBox.information(self, "已完成", "这个代办已经被完成。")
         self._refresh_project_workspace()
 
     def _save_project_weekly_report(self) -> None:
@@ -1317,27 +1377,44 @@ class MainWindow(QMainWindow):
         daily_reports = self.db.list_daily_reports(project.id)
         weekly_reports = self.db.list_project_weekly_reports(project.id)
         documents = self.db.list_visible_project_documents(self.db.display_name(), project.id)
+        todos = self.db.list_project_todos(project.id)
+        completed_todos = [
+            todo
+            for todo in self.db.list_project_todos(project.id, include_completed=True)
+            if todo.status == "done" and todo.completed_at is not None
+        ]
 
         self.project_status.setText(f"{project.status} · 负责人 {project.owner}")
         self.project_title.setText(project.name)
         self.project_description.setText(project.description)
         self._set_metric(self.metric_members, len(members))
+        self._set_metric(self.metric_todos, len(todos))
         self._set_metric(self.metric_daily, len(daily_reports))
         self._set_metric(self.metric_weekly, len(weekly_reports))
         self._set_metric(self.metric_decks, len(documents))
 
         self._clear_layout(self.member_cards_layout)
-        self.daily_member.clear()
         current_member = self._current_project_member(project, members)
         is_manager = self._can_manage_project(project, current_member)
         current_name = self.db.display_name()
         self.feed_scope_label.setText(
             f"当前视角：{'产品经理' if is_manager else '开发成员'} · {current_name}"
         )
+        can_update_todos = current_member is not None
+        self.todo_panel.setVisible(can_update_todos)
+        self.daily_form.setVisible(can_update_todos)
+        self.project_todo_input.setEnabled(can_update_todos)
+        self.add_todo_button.setEnabled(can_update_todos)
+        self.daily_editor.setEnabled(can_update_todos)
+        self.save_daily_button.setEnabled(can_update_todos)
+        self.daily_member_label.setText(
+            f"当前身份：{current_member.name} · {current_member.role}" if current_member is not None else "当前身份：非项目成员"
+        )
         self.member_name.setEnabled(is_manager)
         self.member_role.setEnabled(is_manager)
         self.add_member_button.setEnabled(is_manager)
         self.delete_project_button.setEnabled(is_manager)
+        self.weekly_form.setVisible(is_manager)
         self.project_weekly_editor.setEnabled(is_manager)
         self.save_project_weekly_button.setEnabled(is_manager)
         self.project_document_type.setEnabled(is_manager)
@@ -1345,42 +1422,61 @@ class MainWindow(QMainWindow):
         self.upload_deck_button.setEnabled(is_manager)
         for member in members:
             self._add_member_card(member)
-            if is_manager or self.db.is_current_user_name(member.name):
-                self.daily_member.addItem(f"{member.name} · {member.role}", (member.name, member.role))
+
+        self.todo_board.clear()
+        self.todo_count_label.setText(f"{len(todos)} 个待完成")
+        if not todos:
+            self._add_todo_card(None, "当前没有待完成 todo。", False)
+        for todo in todos:
+            self._add_todo_card(todo, todo.title, can_update_todos)
 
         self.product_feed.clear()
         product_items: list[tuple[str, str, str, str, ProjectDocument | None]] = []
-        for member in members:
-            product_items.append(
-                (
-                    member.created_at.isoformat(),
-                    member.created_at.strftime("%m-%d %H:%M"),
-                    "成员配置",
-                    f"{member.name} · {member.role}",
-                    None,
-                )
-            )
-        for report in weekly_reports:
-            product_items.append(
-                (
-                    report.created_at.isoformat(),
-                    report.created_at.strftime("%m-%d %H:%M"),
-                    f"项目周报 · {report.author}",
-                    report.content,
-                    None,
-                )
-            )
-        for document in documents:
-            product_items.append(
-                (
-                    document.created_at.isoformat(),
-                    document.created_at.strftime("%m-%d %H:%M"),
-                    f"{document.doc_type} · {'团队' if document.visibility == 'team' else '本人'}",
-                    document.title,
-                    document,
-                )
-            )
         if is_manager:
+            for member in members:
+                product_items.append(
+                    (
+                        member.created_at.isoformat(),
+                        member.created_at.strftime("%m-%d %H:%M"),
+                        "成员配置",
+                        f"{member.name} · {member.role}",
+                        None,
+                    )
+                )
+            for report in weekly_reports:
+                product_items.append(
+                    (
+                        report.created_at.isoformat(),
+                        report.created_at.strftime("%m-%d %H:%M"),
+                        f"项目周报 · {report.author}",
+                        report.content,
+                        None,
+                    )
+                )
+            for document in documents:
+                product_items.append(
+                    (
+                        document.created_at.isoformat(),
+                        document.created_at.strftime("%m-%d %H:%M"),
+                        f"{document.doc_type} · {'团队' if document.visibility == 'team' else '本人'}",
+                        document.title,
+                        document,
+                    )
+                )
+        for todo in completed_todos:
+            if not is_manager and not self.db.is_current_user_name(todo.completed_by):
+                continue
+            completed_at = todo.completed_at
+            product_items.append(
+                (
+                    completed_at.isoformat(),
+                    completed_at.strftime("%m-%d %H:%M"),
+                    f"完成代办 · {todo.completed_by or '项目成员'}",
+                    todo.title,
+                    None,
+                )
+            )
+        if product_items:
             for _, time_text, kind, content, document in sorted(product_items, reverse=True)[:8]:
                 self._add_feed_card(self.product_feed, time_text, kind, content, document)
         else:
@@ -1396,7 +1492,7 @@ class MainWindow(QMainWindow):
             report for report in daily_reports if self.db.is_current_user_name(report.member_name)
         ]
         if not visible_daily_reports:
-            empty_text = "还没有开发日报。" if is_manager else "你还没有写过日报。"
+            empty_text = "还没有日报。" if is_manager else "你还没有写过日报。"
             self._add_feed_card(self.developer_feed, "", "日报", empty_text)
         for report in visible_daily_reports[:5]:
             self._add_feed_card(
@@ -1417,11 +1513,23 @@ class MainWindow(QMainWindow):
         else:
             self.project_description.setText("创建项目后，可以继续维护成员、日报、周报和项目文档。")
         self._set_metric(self.metric_members, 0)
+        self._set_metric(self.metric_todos, 0)
         self._set_metric(self.metric_daily, 0)
         self._set_metric(self.metric_weekly, 0)
         self._set_metric(self.metric_decks, 0)
         self._clear_layout(self.member_cards_layout)
-        self.daily_member.clear()
+        self.daily_member_label.setText("当前身份：自己")
+        self.daily_editor.clear()
+        self.daily_editor.setEnabled(False)
+        self.save_daily_button.setEnabled(False)
+        self.todo_panel.setVisible(False)
+        self.daily_form.setVisible(False)
+        self.project_todo_input.clear()
+        self.project_todo_input.setEnabled(False)
+        self.add_todo_button.setEnabled(False)
+        self.todo_count_label.setText("0 个待完成")
+        self.todo_board.clear()
+        self._add_todo_card(None, "选择项目后，这里会显示 todo。", False)
         self.product_feed.clear()
         self.developer_feed.clear()
         empty_text = "当前没有你参与的项目。" if getattr(self, "project_scope_value", "mine") == "mine" else "还没有项目。"
@@ -1431,6 +1539,7 @@ class MainWindow(QMainWindow):
         self.member_role.setEnabled(False)
         self.add_member_button.setEnabled(False)
         self.delete_project_button.setEnabled(False)
+        self.weekly_form.setVisible(False)
         self.project_weekly_editor.setEnabled(False)
         self.save_project_weekly_button.setEnabled(False)
         self.project_document_type.setEnabled(False)
@@ -1485,6 +1594,36 @@ class MainWindow(QMainWindow):
         index = self.member_cards_layout.count()
         self.member_cards_layout.addWidget(card, index // 3, index % 3)
 
+    def _add_todo_card(self, todo: ProjectTodo | None, title: str, can_complete: bool) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
+
+        body = QVBoxLayout()
+        body.setSpacing(4)
+        meta_text = "待完成"
+        if todo is not None:
+            meta_text = f"{todo.created_at.strftime('%m-%d %H:%M')}  {todo.creator or '项目成员'}"
+        body.addWidget(_label(meta_text, "eyebrow"))
+        body.addWidget(_label(title))
+        layout.addLayout(body, 1)
+
+        if todo is not None:
+            done_button = QPushButton("完成")
+            done_button.setObjectName("smallButton")
+            done_button.setEnabled(can_complete)
+            done_button.clicked.connect(lambda checked=False, selected=todo: self._complete_project_todo(selected))
+            layout.addWidget(done_button)
+
+        item.setSizeHint(QSize(0, 72))
+        self.todo_board.addItem(item)
+        self.todo_board.setItemWidget(item, card)
+
     def _add_feed_card(
         self,
         list_widget: QListWidget,
@@ -1537,11 +1676,11 @@ class MainWindow(QMainWindow):
         list_widget.setItemWidget(item, card)
 
     def _delete_daily_report(self, report: DailyReport) -> None:
-        message = f"确定删除 {report.created_at.strftime('%m-%d %H:%M')} 的开发日报吗？"
+        message = f"确定删除 {report.created_at.strftime('%m-%d %H:%M')} 的日报吗？"
         if QMessageBox.question(self, "删除日报", message) != QMessageBox.StandardButton.Yes:
             return
         if not self.db.delete_daily_report(report.id):
-            QMessageBox.warning(self, "删除失败", "只能删除自己的开发日报，或这条日报已经不存在。")
+            QMessageBox.warning(self, "删除失败", "只能删除自己的日报，或这条日报已经不存在。")
             return
         self._refresh_project_workspace()
 

@@ -54,6 +54,18 @@ class ProjectDocument:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class ProjectTodo:
+    id: int
+    project_id: int
+    title: str
+    creator: str
+    status: str
+    completed_by: str
+    created_at: datetime
+    completed_at: datetime | None
+
+
 ProjectDeck = ProjectDocument
 
 

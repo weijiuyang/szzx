@@ -12,7 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectWeeklyReport, RestDay, WeeklyReport
+from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, ProjectWeeklyReport, RestDay, WeeklyReport
 from .pin import DEFAULT_PIN, hash_pin, verify_pin
 
 
@@ -44,6 +44,7 @@ SHARED_TABLES = (
     "project_weekly_reports",
     "project_decks",
     "project_documents",
+    "project_todos",
     "rest_days",
     "name_claims",
     "counters",
@@ -83,6 +84,7 @@ class Database:
             "project_weekly_reports": [],
             "project_decks": [],
             "project_documents": [],
+            "project_todos": [],
             "rest_days": [],
             "name_claims": [],
             "counters": {},
@@ -413,6 +415,7 @@ class Database:
             "project_weekly_reports",
             "project_decks",
             "project_documents",
+            "project_todos",
         ):
             self.data[table] = [row for row in self.data[table] if int(row["project_id"]) != project_id]
         self._save()
@@ -494,6 +497,67 @@ class Database:
             role=str(row["role"]),
             content=str(row["content"]),
             created_at=_parse_time(str(row["created_at"])),
+        )
+
+    def add_project_todo(self, project_id: int, title: str, creator: str) -> ProjectTodo:
+        created_at = datetime.now()
+        row = self._with_operator({
+            "id": self._next_id("project_todos"),
+            "project_id": project_id,
+            "title": title.strip(),
+            "creator": creator.strip(),
+            "status": "todo",
+            "completed_by": "",
+            "created_at": created_at.isoformat(timespec="seconds"),
+            "completed_at": "",
+        })
+        self.data["project_todos"].append(row)
+        self._save()
+        return self._todo_from_row(row)
+
+    def list_project_todos(self, project_id: int, include_completed: bool = False) -> list[ProjectTodo]:
+        rows = [row for row in self.data["project_todos"] if int(row["project_id"]) == project_id]
+        if not include_completed:
+            rows = [row for row in rows if str(row.get("status", "todo")) != "done"]
+        rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        return [self._todo_from_row(row) for row in rows]
+
+    def complete_project_todo(
+        self,
+        todo_id: int,
+        member_name: str,
+        role: str,
+        progress_prefix: str = "完成待办",
+    ) -> DailyReport | None:
+        for row in self.data["project_todos"]:
+            if int(row["id"]) != todo_id:
+                continue
+            if str(row.get("status", "todo")) == "done":
+                return None
+            completed_at = datetime.now()
+            row["status"] = "done"
+            row["completed_by"] = member_name.strip()
+            row["completed_at"] = completed_at.isoformat(timespec="seconds")
+            report = self.add_daily_report(
+                int(row["project_id"]),
+                member_name,
+                role,
+                f"{progress_prefix}：{str(row.get('title', '')).strip()}",
+            )
+            return report
+        return None
+
+    def _todo_from_row(self, row: dict[str, Any]) -> ProjectTodo:
+        completed_at = str(row.get("completed_at", "")).strip()
+        return ProjectTodo(
+            id=int(row["id"]),
+            project_id=int(row["project_id"]),
+            title=str(row["title"]),
+            creator=str(row.get("creator", "")),
+            status=str(row.get("status", "todo")),
+            completed_by=str(row.get("completed_by", "")),
+            created_at=_parse_time(str(row["created_at"])),
+            completed_at=_parse_time(completed_at) if completed_at else None,
         )
 
     def add_project_weekly_report(self, project_id: int, author: str, content: str) -> ProjectWeeklyReport:
@@ -675,7 +739,7 @@ class Database:
             return False
         for table in SHARED_TABLES:
             if table not in tables:
-                if table == "name_claims":
+                if table in ("name_claims", "project_todos"):
                     tables[table] = []
                 else:
                     return False
