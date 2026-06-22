@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -64,4 +64,13 @@ class WeeklyReport:
     content: str
     summary: str
     mood: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class RestDay:
+    id: int
+    author: str
+    day: date
+    note: str
     created_at: datetime

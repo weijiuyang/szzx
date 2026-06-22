@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import calendar
 import shutil
-from datetime import datetime
+import zipfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
+    QAbstractItemView,
     QComboBox,
     QDialog,
     QFormLayout,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,6 +28,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -31,7 +38,7 @@ from PySide6.QtWidgets import (
 from .ai import LocalSummarizer
 from .database import APP_DIR, Database
 from .lan import LanDiscovery, LanPeer
-from .models import DailyReport, Project, ProjectDocument, ProjectMember, WeeklyReport
+from .models import DailyReport, Project, ProjectDocument, ProjectMember, RestDay, WeeklyReport
 from .pet import DesktopPet, PET_ACTIONS, PET_KINDS
 from .updater import check_for_update, configured_update_url
 from .version import APP_VERSION
@@ -107,6 +114,38 @@ QPushButton#dangerButton:hover {
 QPushButton#smallButton {
     padding: 7px 12px;
     min-width: 58px;
+}
+QPushButton#calendarDay {
+    min-width: 76px;
+    min-height: 64px;
+    padding: 8px;
+    text-align: left;
+    background: #fbfbf8;
+}
+QPushButton#calendarMuted {
+    min-width: 76px;
+    min-height: 64px;
+    padding: 8px;
+    text-align: left;
+    background: #f1f1ec;
+    color: #a0a39a;
+}
+QPushButton#calendarToday {
+    min-width: 76px;
+    min-height: 64px;
+    padding: 8px;
+    text-align: left;
+    border-color: #596d5b;
+    background: #eef3ed;
+}
+QPushButton#calendarRest {
+    min-width: 76px;
+    min-height: 64px;
+    padding: 8px;
+    text-align: left;
+    background: #fff6f3;
+    border-color: #d59a8a;
+    color: #8f2d1f;
 }
 QPushButton#navButton {
     text-align: left;
@@ -456,6 +495,176 @@ class VersionDialog(QDialog):
             QDesktopServices.openUrl(QUrl(info.download_url))
 
 
+class NextWeekRosterDialog(QDialog):
+    def __init__(self, db: Database, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.db = db
+        self.days = self._next_week_days()
+        self.setWindowTitle("全员下周休息")
+        self.resize(940, 560)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+        title_box.addWidget(_label("全员下周休息", "sectionTitle"))
+        title_box.addWidget(_label(f"{self.days[0].strftime('%Y-%m-%d')} 至 {self.days[-1].strftime('%Y-%m-%d')}", "muted"))
+        header.addLayout(title_box)
+        header.addStretch()
+        export_button = QPushButton("导出 Excel")
+        export_button.setObjectName("primaryButton")
+        export_button.clicked.connect(self._export_excel)
+        header.addWidget(export_button)
+        layout.addLayout(header)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(len(self.days) + 1)
+        self.table.setHorizontalHeaderLabels(["姓名", *[self._day_header(day) for day in self.days]])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setMinimumHeight(38)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        layout.addWidget(self.table)
+        self._fill_table()
+
+    def _fill_table(self) -> None:
+        rows = self._roster_rows()
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            self.table.setItem(row_index, 0, QTableWidgetItem(row[0]))
+            for column, value in enumerate(row[1:], start=1):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if value == "休":
+                    item.setBackground(Qt.GlobalColor.lightGray)
+                self.table.setItem(row_index, column, item)
+        self.table.resizeColumnsToContents()
+        self.table.setColumnWidth(0, 120)
+
+    def _roster_rows(self) -> list[list[str]]:
+        names = self.db.known_display_names()
+        rest_days = self.db.list_rest_days(mine_only=False)
+        rest_lookup = {(item.author, item.day) for item in rest_days}
+        rows: list[list[str]] = []
+        for name in names:
+            row = [name]
+            for day in self.days:
+                row.append("休" if (name, day) in rest_lookup else "早班")
+            rows.append(row)
+        return rows
+
+    def _export_excel(self) -> None:
+        default_name = f"下周休息安排-{self.days[0].strftime('%Y%m%d')}.xlsx"
+        target, _ = QFileDialog.getSaveFileName(self, "导出 Excel", default_name, "Excel 工作簿 (*.xlsx)")
+        if not target:
+            return
+        if not target.lower().endswith(".xlsx"):
+            target = f"{target}.xlsx"
+        try:
+            self._write_xlsx(Path(target), [["姓名", *[self._day_header(day) for day in self.days]], *self._roster_rows()])
+        except OSError as exc:
+            QMessageBox.warning(self, "导出失败", f"保存 Excel 失败：{exc}")
+            return
+        QMessageBox.information(self, "导出完成", f"已导出：\n{target}")
+
+    def _write_xlsx(self, path: Path, rows: list[list[str]]) -> None:
+        sheet_rows = []
+        for row_index, row in enumerate(rows, start=1):
+            cells = []
+            for column_index, value in enumerate(row, start=1):
+                cell_ref = f"{self._excel_column(column_index)}{row_index}"
+                style = ""
+                if row_index == 1:
+                    style = ' s="1"'
+                elif column_index == 1:
+                    style = ' s="2"'
+                elif value == "休":
+                    style = ' s="3"'
+                cells.append(f'<c r="{cell_ref}"{style} t="inlineStr"><is><t>{escape(value)}</t></is></c>')
+            sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+
+        worksheet = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="1" topLeftCell="B2" activePane="bottomRight" state="frozen"/></sheetView></sheetViews>'
+            '<cols><col min="1" max="1" width="16" customWidth="1"/><col min="2" max="8" width="13" customWidth="1"/></cols>'
+            f'<sheetData>{"".join(sheet_rows)}</sheetData>'
+            '</worksheet>'
+        )
+        workbook = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="下周休息" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        )
+        workbook_rels = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+            '</Relationships>'
+        )
+        root_rels = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>'
+        )
+        content_types = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            '</Types>'
+        )
+        styles = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><name val="Arial"/></font></fonts>'
+            '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+            '<fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/><bgColor indexed="64"/></patternFill></fill>'
+            '<fill><patternFill patternType="solid"><fgColor rgb="FFFFE6E0"/><bgColor indexed="64"/></patternFill></fill></fills>'
+            '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/>'
+            '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+            '<xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFill="1" applyFont="1"/></cellXfs>'
+            '</styleSheet>'
+        )
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", content_types)
+            archive.writestr("_rels/.rels", root_rels)
+            archive.writestr("xl/workbook.xml", workbook)
+            archive.writestr("xl/styles.xml", styles)
+            archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+            archive.writestr("xl/worksheets/sheet1.xml", worksheet)
+
+    def _excel_column(self, index: int) -> str:
+        letters = ""
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            letters = chr(65 + remainder) + letters
+        return letters
+
+    def _next_week_days(self) -> list[date]:
+        today = date.today()
+        start = today - timedelta(days=today.weekday()) + timedelta(days=7)
+        return [start + timedelta(days=offset) for offset in range(7)]
+
+    def _day_header(self, day: date) -> str:
+        return f"{day.month}/{day.day} 周{'一二三四五六日'[day.weekday()]}"
+
+
 class UpdateCheckWorker(QThread):
     update_found = Signal(object)
     no_update = Signal()
@@ -492,6 +701,8 @@ class MainWindow(QMainWindow):
         self._metric_labels: dict[str, QLabel] = {}
         self._update_worker: UpdateCheckWorker | None = None
         self._notified_update_version: str | None = None
+        self.rest_calendar_month = date.today().replace(day=1)
+        self.selected_rest_day: date | None = None
 
         self.setWindowTitle(f"{self.db.display_name()} - 数智中心")
         self.resize(1360, 820)
@@ -510,6 +721,7 @@ class MainWindow(QMainWindow):
 
         self.stack.addWidget(self._project_tab())
         self.stack.addWidget(self._weekly_tab())
+        self.stack.addWidget(self._rest_calendar_tab())
         self.stack.addWidget(self._lan_tab())
         self.stack.addWidget(self._home_tab())
         self.stack.addWidget(self._docs_tab())
@@ -526,6 +738,7 @@ class MainWindow(QMainWindow):
 
         self._load_projects()
         self._load_reports()
+        self._refresh_rest_calendar()
         self._refresh_document_library()
         self._start_update_timer()
 
@@ -544,7 +757,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(subtitle)
         layout.addSpacing(28)
 
-        for index, text in enumerate(("项目面板", "个人周报", "局域网", "成长履历", "文档库")):
+        for index, text in enumerate(("项目面板", "个人周报", "休息日历", "局域网", "成长履历", "文档库")):
             button = QPushButton(text)
             button.setObjectName("navButton")
             button.setCheckable(True)
@@ -1482,6 +1695,219 @@ class MainWindow(QMainWindow):
         splitter.setSizes([600, 420])
         return page
 
+    def _rest_calendar_tab(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(42, 38, 42, 38)
+        outer.setSpacing(24)
+
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+        title_box.addWidget(_label("休息日历", "sectionTitle"))
+        title_box.addWidget(_label("看见已经休息的日子，也把下一周先安排好。", "muted"))
+        header.addLayout(title_box)
+        header.addStretch()
+        previous_month = QPushButton("上月")
+        previous_month.setObjectName("smallButton")
+        previous_month.clicked.connect(lambda checked=False: self._move_rest_calendar_month(-1))
+        next_month = QPushButton("下月")
+        next_month.setObjectName("smallButton")
+        next_month.clicked.connect(lambda checked=False: self._move_rest_calendar_month(1))
+        self.rest_month_label = _label("", "sectionTitle")
+        self.rest_month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(previous_month)
+        header.addWidget(self.rest_month_label)
+        header.addWidget(next_month)
+        outer.addLayout(header)
+
+        splitter = QSplitter()
+        outer.addWidget(splitter)
+
+        calendar_panel = _panel()
+        calendar_layout = QVBoxLayout(calendar_panel)
+        calendar_layout.setContentsMargins(20, 20, 20, 20)
+        calendar_layout.setSpacing(14)
+        self.rest_summary = _label("", "muted")
+        self.rest_calendar_grid = QGridLayout()
+        self.rest_calendar_grid.setSpacing(8)
+        calendar_layout.addWidget(self.rest_summary)
+        calendar_layout.addLayout(self.rest_calendar_grid)
+
+        side_panel = _panel()
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(20, 20, 20, 20)
+        side_layout.setSpacing(14)
+        side_layout.addWidget(_label("选中日期", "eyebrow"))
+        self.rest_selected_label = _label("", "memberName")
+        self.rest_selected_detail = _label("", "muted")
+        self.rest_note = QLineEdit()
+        self.rest_note.setPlaceholderText("备注，例如：调休、年假、上午休息")
+        self.rest_toggle_button = QPushButton("安排休息")
+        self.rest_toggle_button.setObjectName("primaryButton")
+        self.rest_toggle_button.clicked.connect(self._toggle_selected_rest_day)
+        side_layout.addWidget(self.rest_selected_label)
+        side_layout.addWidget(self.rest_selected_detail)
+        side_layout.addWidget(self.rest_note)
+        side_layout.addWidget(self.rest_toggle_button)
+        side_layout.addSpacing(16)
+        next_week_header = QHBoxLayout()
+        next_week_header.addWidget(_label("下一周", "eyebrow"))
+        next_week_header.addStretch()
+        all_next_week = QPushButton("全员下周")
+        all_next_week.setObjectName("smallButton")
+        all_next_week.clicked.connect(self._open_next_week_roster)
+        next_week_header.addWidget(all_next_week)
+        side_layout.addLayout(next_week_header)
+        self.next_week_layout = QVBoxLayout()
+        self.next_week_layout.setSpacing(8)
+        side_layout.addLayout(self.next_week_layout)
+        side_layout.addStretch()
+
+        splitter.addWidget(calendar_panel)
+        splitter.addWidget(side_panel)
+        splitter.setSizes([760, 360])
+        return page
+
+    def _refresh_rest_calendar(self) -> None:
+        if not hasattr(self, "rest_calendar_grid"):
+            return
+
+        rest_days = self.db.list_rest_days()
+        rest_by_day = {item.day: item for item in rest_days}
+        today = date.today()
+        month = self.rest_calendar_month
+        if self.selected_rest_day is None:
+            self.selected_rest_day = today
+
+        self.rest_month_label.setText(month.strftime("%Y年%m月"))
+        month_rest_count = sum(
+            1 for item in rest_days
+            if item.day.year == month.year and item.day.month == month.month
+        )
+        past_rest_count = sum(1 for item in rest_days if item.day <= today)
+        self.rest_summary.setText(f"本月已安排 {month_rest_count} 天休息。今天之前含今天共记录 {past_rest_count} 天休息。")
+
+        self._clear_layout(self.rest_calendar_grid)
+        for column, text in enumerate(("一", "二", "三", "四", "五", "六", "日")):
+            label = _label(text, "eyebrow")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.rest_calendar_grid.addWidget(label, 0, column)
+
+        weeks = calendar.Calendar(firstweekday=0).monthdatescalendar(month.year, month.month)
+        for row_index, week in enumerate(weeks, start=1):
+            for column, day in enumerate(week):
+                rest_day = rest_by_day.get(day)
+                button = QPushButton(self._rest_day_button_text(day, rest_day, today))
+                button.setObjectName(self._rest_day_object_name(day, rest_day, today, month))
+                button.clicked.connect(lambda checked=False, selected=day: self._select_rest_day(selected))
+                self.rest_calendar_grid.addWidget(button, row_index, column)
+
+        self._refresh_next_week(rest_by_day)
+        self._update_rest_selection(rest_by_day)
+
+    def _rest_day_button_text(self, day: date, rest_day: RestDay | None, today: date) -> str:
+        labels = [str(day.day)]
+        if day == today:
+            labels.append("今天")
+        if rest_day is not None:
+            labels.append("休息")
+        elif self._is_next_week(day):
+            labels.append("可安排")
+        return "\n".join(labels)
+
+    def _rest_day_object_name(
+        self,
+        day: date,
+        rest_day: RestDay | None,
+        today: date,
+        month: date,
+    ) -> str:
+        if rest_day is not None:
+            return "calendarRest"
+        if day == today:
+            return "calendarToday"
+        if day.month != month.month:
+            return "calendarMuted"
+        return "calendarDay"
+
+    def _refresh_next_week(self, rest_by_day: dict[date, RestDay]) -> None:
+        self._clear_layout(self.next_week_layout)
+        start = self._next_week_start(date.today())
+        for offset in range(7):
+            day = start + timedelta(days=offset)
+            is_rest = day in rest_by_day
+            label = f"{day.strftime('%m-%d')}  周{'一二三四五六日'[day.weekday()]}"
+            button = QPushButton(f"{label}  {'取消休息' if is_rest else '安排休息'}")
+            button.setObjectName("calendarRest" if is_rest else "smallButton")
+            button.clicked.connect(lambda checked=False, selected=day: self._toggle_rest_day(selected))
+            self.next_week_layout.addWidget(button)
+
+    def _select_rest_day(self, day: date) -> None:
+        self.selected_rest_day = day
+        self._refresh_rest_calendar()
+
+    def _update_rest_selection(self, rest_by_day: dict[date, RestDay]) -> None:
+        selected = self.selected_rest_day or date.today()
+        rest_day = rest_by_day.get(selected)
+        self.rest_selected_label.setText(selected.strftime("%Y-%m-%d"))
+        if rest_day is None:
+            self.rest_selected_detail.setText("这天还没有安排休息。")
+            self.rest_note.setText("")
+            self.rest_toggle_button.setText("安排休息")
+            self.rest_toggle_button.setObjectName("primaryButton")
+        else:
+            note = f" · {rest_day.note}" if rest_day.note else ""
+            self.rest_selected_detail.setText(f"已安排休息{note}")
+            self.rest_note.setText(rest_day.note)
+            self.rest_toggle_button.setText("取消休息")
+            self.rest_toggle_button.setObjectName("dangerButton")
+        self.rest_toggle_button.style().unpolish(self.rest_toggle_button)
+        self.rest_toggle_button.style().polish(self.rest_toggle_button)
+
+    def _toggle_selected_rest_day(self) -> None:
+        self._toggle_rest_day(self.selected_rest_day or date.today(), self.rest_note.text())
+
+    def _toggle_rest_day(self, day: date, note: str = "") -> None:
+        rest_by_day = {item.day: item for item in self.db.list_rest_days()}
+        if day in rest_by_day:
+            self.db.delete_rest_day(day)
+        else:
+            self.db.set_rest_day(day, note)
+        self.selected_rest_day = day
+        self.rest_calendar_month = day.replace(day=1)
+        self._refresh_rest_calendar()
+
+    def _open_next_week_roster(self) -> None:
+        dialog = NextWeekRosterDialog(self.db, self)
+        dialog.exec()
+
+    def _move_rest_calendar_month(self, offset: int) -> None:
+        month = self.rest_calendar_month
+        month_index = month.month - 1 + offset
+        year = month.year + month_index // 12
+        new_month = month_index % 12 + 1
+        self.rest_calendar_month = date(year, new_month, 1)
+        self._refresh_rest_calendar()
+
+    def _next_week_start(self, value: date) -> date:
+        start_this_week = value - timedelta(days=value.weekday())
+        return start_this_week + timedelta(days=7)
+
+    def _is_next_week(self, value: date) -> bool:
+        start = self._next_week_start(date.today())
+        return start <= value < start + timedelta(days=7)
+
+    def _clear_layout(self, layout: QGridLayout | QVBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._clear_layout(child_layout)  # type: ignore[arg-type]
+
     def _lan_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
@@ -1809,6 +2235,7 @@ class MainWindow(QMainWindow):
     def _refresh_after_lan_sync(self) -> None:
         self._load_projects()
         self._load_reports()
+        self._refresh_rest_calendar()
         self._refresh_document_library()
         self._refresh_home()
 

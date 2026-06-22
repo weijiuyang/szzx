@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import getpass
 import base64
+import getpass
 import hashlib
 import json
 import os
 import socket
 import sys
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectWeeklyReport, WeeklyReport
+from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectWeeklyReport, RestDay, WeeklyReport
 from .pin import DEFAULT_PIN, hash_pin, verify_pin
 
 
@@ -44,6 +44,7 @@ SHARED_TABLES = (
     "project_weekly_reports",
     "project_decks",
     "project_documents",
+    "rest_days",
     "name_claims",
     "counters",
 )
@@ -82,6 +83,7 @@ class Database:
             "project_weekly_reports": [],
             "project_decks": [],
             "project_documents": [],
+            "rest_days": [],
             "name_claims": [],
             "counters": {},
             "sync": {},
@@ -236,6 +238,32 @@ class Database:
 
     def is_current_user_name(self, name: str) -> bool:
         return name in self.current_user_names()
+
+    def known_display_names(self) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for name in (self.display_name(), *self.display_name_aliases()):
+            normalized = self._normalize_display_name(name)
+            if normalized and normalized not in seen:
+                names.append(name)
+                seen.add(normalized)
+        for row in self.data.get("name_claims", []):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name", "")).strip()
+            normalized = self._normalize_display_name(name)
+            if normalized and normalized not in seen:
+                names.append(name)
+                seen.add(normalized)
+        for row in self.data.get("rest_days", []):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("operator", "")).strip()
+            normalized = self._normalize_display_name(name)
+            if normalized and normalized not in seen:
+                names.append(name)
+                seen.add(normalized)
+        return names
 
     def pet_kind(self) -> str:
         return self.get_setting("pet_kind") or "penguin"
@@ -764,6 +792,53 @@ class Database:
             content=str(row["content"]),
             summary=str(row["summary"]),
             mood=str(row["mood"]),
+            created_at=_parse_time(str(row["created_at"])),
+        )
+
+    def list_rest_days(self, mine_only: bool = True) -> list[RestDay]:
+        rows = list(self.data["rest_days"])
+        if mine_only:
+            rows = [row for row in rows if self._is_current_user_row(row)]
+        rows.sort(key=lambda row: str(row["day"]))
+        return [self._rest_day_from_row(row) for row in rows]
+
+    def set_rest_day(self, day: date, note: str = "") -> RestDay:
+        day_text = day.isoformat()
+        for row in self.data["rest_days"]:
+            if str(row.get("day")) == day_text and self._is_current_user_row(row):
+                row["note"] = note.strip()
+                self._save()
+                return self._rest_day_from_row(row)
+
+        row = self._with_operator({
+            "id": self._next_id("rest_days"),
+            "day": day_text,
+            "note": note.strip(),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        self.data["rest_days"].append(row)
+        self._save()
+        return self._rest_day_from_row(row)
+
+    def delete_rest_day(self, day: date, mine_only: bool = True) -> bool:
+        day_text = day.isoformat()
+        rows = self.data["rest_days"]
+        for index, row in enumerate(rows):
+            if str(row.get("day")) != day_text:
+                continue
+            if mine_only and not self._is_current_user_row(row):
+                return False
+            del rows[index]
+            self._save()
+            return True
+        return False
+
+    def _rest_day_from_row(self, row: dict[str, Any]) -> RestDay:
+        return RestDay(
+            id=int(row["id"]),
+            author=str(row.get("operator", "")),
+            day=date.fromisoformat(str(row["day"])),
+            note=str(row.get("note", "")),
             created_at=_parse_time(str(row["created_at"])),
         )
 
