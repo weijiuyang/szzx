@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 from dataclasses import dataclass
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from .update_config import DEFAULT_UPDATE_URL
@@ -29,8 +31,7 @@ def check_for_update(url: str | None = None) -> UpdateInfo:
     if not manifest_url:
         raise ValueError(f"未配置更新地址。请设置环境变量 {UPDATE_URL_ENV}。")
 
-    with urlopen(manifest_url, timeout=8) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    payload = _load_update_manifest(manifest_url)
 
     latest_version = str(payload.get("version", "")).strip()
     download_url = str(payload.get("download_url", "")).strip()
@@ -42,13 +43,63 @@ def check_for_update(url: str | None = None) -> UpdateInfo:
         latest_version=latest_version,
         download_url=download_url,
         notes=notes,
-        is_newer=_version_tuple(latest_version) > _version_tuple(APP_VERSION),
+        is_newer=version_tuple(latest_version) > version_tuple(APP_VERSION),
     )
 
 
-def _version_tuple(version: str) -> tuple[int, ...]:
+def version_tuple(version: str) -> tuple[int, ...]:
     parts: list[int] = []
     for item in version.strip().lstrip("v").split("."):
         digits = "".join(ch for ch in item if ch.isdigit())
         parts.append(int(digits or "0"))
-    return tuple(parts)
+    while len(parts) < 4:
+        parts.append(0)
+    return tuple(parts[:4])
+
+
+def _load_update_manifest(manifest_url: str) -> dict[str, object]:
+    try:
+        return _read_update_manifest(manifest_url)
+    except URLError as exc:
+        if _is_certificate_verify_error(exc):
+            try:
+                return _read_update_manifest(manifest_url, verify_ssl=False)
+            except Exception as retry_exc:
+                raise ValueError(_friendly_update_error(retry_exc)) from retry_exc
+        raise ValueError(_friendly_update_error(exc)) from exc
+    except Exception as exc:
+        raise ValueError(_friendly_update_error(exc)) from exc
+
+
+def _read_update_manifest(manifest_url: str, verify_ssl: bool = True) -> dict[str, object]:
+    context = None if verify_ssl else ssl._create_unverified_context()
+    with urlopen(manifest_url, timeout=8, context=context) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("更新配置格式不正确。")
+    return payload
+
+
+def _is_certificate_verify_error(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return True
+    return "CERTIFICATE_VERIFY_FAILED" in str(exc)
+
+
+def _friendly_update_error(exc: BaseException) -> str:
+    if isinstance(exc, HTTPError):
+        if exc.code in (403, 401):
+            return "更新地址未授权访问。请确认腾讯云 COS 的 update.json 和 exe 已设置为公有读。"
+        if exc.code == 404:
+            return "没有找到更新配置。请确认腾讯云 COS 已上传 windows/latest/update.json。"
+        return f"更新服务返回 HTTP {exc.code}。请稍后再试。"
+
+    text = str(exc)
+    if "CERTIFICATE_VERIFY_FAILED" in text or "self-signed certificate" in text:
+        return "更新地址的 HTTPS 证书校验失败。请检查当前网络代理/证书，或换一个网络后重试。"
+    if "Tunnel connection failed" in text:
+        return "当前网络代理无法连接更新地址。请关闭代理或换一个网络后重试。"
+    if "timed out" in text.lower():
+        return "检查更新超时。请确认网络可访问腾讯云 COS 后重试。"
+    return f"检查更新失败：{text}"

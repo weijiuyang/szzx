@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import struct
+import sys
 import threading
 import zlib
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QNetworkDatagram, QUdpSocket
+
+from .version import APP_VERSION
 
 
 LAN_PORT = 45454
@@ -27,6 +30,8 @@ class LanPeer:
     last_seen: datetime
     sync_port: int
     sync: dict[str, Any]
+    app_version: str
+    platform: str
 
 
 class LanDiscovery(QObject):
@@ -86,6 +91,8 @@ class LanDiscovery(QObject):
             "port": self.port,
             "sync_port": self.sync_port,
             "sync": self.db.sync_state() if self.db is not None else {},
+            "app_version": APP_VERSION,
+            "platform": sys.platform,
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_socket.writeDatagram(data, QHostAddress.SpecialAddress.Broadcast, self.port)
@@ -100,6 +107,8 @@ class LanDiscovery(QObject):
             "name": self.display_name,
             "sync_port": self.sync_port,
             "sync": self.db.sync_state(),
+            "app_version": APP_VERSION,
+            "platform": sys.platform,
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_socket.writeDatagram(data, QHostAddress.SpecialAddress.Broadcast, self.port)
@@ -187,6 +196,8 @@ class LanDiscovery(QObject):
             last_seen=datetime.now(),
             sync_port=sync_port,
             sync=sync,
+            app_version=str(payload.get("app_version") or ""),
+            platform=str(payload.get("platform") or ""),
         )
         self.peers[device_id] = peer
         if kind == "db_state":

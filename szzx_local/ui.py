@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar
 import shutil
+import sys
 import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -40,7 +41,7 @@ from .database import APP_DIR, Database
 from .lan import LanDiscovery, LanPeer
 from .models import DailyReport, Project, ProjectDocument, ProjectMember, RestDay, WeeklyReport
 from .pet import DesktopPet, PET_ACTIONS, PET_KINDS
-from .updater import check_for_update, configured_update_url
+from .updater import check_for_update, configured_update_url, version_tuple
 from .version import APP_VERSION
 
 
@@ -2257,4 +2258,26 @@ class MainWindow(QMainWindow):
             return
         for peer in peers:
             seen = peer.last_seen.strftime("%H:%M:%S")
-            self.peer_list.addItem(QListWidgetItem(f"{peer.name}\n{peer.address} · {seen}"))
+            self.peer_list.addItem(QListWidgetItem(self._peer_list_text(peer, seen)))
+
+    def _peer_list_text(self, peer: LanPeer, seen: str) -> str:
+        platform = self._platform_label(peer.platform)
+        version = f"v{peer.app_version}" if peer.app_version else "版本未知"
+        status = ""
+        if peer.platform == sys.platform and peer.app_version:
+            if version_tuple(peer.app_version) > version_tuple(APP_VERSION):
+                status = " · 可局域网更新"
+            elif version_tuple(peer.app_version) < version_tuple(APP_VERSION):
+                status = " · 对方版本较低"
+        elif peer.platform and peer.platform != sys.platform:
+            status = " · 不同系统"
+        return f"{peer.name}\n{peer.address} · {platform} · {version} · {seen}{status}"
+
+    def _platform_label(self, platform: str) -> str:
+        if platform == "win32":
+            return "Windows"
+        if platform == "darwin":
+            return "macOS"
+        if platform.startswith("linux"):
+            return "Linux"
+        return platform or "系统未知"
