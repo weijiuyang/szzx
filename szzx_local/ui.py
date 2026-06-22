@@ -475,7 +475,7 @@ class VersionDialog(QDialog):
         layout.addWidget(_label("数智中心", "appTitle"))
         layout.addWidget(_label(f"当前版本：v{APP_VERSION}", "muted"))
         layout.addWidget(_label("更新方式：本地 / 局域网", "muted"))
-        layout.addWidget(_label("打开「局域网」面板，可以查看同事电脑的系统和版本号。", "muted"))
+        layout.addWidget(_label("打开「局域网」面板，可以从同系统、高版本同事电脑下载安装包。", "muted"))
 
 
 class NextWeekRosterDialog(QDialog):
@@ -2072,6 +2072,7 @@ class MainWindow(QMainWindow):
         panel_layout.setSpacing(14)
         panel_layout.addWidget(_label("在线同事", "eyebrow"))
         self.peer_list = QListWidget()
+        self.peer_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         panel_layout.addWidget(self.peer_list)
         outer.addWidget(panel)
         return page
@@ -2396,7 +2397,62 @@ class MainWindow(QMainWindow):
             return
         for peer in peers:
             seen = peer.last_seen.strftime("%H:%M:%S")
-            self.peer_list.addItem(QListWidgetItem(self._peer_list_text(peer, seen)))
+            self._add_peer_card(peer, seen)
+
+    def _add_peer_card(self, peer: LanPeer, seen: str) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+
+        body = QVBoxLayout()
+        body.setSpacing(5)
+        body.addWidget(_label(peer.name, "memberName"))
+        body.addWidget(_label(self._peer_list_text(peer, seen), "muted"))
+        layout.addLayout(body, 1)
+
+        if self._peer_has_lan_update(peer):
+            download = QPushButton("下载更新")
+            download.setObjectName("primaryButton")
+            download.clicked.connect(lambda checked=False, selected=peer: self._download_lan_update(selected))
+            layout.addWidget(download)
+        elif peer.platform == sys.platform and peer.app_version and version_tuple(peer.app_version) > version_tuple(APP_VERSION):
+            unavailable = QPushButton("无安装包")
+            unavailable.setEnabled(False)
+            layout.addWidget(unavailable)
+
+        item.setSizeHint(QSize(0, 92))
+        self.peer_list.addItem(item)
+        self.peer_list.setItemWidget(item, card)
+
+    def _peer_has_lan_update(self, peer: LanPeer) -> bool:
+        return (
+            peer.platform == sys.platform
+            and bool(peer.update_package)
+            and bool(peer.app_version)
+            and version_tuple(peer.app_version) > version_tuple(APP_VERSION)
+        )
+
+    def _download_lan_update(self, peer: LanPeer) -> None:
+        if self.discovery is None:
+            return
+        if QMessageBox.question(
+            self,
+            "下载局域网更新",
+            f"从 {peer.name} 下载 v{peer.app_version} 安装包吗？\n\n下载后需要手动关闭当前程序并运行安装包。",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            target = self.discovery.download_update_package(peer, Path.home() / "Downloads")
+        except Exception as exc:
+            QMessageBox.warning(self, "下载失败", str(exc))
+            return
+        message = f"安装包已保存到：\n{target}\n\n是否现在打开？"
+        if QMessageBox.question(self, "下载完成", message) == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
     def _peer_list_text(self, peer: LanPeer, seen: str) -> str:
         platform = self._platform_label(peer.platform)
@@ -2404,12 +2460,24 @@ class MainWindow(QMainWindow):
         status = ""
         if peer.platform == sys.platform and peer.app_version:
             if version_tuple(peer.app_version) > version_tuple(APP_VERSION):
-                status = " · 可局域网更新"
+                status = " · 可局域网更新" if peer.update_package else " · 高版本但未共享安装包"
             elif version_tuple(peer.app_version) < version_tuple(APP_VERSION):
                 status = " · 对方版本较低"
         elif peer.platform and peer.platform != sys.platform:
             status = " · 不同系统"
-        return f"{peer.name}\n{peer.address} · {platform} · {version} · {seen}{status}"
+        package = peer.update_package
+        package_text = ""
+        if package:
+            package_text = f" · {package.get('name', '安装包')} · {self._format_size(int(package.get('size', 0) or 0))}"
+        return f"{peer.address} · {platform} · {version} · {seen}{status}{package_text}"
+
+    def _format_size(self, size: int) -> str:
+        value = float(size)
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+        return f"{size} B"
 
     def _platform_label(self, platform: str) -> str:
         if platform == "win32":

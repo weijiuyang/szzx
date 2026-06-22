@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import struct
 import sys
@@ -8,6 +9,7 @@ import threading
 import zlib
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -20,6 +22,8 @@ LAN_PORT = 45454
 SYNC_TCP_PORT = 45455
 APP_PROTOCOL = "szzx-local-desk"
 SNAPSHOT_MAGIC = b"SZZXSNAP1\n"
+PACKAGE_MAGIC = b"SZZXPKG01\n"
+PACKAGE_ENV = "SZZX_UPDATE_PACKAGE"
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,7 @@ class LanPeer:
     sync: dict[str, Any]
     app_version: str
     platform: str
+    update_package: dict[str, Any]
 
 
 class LanDiscovery(QObject):
@@ -47,6 +52,7 @@ class LanDiscovery(QObject):
         self.db = db
         self.peers: dict[str, LanPeer] = {}
         self.server_socket: socket.socket | None = None
+        self.update_package_path = self._find_update_package()
 
         self.listen_socket = QUdpSocket(self)
         self.send_socket = QUdpSocket(self)
@@ -93,6 +99,7 @@ class LanDiscovery(QObject):
             "sync": self.db.sync_state() if self.db is not None else {},
             "app_version": APP_VERSION,
             "platform": sys.platform,
+            "update_package": self._update_package_info(),
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_socket.writeDatagram(data, QHostAddress.SpecialAddress.Broadcast, self.port)
@@ -109,6 +116,7 @@ class LanDiscovery(QObject):
             "sync": self.db.sync_state(),
             "app_version": APP_VERSION,
             "platform": sys.platform,
+            "update_package": self._update_package_info(),
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_socket.writeDatagram(data, QHostAddress.SpecialAddress.Broadcast, self.port)
@@ -140,7 +148,10 @@ class LanDiscovery(QObject):
         with client:
             client.settimeout(3)
             try:
-                request = client.recv(len(SNAPSHOT_MAGIC))
+                request = self._recv_exact(client, len(SNAPSHOT_MAGIC))
+                if request == PACKAGE_MAGIC:
+                    self._send_update_package(client)
+                    return
                 if request != SNAPSHOT_MAGIC or self.db is None:
                     return
                 data = zlib.compress(
@@ -150,6 +161,69 @@ class LanDiscovery(QObject):
                 client.sendall(data)
             except OSError:
                 return
+
+    def _find_update_package(self) -> Path | None:
+        override = os.environ.get(PACKAGE_ENV, "").strip()
+        candidates: list[Path] = []
+        if override:
+            candidates.append(Path(override))
+
+        cwd = Path.cwd()
+        if sys.platform == "win32":
+            candidates.extend([
+                cwd / "dist" / "SZZXLocalDesk.exe",
+                Path(sys.executable),
+            ])
+        elif sys.platform == "darwin":
+            candidates.extend([
+                cwd / "dist" / "SZZXLocalDesk-mac.dmg",
+                cwd / "dist" / "SZZXLocalDesk.app.zip",
+            ])
+        else:
+            candidates.extend([
+                cwd / "dist" / "SZZXLocalDesk",
+                Path(sys.executable),
+            ])
+
+        for path in candidates:
+            try:
+                if path.is_file() and path.stat().st_size > 0:
+                    return path
+            except OSError:
+                continue
+        return None
+
+    def _update_package_info(self) -> dict[str, Any]:
+        path = self.update_package_path
+        if path is None:
+            return {}
+        try:
+            stat = path.stat()
+        except OSError:
+            return {}
+        return {
+            "name": path.name,
+            "size": stat.st_size,
+            "version": APP_VERSION,
+            "platform": sys.platform,
+        }
+
+    def _send_update_package(self, client: socket.socket) -> None:
+        path = self.update_package_path
+        if path is None or not path.is_file():
+            client.sendall(struct.pack("!Q", 0))
+            return
+        info = self._update_package_info()
+        metadata = json.dumps(info, ensure_ascii=False).encode("utf-8")
+        client.sendall(struct.pack("!Q", len(metadata)))
+        client.sendall(metadata)
+        client.sendall(struct.pack("!Q", int(info.get("size", 0))))
+        with path.open("rb") as file:
+            while True:
+                chunk = file.read(1024 * 1024)
+                if not chunk:
+                    break
+                client.sendall(chunk)
 
     def _read_pending(self) -> None:
         changed = False
@@ -198,6 +272,7 @@ class LanDiscovery(QObject):
             sync=sync,
             app_version=str(payload.get("app_version") or ""),
             platform=str(payload.get("platform") or ""),
+            update_package=payload.get("update_package") if isinstance(payload.get("update_package"), dict) else {},
         )
         self.peers[device_id] = peer
         if kind == "db_state":
@@ -233,6 +308,43 @@ class LanDiscovery(QObject):
                 raise ValueError("snapshot too large")
             data = self._recv_exact(client, size)
         return json.loads(zlib.decompress(data).decode("utf-8"))
+
+    def download_update_package(self, peer: LanPeer, target_dir: Path) -> Path:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with socket.create_connection((peer.address, peer.sync_port), timeout=3) as client:
+            client.settimeout(30)
+            client.sendall(PACKAGE_MAGIC)
+            metadata_size = struct.unpack("!Q", self._recv_exact(client, 8))[0]
+            if metadata_size <= 0 or metadata_size > 64 * 1024:
+                raise ValueError("对方没有可下载的安装包。")
+            metadata = json.loads(self._recv_exact(client, metadata_size).decode("utf-8"))
+            if not isinstance(metadata, dict):
+                raise ValueError("安装包信息格式不正确。")
+            package_size = struct.unpack("!Q", self._recv_exact(client, 8))[0]
+            if package_size <= 0 or package_size > 500 * 1024 * 1024:
+                raise ValueError("安装包大小异常。")
+            filename = Path(str(metadata.get("name") or "SZZXLocalDesk-update")).name
+            target = self._unique_target(target_dir / filename)
+            remaining = package_size
+            with target.open("wb") as file:
+                while remaining > 0:
+                    chunk = client.recv(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise OSError("连接中断，安装包没有下载完整。")
+                    file.write(chunk)
+                    remaining -= len(chunk)
+        return target
+
+    def _unique_target(self, target: Path) -> Path:
+        if not target.exists():
+            return target
+        stem = target.stem or "SZZXLocalDesk-update"
+        suffix = target.suffix
+        for index in range(1, 1000):
+            candidate = target.with_name(f"{stem}-{index}{suffix}")
+            if not candidate.exists():
+                return candidate
+        return target.with_name(f"{stem}-{datetime.now().strftime('%Y%m%d%H%M%S')}{suffix}")
 
     def _recv_exact(self, client: socket.socket, size: int) -> bytes:
         chunks: list[bytes] = []

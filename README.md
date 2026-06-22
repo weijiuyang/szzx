@@ -100,7 +100,14 @@ Pushing a git tag like `v0.1.1` also publishes a release automatically.
 
 For local Windows distribution, build `dist\SZZXLocalDesk.exe` on one Windows
 machine, then share that exe inside the LAN. The app shows peer versions in the
-LAN page, so users can see which same-OS machine has a newer build.
+LAN page. When a same-OS peer has a newer version and an update package, users
+can click `下载更新` to pull the installer from that peer into their Downloads
+folder.
+
+By default, Windows packaged builds share the running `SZZXLocalDesk.exe`.
+Development builds look for `dist/SZZXLocalDesk.exe` on Windows and
+`dist/SZZXLocalDesk-mac.dmg` on macOS. To force a specific package path, start
+the app with `SZZX_UPDATE_PACKAGE=/path/to/installer`.
 
 ## Share With The Department
 
