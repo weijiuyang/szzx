@@ -90,9 +90,9 @@ def _is_certificate_verify_error(exc: BaseException) -> bool:
 def _friendly_update_error(exc: BaseException) -> str:
     if isinstance(exc, HTTPError):
         if exc.code in (403, 401):
-            return "更新地址未授权访问。请确认腾讯云 COS 的 update.json 和 exe 已设置为公有读。"
+            return "更新地址未授权访问。请确认更新文件允许访问。"
         if exc.code == 404:
-            return "没有找到更新配置。请确认腾讯云 COS 已上传 windows/latest/update.json。"
+            return "没有找到更新配置。请确认更新配置文件已经放好。"
         return f"更新服务返回 HTTP {exc.code}。请稍后再试。"
 
     text = str(exc)
@@ -101,5 +101,5 @@ def _friendly_update_error(exc: BaseException) -> str:
     if "Tunnel connection failed" in text:
         return "当前网络代理无法连接更新地址。请关闭代理或换一个网络后重试。"
     if "timed out" in text.lower():
-        return "检查更新超时。请确认网络可访问腾讯云 COS 后重试。"
+        return "检查更新超时。请确认网络可访问更新地址后重试。"
     return f"检查更新失败：{text}"

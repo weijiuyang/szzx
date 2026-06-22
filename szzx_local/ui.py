@@ -468,32 +468,8 @@ class VersionDialog(QDialog):
 
         layout.addWidget(_label("数智中心", "appTitle"))
         layout.addWidget(_label(f"当前版本：v{APP_VERSION}", "muted"))
-        update_url = configured_update_url()
-        self.status = _label(
-            f"更新地址：{update_url}" if update_url else "更新地址未配置",
-            "muted",
-        )
-        layout.addWidget(self.status)
-
-        check = QPushButton("检查更新")
-        check.setObjectName("primaryButton")
-        check.clicked.connect(self._check_update)
-        layout.addWidget(check)
-
-    def _check_update(self) -> None:
-        try:
-            info = check_for_update()
-        except Exception as exc:
-            QMessageBox.warning(self, "检查失败", str(exc))
-            return
-
-        if not info.is_newer:
-            QMessageBox.information(self, "已是最新", f"当前版本 v{APP_VERSION} 已是最新。")
-            return
-
-        message = f"发现新版本 v{info.latest_version}。\n\n{info.notes}\n\n是否打开下载地址？"
-        if QMessageBox.question(self, "发现新版本", message) == QMessageBox.StandardButton.Yes:
-            QDesktopServices.openUrl(QUrl(info.download_url))
+        layout.addWidget(_label("更新方式：本地 / 局域网", "muted"))
+        layout.addWidget(_label("打开「局域网」面板，可以查看同事电脑的系统和版本号。", "muted"))
 
 
 class NextWeekRosterDialog(QDialog):
@@ -784,6 +760,8 @@ class MainWindow(QMainWindow):
             button.setChecked(button_index == index)
 
     def _start_update_timer(self) -> None:
+        if not configured_update_url():
+            return
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(10 * 60 * 1000)
         self.update_timer.timeout.connect(self._auto_check_update)
@@ -863,9 +841,6 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(_label("新建项目", "eyebrow"))
         self.project_name = QLineEdit()
         self.project_name.setPlaceholderText("项目名称")
-        self.project_owner = QLineEdit()
-        self.project_owner.setPlaceholderText("负责人")
-        self.project_owner.setText(self.db.display_name())
         self.project_desc = QTextEdit()
         self.project_desc.setFixedHeight(120)
         self.project_desc.setPlaceholderText("项目目标、范围或当前阶段")
@@ -873,7 +848,6 @@ class MainWindow(QMainWindow):
         add_project.setObjectName("primaryButton")
         add_project.clicked.connect(self._create_project)
         left_layout.addWidget(self.project_name)
-        left_layout.addWidget(self.project_owner)
         left_layout.addWidget(self.project_desc)
         left_layout.addWidget(add_project)
         left_layout.addStretch()
@@ -1204,7 +1178,7 @@ class MainWindow(QMainWindow):
 
     def _create_project(self) -> None:
         name = self.project_name.text().strip()
-        owner = self.project_owner.text().strip() or self.db.display_name()
+        owner = self.db.display_name()
         description = self.project_desc.toPlainText().strip()
         if not name:
             QMessageBox.information(self, "项目名称为空", "先写项目名称。")

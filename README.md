@@ -98,49 +98,9 @@ release_notes: 本次更新说明
 The workflow creates release tag `v0.1.1` and uploads `SZZXLocalDesk.exe`.
 Pushing a git tag like `v0.1.1` also publishes a release automatically.
 
-Windows one-command publish to Tencent COS:
-
-```powershell
-$env:TENCENT_COS_SECRET_ID="..."
-$env:TENCENT_COS_SECRET_KEY="..."
-$env:TENCENT_COS_BUCKET="szzx-1375072173"
-$env:TENCENT_COS_REGION="ap-beijing"
-$env:TENCENT_COS_PUBLIC_BASE_URL="https://szzx-1375072173.cos.ap-beijing.myqcloud.com"
-
-.\scripts\publish_windows_cos.ps1 -Version "0.1.1" -Notes "本次更新说明"
-```
-
-The script runs `git pull`, builds `dist\SZZXLocalDesk.exe`, uploads:
-
-```text
-windows/latest/SZZXLocalDesk.exe
-windows/latest/update.json
-windows/<version>/SZZXLocalDesk.exe
-```
-
-The script publishes the latest Windows build and update manifest with
-object-level public read access:
-
-```text
-windows/latest/SZZXLocalDesk.exe
-windows/latest/update.json
-```
-
-The app compares `windows/latest/update.json` with `szzx_local/version.py`.
-When `version` is newer than the installed app version, the app opens the
-`download_url` for the user to download the Windows exe. Set
-`TENCENT_COS_PUBLIC_BASE_URL` to the COS public URL or a custom CDN domain, for
-example `https://szzx-1375072173.cos.ap-beijing.myqcloud.com`. The COS objects
-must be publicly readable, or fronted by a public CDN URL, for direct browser
-downloads to work. If COS returns 403, the upload itself may have succeeded but
-anonymous users cannot read the object yet.
-
-Before distributing the first Windows exe, set `DEFAULT_UPDATE_URL` in
-`szzx_local/update_config.py` to:
-
-```text
-https://szzx-1375072173.cos.ap-beijing.myqcloud.com/windows/latest/update.json
-```
+For local Windows distribution, build `dist\SZZXLocalDesk.exe` on one Windows
+machine, then share that exe inside the LAN. The app shows peer versions in the
+LAN page, so users can see which same-OS machine has a newer build.
 
 ## Share With The Department
 
