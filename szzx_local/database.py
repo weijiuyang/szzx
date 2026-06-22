@@ -474,6 +474,18 @@ class Database:
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._daily_from_row(row) for row in rows[:limit]]
 
+    def delete_daily_report(self, report_id: int, mine_only: bool = True) -> bool:
+        rows = self.data["daily_reports"]
+        for index, row in enumerate(rows):
+            if int(row["id"]) != report_id:
+                continue
+            if mine_only and not self.is_current_user_name(str(row.get("member_name", ""))):
+                return False
+            del rows[index]
+            self._save()
+            return True
+        return False
+
     def _daily_from_row(self, row: dict[str, Any]) -> DailyReport:
         return DailyReport(
             id=int(row["id"]),

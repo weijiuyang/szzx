@@ -295,7 +295,7 @@ class PinDialog(QDialog):
         super().__init__()
         self.db = db
         self.setWindowTitle("数智中心")
-        self.setFixedWidth(410)
+        self.setFixedWidth(470)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.setStyleSheet(APP_STYLE)
 
@@ -306,6 +306,10 @@ class PinDialog(QDialog):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle = _label("安静地开始今天的记录", "muted")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pin_hint = _label("PIN 是本机本地密码，默认 1234。", "muted")
+        pin_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        setup_hint = _label("进入后请在左下角「名字/PIN」修改名字和 PIN。", "muted")
+        setup_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.pin_input = QLineEdit()
         self.pin_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -319,6 +323,8 @@ class PinDialog(QDialog):
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
+        layout.addWidget(pin_hint)
+        layout.addWidget(setup_hint)
         layout.addWidget(self.pin_input)
         layout.addWidget(unlock)
         self.pin_input.setFocus()
@@ -336,7 +342,7 @@ class SettingsDialog(QDialog):
         super().__init__()
         self.db = db
         self.peers = peers or []
-        self.setWindowTitle("设置")
+        self.setWindowTitle("名字和本地密码")
         self.setFixedWidth(420)
         self.setStyleSheet(APP_STYLE)
 
@@ -358,13 +364,13 @@ class SettingsDialog(QDialog):
         self.new_pin = QLineEdit()
         self.new_pin.setEchoMode(QLineEdit.EchoMode.Password)
         self.new_pin.setMaxLength(12)
-        self.new_pin.setPlaceholderText("留空则不修改")
+        self.new_pin.setPlaceholderText("本地密码，留空则不修改")
 
         save = QPushButton("保存")
         save.setObjectName("primaryButton")
         save.clicked.connect(self._save)
 
-        layout.addRow("新 PIN", self.new_pin)
+        layout.addRow("本地密码", self.new_pin)
         layout.addRow("", save)
 
     def _save(self) -> None:
@@ -747,7 +753,7 @@ class MainWindow(QMainWindow):
         pet_button.clicked.connect(self._open_pet)
         version = QPushButton("版本")
         version.clicked.connect(self._open_version)
-        settings = QPushButton("PIN")
+        settings = QPushButton("名字/PIN")
         settings.clicked.connect(self._open_settings)
         layout.addWidget(pet_button)
         layout.addWidget(version)
@@ -1398,6 +1404,7 @@ class MainWindow(QMainWindow):
                 report.created_at.strftime("%m-%d %H:%M"),
                 f"日报 · {report.member_name} / {report.role}",
                 report.content,
+                daily_report=report,
             )
 
     def _clear_project_workspace(self) -> None:
@@ -1485,6 +1492,7 @@ class MainWindow(QMainWindow):
         kind: str,
         content: str,
         document: ProjectDocument | None = None,
+        daily_report: DailyReport | None = None,
     ) -> None:
         item = QListWidgetItem()
         item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -1515,10 +1523,27 @@ class MainWindow(QMainWindow):
             actions.addWidget(open_button)
             actions.addWidget(download_button)
             layout.addLayout(actions)
+        elif daily_report is not None and self.db.is_current_user_name(daily_report.member_name):
+            actions = QHBoxLayout()
+            actions.setSpacing(8)
+            delete_button = QPushButton("删除")
+            delete_button.setObjectName("smallButton")
+            delete_button.clicked.connect(lambda checked=False, selected=daily_report: self._delete_daily_report(selected))
+            actions.addWidget(delete_button)
+            layout.addLayout(actions)
 
         item.setSizeHint(QSize(0, 78))
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
+
+    def _delete_daily_report(self, report: DailyReport) -> None:
+        message = f"确定删除 {report.created_at.strftime('%m-%d %H:%M')} 的开发日报吗？"
+        if QMessageBox.question(self, "删除日报", message) != QMessageBox.StandardButton.Yes:
+            return
+        if not self.db.delete_daily_report(report.id):
+            QMessageBox.warning(self, "删除失败", "只能删除自己的开发日报，或这条日报已经不存在。")
+            return
+        self._refresh_project_workspace()
 
     def _daily_feed_text(self, report: DailyReport) -> str:
         return (
