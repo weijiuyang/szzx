@@ -292,9 +292,10 @@ class PinDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, peers: list[LanPeer] | None = None) -> None:
         super().__init__()
         self.db = db
+        self.peers = peers or []
         self.setWindowTitle("设置")
         self.setFixedWidth(420)
         self.setStyleSheet(APP_STYLE)
@@ -302,10 +303,17 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
-        self.display_name = QLineEdit()
-        self.display_name.setMaxLength(32)
-        self.display_name.setText(self.db.display_name())
-        self.display_name.setPlaceholderText("显示给局域网同事的名字")
+        self.display_name: QLineEdit | None = None
+        if self.db.display_name_locked():
+            locked_name = _label(self.db.display_name(), "memberName")
+            locked_name.setToolTip("名字已经锁定")
+            layout.addRow("名字", locked_name)
+        else:
+            self.display_name = QLineEdit()
+            self.display_name.setMaxLength(32)
+            self.display_name.setText(self.db.display_name())
+            self.display_name.setPlaceholderText("显示给局域网同事的名字")
+            layout.addRow("名字", self.display_name)
 
         self.new_pin = QLineEdit()
         self.new_pin.setEchoMode(QLineEdit.EchoMode.Password)
@@ -316,16 +324,24 @@ class SettingsDialog(QDialog):
         save.setObjectName("primaryButton")
         save.clicked.connect(self._save)
 
-        layout.addRow("名字", self.display_name)
         layout.addRow("新 PIN", self.new_pin)
         layout.addRow("", save)
 
     def _save(self) -> None:
-        name = self.display_name.text().strip()
-        if not name:
-            QMessageBox.warning(self, "名字为空", "名字至少写一个字。")
-            return
-        self.db.set_display_name(name)
+        if self.display_name is not None:
+            name = self.display_name.text().strip()
+            if not name:
+                QMessageBox.warning(self, "名字为空", "名字至少写一个字。")
+                return
+            if name != self.db.display_name():
+                if self._online_name_owner(name) is not None or self.db.display_name_claim_owner(name) is not None:
+                    QMessageBox.warning(self, "名字已被使用", "这个名字已经被别人使用。")
+                    return
+                try:
+                    self.db.set_display_name(name)
+                except ValueError as exc:
+                    QMessageBox.warning(self, "不能改名", str(exc))
+                    return
 
         pin = self.new_pin.text().strip()
         if pin and len(pin) < 4:
@@ -334,6 +350,13 @@ class SettingsDialog(QDialog):
         if pin:
             self.db.change_pin(pin)
         self.accept()
+
+    def _online_name_owner(self, name: str) -> str | None:
+        target = " ".join(name.strip().split()).casefold()
+        for peer in self.peers:
+            if " ".join(peer.name.strip().split()).casefold() == target:
+                return peer.device_id
+        return None
 
 
 class PetDialog(QDialog):
@@ -1694,6 +1717,7 @@ class MainWindow(QMainWindow):
     def _refresh_home(self) -> None:
         reports = self.db.list_weekly_reports(limit=100)
         if not reports:
+            self.home_text.setPlainText("先积累几篇周报，这里会慢慢长出入职、升职、项目月份线和个人成长总结。")
             return
         happy = sum(1 for item in reports if item.mood == "happy")
         tired = sum(1 for item in reports if item.mood == "tired")
@@ -1706,7 +1730,8 @@ class MainWindow(QMainWindow):
         )
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.db)
+        peers = self.discovery.sorted_peers() if self.discovery is not None else []
+        dialog = SettingsDialog(self.db, peers)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self._refresh_identity()
             if self.discovery is not None:

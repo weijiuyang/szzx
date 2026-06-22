@@ -60,6 +60,7 @@ ProjectDeck = ProjectDocument
 @dataclass(frozen=True)
 class WeeklyReport:
     id: int
+    author: str
     content: str
     summary: str
     mood: str

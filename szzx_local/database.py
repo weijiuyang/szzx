@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import getpass
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -43,6 +44,7 @@ SHARED_TABLES = (
     "project_weekly_reports",
     "project_decks",
     "project_documents",
+    "name_claims",
     "counters",
 )
 
@@ -80,6 +82,7 @@ class Database:
             "project_weekly_reports": [],
             "project_decks": [],
             "project_documents": [],
+            "name_claims": [],
             "counters": {},
             "sync": {},
         }
@@ -91,12 +94,19 @@ class Database:
 
         if self.get_setting("pin_hash") is None:
             self.set_setting("pin_hash", hash_pin(DEFAULT_PIN), save=False)
+        if self.get_setting("mac_address") is None:
+            self.set_setting("mac_address", self._mac_address(), save=False)
         if self.get_setting("device_id") is None:
-            self.set_setting("device_id", uuid.uuid4().hex, save=False)
+            self.set_setting("device_id", self._stable_device_id(), save=False)
         if self.get_setting("display_name") is None:
             self.set_setting("display_name", self._default_display_name(), save=False)
+        if self.get_setting("display_name_locked") is None:
+            locked = "true" if self.display_name_aliases() else "false"
+            self.set_setting("display_name_locked", locked, save=False)
         self._remove_legacy_demo_project()
         self._migrate_project_decks()
+        self._migrate_weekly_report_owners()
+        self._claim_display_name(self.display_name(), save=False)
         self._ensure_sync_state()
         self._save(bump_sync=False)
 
@@ -155,22 +165,58 @@ class Database:
         value = self.get_setting("device_id")
         if value:
             return value
-        value = uuid.uuid4().hex
+        value = self._stable_device_id()
         self.set_setting("device_id", value)
+        return value
+
+    def mac_address(self) -> str:
+        value = self.get_setting("mac_address")
+        if value:
+            return value
+        value = self._mac_address()
+        self.set_setting("mac_address", value)
         return value
 
     def display_name(self) -> str:
         return self.get_setting("display_name") or self._default_display_name()
 
+    def display_name_locked(self) -> bool:
+        return self.get_setting("display_name_locked") == "true"
+
+    def display_name_claim_owner(self, name: str) -> str | None:
+        target = self._normalize_display_name(name)
+        if not target:
+            return None
+        for row in self.data.get("name_claims", []):
+            if not isinstance(row, dict):
+                continue
+            if self._normalize_display_name(str(row.get("name", ""))) != target:
+                continue
+            device_id = str(row.get("device_id", ""))
+            mac_address = str(row.get("mac_address", ""))
+            if device_id == self.device_id() or mac_address == self.mac_address():
+                continue
+            return device_id or mac_address or "unknown"
+        return None
+
     def set_display_name(self, name: str) -> None:
         previous = self.display_name()
         next_name = name.strip()
+        if self.display_name_locked() and next_name != previous:
+            raise ValueError("名字已经锁定，不能再次修改。")
+        if self.display_name_claim_owner(next_name) is not None:
+            raise ValueError("这个名字已经被别人使用。")
         if previous and previous != next_name:
             aliases = self.display_name_aliases()
             if previous not in aliases:
                 aliases.append(previous)
                 self.set_setting("display_name_aliases", json.dumps(aliases, ensure_ascii=False), save=False)
-        self.set_setting("display_name", next_name)
+            self.set_setting("display_name", next_name, save=False)
+            self.set_setting("display_name_locked", "true", save=False)
+            self._claim_display_name(next_name, save=False)
+            self._save()
+            return
+        self._claim_display_name(next_name)
 
     def display_name_aliases(self) -> list[str]:
         raw = self.get_setting("display_name_aliases")
@@ -203,6 +249,45 @@ class Database:
         if host:
             return f"{user}@{host}"
         return user
+
+    def _mac_address(self) -> str:
+        node = uuid.getnode()
+        return ":".join(f"{(node >> shift) & 0xff:02x}" for shift in range(40, -1, -8))
+
+    def _stable_device_id(self) -> str:
+        digest = hashlib.sha256(self._mac_address().encode("utf-8")).hexdigest()
+        return f"mac-{digest[:32]}"
+
+    def _normalize_display_name(self, name: str) -> str:
+        return " ".join(name.strip().split()).casefold()
+
+    def _claim_display_name(self, name: str, save: bool = True) -> None:
+        normalized = self._normalize_display_name(name)
+        if not normalized:
+            return
+        claims = self.data.setdefault("name_claims", [])
+        device_id = self.device_id()
+        mac_address = self.mac_address()
+        claims[:] = [
+            row
+            for row in claims
+            if not isinstance(row, dict)
+            or (
+                str(row.get("device_id", "")) != device_id
+                and str(row.get("mac_address", "")) != mac_address
+            )
+        ]
+        claims.append(
+            {
+                "name": name.strip(),
+                "normalized_name": normalized,
+                "device_id": device_id,
+                "mac_address": mac_address,
+                "claimed_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        if save:
+            self._save()
 
     def _remove_legacy_demo_project(self) -> None:
         legacy_project_ids = [
@@ -257,6 +342,13 @@ class Database:
                     "created_at": str(deck["created_at"]),
                 }
             )
+
+    def _migrate_weekly_report_owners(self) -> None:
+        for row in self.data.get("weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            row.setdefault("operator", self.display_name())
+            row.setdefault("operator_device_id", self.device_id())
 
     def add_project(self, name: str, owner: str, description: str, status: str = "推进中") -> Project:
         created_at = datetime.now()
@@ -543,7 +635,10 @@ class Database:
             return False
         for table in SHARED_TABLES:
             if table not in tables:
-                return False
+                if table == "name_claims":
+                    tables[table] = []
+                else:
+                    return False
         self._backup_before_sync()
         files = snapshot.get("files")
         if isinstance(files, dict):
@@ -560,6 +655,7 @@ class Database:
             "origin": str(sync.get("origin", "")),
             "actor": str(sync.get("actor", "")),
         }
+        self._claim_display_name(self.display_name(), save=False)
         self._save(bump_sync=False)
         return True
 
@@ -633,13 +729,26 @@ class Database:
         self._save()
         return self._weekly_from_row(row)
 
-    def list_weekly_reports(self, limit: int = 20) -> list[WeeklyReport]:
-        rows = sorted(self.data["weekly_reports"], key=lambda row: int(row["id"]), reverse=True)
+    def _is_current_user_row(self, row: dict[str, Any]) -> bool:
+        operator = str(row.get("operator", "")).strip()
+        device_id = str(row.get("operator_device_id", "")).strip()
+        if operator and self.is_current_user_name(operator):
+            return True
+        if device_id and device_id == self.device_id():
+            return True
+        return False
+
+    def list_weekly_reports(self, limit: int = 20, mine_only: bool = True) -> list[WeeklyReport]:
+        rows = list(self.data["weekly_reports"])
+        if mine_only:
+            rows = [row for row in rows if self._is_current_user_row(row)]
+        rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._weekly_from_row(row) for row in rows[:limit]]
 
     def _weekly_from_row(self, row: dict[str, Any]) -> WeeklyReport:
         return WeeklyReport(
             id=int(row["id"]),
+            author=str(row.get("operator", "")),
             content=str(row["content"]),
             summary=str(row["summary"]),
             mood=str(row["mood"]),
