@@ -1771,14 +1771,13 @@ class MainWindow(QMainWindow):
     def _weekly_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(42, 38, 42, 38)
-        outer.setSpacing(24)
+        outer.setContentsMargins(34, 22, 34, 30)
+        outer.setSpacing(12)
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
-        title_box.setSpacing(4)
+        title_box.setSpacing(0)
         title_box.addWidget(_label("周报", "sectionTitle"))
-        title_box.addWidget(_label("把工作留下来，其余交给安静的整理。", "muted"))
         header.addLayout(title_box)
         header.addStretch()
         mood_badge = _label("LOCAL AI", "eyebrow")
@@ -1787,7 +1786,7 @@ class MainWindow(QMainWindow):
         outer.addLayout(header)
 
         splitter = QSplitter()
-        outer.addWidget(splitter)
+        outer.addWidget(splitter, 1)
 
         editor_panel = _panel()
         editor_layout = QVBoxLayout(editor_panel)
