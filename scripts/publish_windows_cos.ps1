@@ -89,6 +89,7 @@ def upload_with_retry(local_path: str, key: str) -> None:
                     Bucket=os.environ["TENCENT_COS_BUCKET"],
                     Body=file,
                     Key=key,
+                    ACL="public-read",
                     EnableMD5=False,
                 )
             return

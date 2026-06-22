@@ -103,9 +103,9 @@ Windows one-command publish to Tencent COS:
 ```powershell
 $env:TENCENT_COS_SECRET_ID="..."
 $env:TENCENT_COS_SECRET_KEY="..."
-$env:TENCENT_COS_BUCKET="your-bucket-1250000000"
-$env:TENCENT_COS_REGION="ap-shanghai"
-$env:TENCENT_COS_PUBLIC_BASE_URL="https://your-public-download-domain"
+$env:TENCENT_COS_BUCKET="szzx-1375072173"
+$env:TENCENT_COS_REGION="ap-beijing"
+$env:TENCENT_COS_PUBLIC_BASE_URL="https://szzx-1375072173.cos.ap-beijing.myqcloud.com"
 
 .\scripts\publish_windows_cos.ps1 -Version "0.1.1" -Notes "本次更新说明"
 ```
@@ -118,7 +118,8 @@ windows/latest/update.json
 windows/<version>/SZZXLocalDesk.exe
 ```
 
-The script publishes the latest Windows build and update manifest:
+The script publishes the latest Windows build and update manifest with
+object-level public read access:
 
 ```text
 windows/latest/SZZXLocalDesk.exe
@@ -128,15 +129,17 @@ windows/latest/update.json
 The app compares `windows/latest/update.json` with `szzx_local/version.py`.
 When `version` is newer than the installed app version, the app opens the
 `download_url` for the user to download the Windows exe. Set
-`TENCENT_COS_PUBLIC_BASE_URL` to a custom CDN or custom COS domain, for example
-`https://download.example.com`. The COS objects must be publicly readable, or
-fronted by a public CDN URL, for direct browser downloads to work.
+`TENCENT_COS_PUBLIC_BASE_URL` to the COS public URL or a custom CDN domain, for
+example `https://szzx-1375072173.cos.ap-beijing.myqcloud.com`. The COS objects
+must be publicly readable, or fronted by a public CDN URL, for direct browser
+downloads to work. If COS returns 403, the upload itself may have succeeded but
+anonymous users cannot read the object yet.
 
 Before distributing the first Windows exe, set `DEFAULT_UPDATE_URL` in
 `szzx_local/update_config.py` to:
 
 ```text
-https://your-public-download-domain/windows/latest/update.json
+https://szzx-1375072173.cos.ap-beijing.myqcloud.com/windows/latest/update.json
 ```
 
 ## Share With The Department

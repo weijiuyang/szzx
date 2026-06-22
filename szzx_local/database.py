@@ -745,6 +745,18 @@ class Database:
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._weekly_from_row(row) for row in rows[:limit]]
 
+    def delete_weekly_report(self, report_id: int, mine_only: bool = True) -> bool:
+        rows = self.data["weekly_reports"]
+        for index, row in enumerate(rows):
+            if int(row["id"]) != report_id:
+                continue
+            if mine_only and not self._is_current_user_row(row):
+                return False
+            del rows[index]
+            self._save()
+            return True
+        return False
+
     def _weekly_from_row(self, row: dict[str, Any]) -> WeeklyReport:
         return WeeklyReport(
             id=int(row["id"]),

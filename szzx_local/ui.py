@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QComboBox,
@@ -1459,9 +1459,22 @@ class MainWindow(QMainWindow):
         self.summary.setPlaceholderText("AI 总结会显示在这里")
         self.history = QListWidget()
         self.history.itemClicked.connect(self._show_history_item)
+        self.history.currentItemChanged.connect(self._update_delete_weekly_enabled)
+        self.delete_weekly_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.history)
+        self.delete_weekly_shortcut.activated.connect(self._delete_selected_weekly_report)
+        self.backspace_weekly_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self.history)
+        self.backspace_weekly_shortcut.activated.connect(self._delete_selected_weekly_report)
         result_layout.addWidget(_label("AI 摘要", "eyebrow"))
         result_layout.addWidget(self.summary, 2)
-        result_layout.addWidget(_label("历史记录", "eyebrow"))
+        history_header = QHBoxLayout()
+        history_header.addWidget(_label("历史记录", "eyebrow"))
+        history_header.addStretch()
+        self.delete_weekly_button = QPushButton("删除")
+        self.delete_weekly_button.setObjectName("smallButton")
+        self.delete_weekly_button.setEnabled(False)
+        self.delete_weekly_button.clicked.connect(self._delete_selected_weekly_report)
+        history_header.addWidget(self.delete_weekly_button)
+        result_layout.addLayout(history_header)
         result_layout.addWidget(self.history, 1)
 
         splitter.addWidget(editor_panel)
@@ -1694,6 +1707,7 @@ class MainWindow(QMainWindow):
         self.history.clear()
         for report in self.db.list_weekly_reports():
             self._append_report(report)
+        self._update_delete_weekly_enabled()
         self._refresh_home()
 
     def _prepend_report(self, report: WeeklyReport) -> None:
@@ -1713,6 +1727,39 @@ class MainWindow(QMainWindow):
         if isinstance(report, WeeklyReport):
             self.summary.setPlainText(report.summary)
             self.pet.set_mood(report.mood)
+
+    def _update_delete_weekly_enabled(self, *_args: object) -> None:
+        if hasattr(self, "delete_weekly_button"):
+            self.delete_weekly_button.setEnabled(self.history.currentItem() is not None)
+
+    def _delete_selected_weekly_report(self) -> None:
+        item = self.history.currentItem()
+        if item is None:
+            return
+        report = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(report, WeeklyReport):
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "删除周报",
+            f"确定删除 {report.created_at.strftime('%Y-%m-%d %H:%M')} 的个人周报吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if not self.db.delete_weekly_report(report.id):
+            QMessageBox.warning(self, "删除失败", "没有找到这条周报，或当前用户不能删除它。")
+            return
+
+        row = self.history.row(item)
+        self.history.takeItem(row)
+        if self.summary.toPlainText() == report.summary:
+            self.summary.clear()
+        self._update_delete_weekly_enabled()
+        self._refresh_home()
 
     def _refresh_home(self) -> None:
         reports = self.db.list_weekly_reports(limit=100)
