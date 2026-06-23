@@ -611,10 +611,12 @@ class Database:
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._daily_from_row(row) for row in rows[:limit]]
 
-    def daily_report_counts_by_day(self) -> dict[date, int]:
+    def daily_report_counts_by_day(self, mine_only: bool = True) -> dict[date, int]:
         counts: dict[date, int] = {}
         for row in self.data["daily_reports"]:
             if not isinstance(row, dict):
+                continue
+            if mine_only and not self.is_current_user_name(str(row.get("member_name", ""))):
                 continue
             try:
                 day = _parse_time(str(row.get("created_at", ""))).date()
@@ -623,7 +625,7 @@ class Database:
             counts[day] = counts.get(day, 0) + 1
         return counts
 
-    def daily_reports_on_day(self, day: date) -> list[dict[str, Any]]:
+    def daily_reports_on_day(self, day: date, mine_only: bool = True) -> list[dict[str, Any]]:
         project_names = {
             int(row["id"]): str(row.get("name", "未知项目"))
             for row in self.data["projects"]
@@ -632,6 +634,8 @@ class Database:
         reports: list[dict[str, Any]] = []
         for row in self.data["daily_reports"]:
             if not isinstance(row, dict):
+                continue
+            if mine_only and not self.is_current_user_name(str(row.get("member_name", ""))):
                 continue
             try:
                 created_at = _parse_time(str(row.get("created_at", "")))
@@ -742,6 +746,16 @@ class Database:
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._todo_from_row(row) for row in rows]
 
+    def delete_project_todo(self, todo_id: int) -> bool:
+        rows = self.data["project_todos"]
+        for index, row in enumerate(rows):
+            if int(row["id"]) != todo_id:
+                continue
+            del rows[index]
+            self._save()
+            return True
+        return False
+
     def complete_project_todo(
         self,
         todo_id: int,
@@ -797,6 +811,16 @@ class Database:
         rows = [row for row in self.data["project_weekly_reports"] if int(row["project_id"]) == project_id]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._project_weekly_from_row(row) for row in rows[:limit]]
+
+    def delete_project_weekly_report(self, report_id: int) -> bool:
+        rows = self.data["project_weekly_reports"]
+        for index, row in enumerate(rows):
+            if int(row["id"]) != report_id:
+                continue
+            del rows[index]
+            self._save()
+            return True
+        return False
 
     def _project_weekly_from_row(self, row: dict[str, Any]) -> ProjectWeeklyReport:
         return ProjectWeeklyReport(
@@ -873,6 +897,21 @@ class Database:
             if int(row["id"]) == document_id:
                 return self._document_from_row(row)
         return None
+
+    def delete_project_document(self, document_id: int, uploader: str | None = None) -> bool:
+        rows = self.data["project_documents"]
+        for index, row in enumerate(rows):
+            if int(row["id"]) != document_id:
+                continue
+            if uploader is not None:
+                row_uploader = self._normalize_display_name(str(row.get("uploader", "")))
+                expected_uploader = self._normalize_display_name(uploader)
+                if row_uploader != expected_uploader:
+                    return False
+            del rows[index]
+            self._save()
+            return True
+        return False
 
     def _document_from_row(self, row: dict[str, Any]) -> ProjectDocument:
         return ProjectDocument(
@@ -1318,7 +1357,7 @@ class Database:
             if str(row.get("day")) != day_text:
                 continue
             if mine_only and not self._is_current_user_row(row):
-                return False
+                continue
             del rows[index]
             self._save()
             return True

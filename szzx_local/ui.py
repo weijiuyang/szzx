@@ -1632,7 +1632,7 @@ class MainWindow(QMainWindow):
         members = self.db.list_project_members(project.id)
         daily_reports = self.db.list_daily_reports(project.id)
         weekly_reports = self.db.list_project_weekly_reports(project.id)
-        documents = self.db.list_visible_project_documents(self.db.display_name(), project.id)
+        documents = self.db.list_project_documents(project.id)
         todos = self.db.list_project_todos(project.id)
         completed_todos = [
             todo
@@ -1691,41 +1691,41 @@ class MainWindow(QMainWindow):
             self._add_todo_card(todo, todo.title, can_update_todos)
 
         self.product_feed.clear()
-        product_items: list[tuple[str, str, str, str, ProjectDocument | None]] = []
-        if is_manager:
-            for member in members:
-                product_items.append(
-                    (
-                        member.created_at.isoformat(),
-                        member.created_at.strftime("%m-%d %H:%M"),
-                        "成员配置",
-                        f"{member.name} · {member.role}",
-                        None,
-                    )
+        product_items: list[tuple[str, str, str, str, ProjectDocument | None, tuple[str, int, str] | None]] = []
+        for member in members:
+            product_items.append(
+                (
+                    member.created_at.isoformat(),
+                    member.created_at.strftime("%m-%d %H:%M"),
+                    "成员配置",
+                    f"{member.name} · {member.role}",
+                    None,
+                    ("member", member.id, f"成员配置：{member.name}") if is_manager else None,
                 )
-            for report in weekly_reports:
-                product_items.append(
-                    (
-                        report.created_at.isoformat(),
-                        report.created_at.strftime("%m-%d %H:%M"),
-                        f"项目周报 · {report.author}",
-                        report.content,
-                        None,
-                    )
+            )
+        for report in weekly_reports:
+            product_items.append(
+                (
+                    report.created_at.isoformat(),
+                    report.created_at.strftime("%m-%d %H:%M"),
+                    f"项目周报 · {report.author}",
+                    report.content,
+                    None,
+                    ("project_weekly", report.id, "项目周报") if is_manager else None,
                 )
-            for document in documents:
-                product_items.append(
-                    (
-                        document.created_at.isoformat(),
-                        document.created_at.strftime("%m-%d %H:%M"),
-                        f"{document.doc_type} · {'团队' if document.visibility == 'team' else '本人'}",
-                        document.title,
-                        document,
-                    )
+            )
+        for document in documents:
+            product_items.append(
+                (
+                    document.created_at.isoformat(),
+                    document.created_at.strftime("%m-%d %H:%M"),
+                    f"{document.doc_type} · {'团队' if document.visibility == 'team' else '本人'}",
+                    document.title,
+                    document,
+                    ("document", document.id, f"文档：{document.title}") if is_manager else None,
                 )
+            )
         for todo in completed_todos:
-            if not is_manager and not self.db.is_current_user_name(todo.completed_by):
-                continue
             completed_at = todo.completed_at
             product_items.append(
                 (
@@ -1734,17 +1734,27 @@ class MainWindow(QMainWindow):
                     f"完成代办 · {todo.completed_by or '项目成员'}",
                     todo.title,
                     None,
+                    ("todo", todo.id, f"完成代办：{todo.title}") if is_manager else None,
                 )
             )
         if product_items:
-            for _, time_text, kind, content, document in sorted(product_items, reverse=True)[:5]:
-                self._add_feed_card(self.product_feed, time_text, kind, content, document)
+            for _, time_text, kind, content, document, progress_delete in sorted(product_items, reverse=True)[:5]:
+                self._add_feed_card(
+                    self.product_feed,
+                    time_text,
+                    kind,
+                    content,
+                    document,
+                    progress_delete=progress_delete,
+                    max_content_lines=None,
+                )
         else:
             self._add_feed_card(
                 self.product_feed,
                 "",
-                "权限说明",
-                "仅产品经理可查看项目周报、成员配置和汇报材料。",
+                "项目进展",
+                "还没有项目进展。",
+                max_content_lines=None,
             )
 
         self.developer_feed.clear()
@@ -1900,6 +1910,36 @@ class MainWindow(QMainWindow):
             return
         self._refresh_project_workspace()
 
+    def _delete_project_progress_item(self, payload: tuple[str, int, str]) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        if not self._can_manage_project(project, None):
+            QMessageBox.warning(self, "不能删除", "只有这个项目的产品经理或最高权限用户可以删除项目进展。")
+            return
+        item_type, record_id, label = payload
+        message = f"确定从项目进展流删除「{label}」吗？"
+        if QMessageBox.question(self, "删除项目进展", message) != QMessageBox.StandardButton.Yes:
+            return
+
+        deleted = False
+        if item_type == "member":
+            deleted = self.db.delete_project_member(record_id)
+        elif item_type == "project_weekly":
+            deleted = self.db.delete_project_weekly_report(record_id)
+        elif item_type == "document":
+            deleted = self.db.delete_project_document(record_id)
+        elif item_type == "todo":
+            deleted = self.db.delete_project_todo(record_id)
+
+        if not deleted:
+            QMessageBox.warning(self, "删除失败", "这条项目进展已经不存在。")
+            self._refresh_project_workspace()
+            return
+        self._refresh_project_workspace()
+        self._refresh_document_library()
+        self._announce_presence()
+
     def _add_member_card(self, member: ProjectMember) -> None:
         card = QWidget()
         card.setObjectName("compactMemberCard")
@@ -1970,6 +2010,7 @@ class MainWindow(QMainWindow):
         content: str,
         document: ProjectDocument | None = None,
         daily_report: DailyReport | None = None,
+        progress_delete: tuple[str, int, str] | None = None,
         height: int | None = None,
         min_content_lines: int = 1,
         max_content_lines: int | None = 2,
@@ -2004,6 +2045,28 @@ class MainWindow(QMainWindow):
             download_button.clicked.connect(lambda checked=False, selected=document: self._download_deck(selected))
             actions.addWidget(open_button)
             actions.addWidget(download_button)
+            if progress_delete is not None:
+                delete_button = QPushButton("删除")
+                delete_button.setObjectName("smallButton")
+                delete_button.clicked.connect(
+                    lambda checked=False, payload=progress_delete: self._delete_project_progress_item(payload)
+                )
+                actions.addWidget(delete_button)
+            elif self.db.is_current_user_name(document.uploader):
+                delete_button = QPushButton("删除")
+                delete_button.setObjectName("smallButton")
+                delete_button.clicked.connect(lambda checked=False, selected=document: self._delete_project_document(selected))
+                actions.addWidget(delete_button)
+            layout.addLayout(actions)
+        elif progress_delete is not None:
+            actions = QHBoxLayout()
+            actions.setSpacing(8)
+            delete_button = QPushButton("删除")
+            delete_button.setObjectName("smallButton")
+            delete_button.clicked.connect(
+                lambda checked=False, payload=progress_delete: self._delete_project_progress_item(payload)
+            )
+            actions.addWidget(delete_button)
             layout.addLayout(actions)
         elif daily_report is not None and self.db.is_current_user_name(daily_report.member_name):
             actions = QHBoxLayout()
@@ -2127,6 +2190,20 @@ class MainWindow(QMainWindow):
             return
         QMessageBox.information(self, "下载完成", f"文档已保存到：\n{target}")
 
+    def _delete_project_document(self, document: ProjectDocument) -> None:
+        if not self.db.is_current_user_name(document.uploader):
+            QMessageBox.warning(self, "不能删除", "只有上传这个文档的人可以删除。")
+            return
+        message = f"确定删除文档「{document.title}」吗？"
+        if QMessageBox.question(self, "删除文档", message) != QMessageBox.StandardButton.Yes:
+            return
+        if not self.db.delete_project_document(document.id, uploader=self.db.display_name()):
+            QMessageBox.warning(self, "删除失败", "只能删除自己上传的文档，或这条文档记录已经不存在。")
+            return
+        self._refresh_project_workspace()
+        self._refresh_document_library()
+        self._announce_presence()
+
     def _weekly_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
@@ -2202,7 +2279,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title_box.setSpacing(4)
         title_box.addWidget(_label("日历", "sectionTitle"))
-        title_box.addWidget(_label("按日期看休息安排，也能回看当天所有项目日报。", "muted"))
+        title_box.addWidget(_label("按日期看自己的休息安排，也能回看当天自己的项目日报。", "muted"))
         header.addLayout(title_box)
         header.addStretch()
         self.rest_calendar_mode_button = QPushButton("休息日历")
@@ -2414,14 +2491,14 @@ class MainWindow(QMainWindow):
         selected = self.selected_rest_day or date.today()
         reports = self.db.daily_reports_on_day(selected)
         self.daily_calendar_selected_label.setText(selected.strftime("%Y-%m-%d"))
-        self.daily_calendar_summary.setText(f"这天共有 {len(reports)} 篇项目日报。")
+        self.daily_calendar_summary.setText(f"这天你写了 {len(reports)} 篇项目日报。")
         self.daily_calendar_list.clear()
         if not reports:
             self._add_feed_card(
                 self.daily_calendar_list,
                 "",
                 "当日日报",
-                "这天还没有项目日报。",
+                "这天你还没有写项目日报。",
             )
             return
         for item in reports:
@@ -2726,6 +2803,11 @@ class MainWindow(QMainWindow):
             download_button.clicked.connect(lambda checked=False, selected=document: self._download_deck(selected))
             actions.addWidget(open_button)
             actions.addWidget(download_button)
+            if self.db.is_current_user_name(document.uploader):
+                delete_button = QPushButton("删除")
+                delete_button.setObjectName("smallButton")
+                delete_button.clicked.connect(lambda checked=False, selected=document: self._delete_project_document(selected))
+                actions.addWidget(delete_button)
             layout.addLayout(actions)
 
         item.setSizeHint(QSize(0, 82))
