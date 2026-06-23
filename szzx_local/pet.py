@@ -60,6 +60,7 @@ class DesktopPet(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.kind = "penguin"
         self.mood = "calm"
+        self.speech_text = ""
         self._drag_pos: QPoint | None = None
         self._tick = 0
         self._placed_once = False
@@ -68,9 +69,24 @@ class DesktopPet(QWidget):
         self.timer.timeout.connect(self._animate)
         self.timer.start(80)
 
+        self.speech_timer = QTimer(self)
+        self.speech_timer.setSingleShot(True)
+        self.speech_timer.timeout.connect(self._clear_speech)
+
     def set_mood(self, mood: str) -> None:
         self.mood = "sleepy" if mood == "tired" else mood if mood in PET_ACTIONS else "calm"
         self.update()
+
+    def speak(self, text: str, mood: str = "wave", duration_ms: int = 16000) -> None:
+        self.speech_text = text.strip()
+        self.set_mood(mood)
+        self.show()
+        if self.speech_text:
+            self.speech_timer.start(duration_ms)
+
+    def _clear_speech(self) -> None:
+        self.speech_text = ""
+        self.set_mood("calm")
 
     def set_kind(self, kind: str) -> None:
         kind = LEGACY_PET_KINDS.get(kind, kind)
@@ -125,6 +141,9 @@ class DesktopPet(QWidget):
             self._draw_missing_asset(painter)
             return
 
+        if self.speech_text:
+            self._draw_speech_bubble(painter)
+
         jump = 0
         breathe = math.sin(self._tick / 7) * 2.5
         tilt = math.sin(self._tick / 10) * 1.4
@@ -164,6 +183,25 @@ class DesktopPet(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(32, 28, 24, max(16, 36 - jump)))
         painter.drawEllipse(int((240 - width) / 2), 207, width, 16)
+
+    def _draw_speech_bubble(self, painter: QPainter) -> None:
+        rect = QRectF(16, 8, 208, 58)
+        painter.setPen(QPen(QColor("#d7ddd3"), 1))
+        painter.setBrush(QColor(255, 255, 250, 238))
+        painter.drawRoundedRect(rect, 10, 10)
+        tail = QPainterPath()
+        tail.moveTo(122, 65)
+        tail.lineTo(138, 80)
+        tail.lineTo(148, 64)
+        tail.closeSubpath()
+        painter.drawPath(tail)
+        painter.setPen(QPen(QColor("#263126"), 1))
+        painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        painter.drawText(
+            QRectF(28, 17, 184, 42),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap,
+            self.speech_text,
+        )
 
     def _pet_pixmap(self) -> QPixmap:
         if self.kind not in DesktopPet._pixmaps:

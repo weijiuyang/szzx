@@ -295,6 +295,7 @@ DOCUMENT_TYPES = [
     "其他",
 ]
 PROJECT_HERO_HEIGHT = 300
+SUPER_ADMIN_NAMES = {"尉久洋"}
 
 
 def _label(text: str, object_name: str | None = None) -> QLabel:
@@ -780,6 +781,8 @@ class MainWindow(QMainWindow):
         self._metric_labels: dict[str, QLabel] = {}
         self._update_worker: UpdateCheckWorker | None = None
         self._notified_update_version: str | None = None
+        self._last_daily_reminder_date: date | None = None
+        self._last_lan_update_reminder_at: datetime | None = None
         self.lan_view_mode = "peers"
         self.current_lan_peers: list[LanPeer] = []
         self.rest_calendar_month = date.today().replace(day=1)
@@ -822,6 +825,8 @@ class MainWindow(QMainWindow):
         self._refresh_rest_calendar()
         self._refresh_document_library()
         self._start_update_timer()
+        self._start_daily_report_reminder()
+        self._start_lan_update_reminder()
 
     def _sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -872,6 +877,50 @@ class MainWindow(QMainWindow):
         self.update_timer.start()
         QTimer.singleShot(10 * 1000, self._auto_check_update)
 
+    def _start_daily_report_reminder(self) -> None:
+        self.daily_reminder_timer = QTimer(self)
+        self.daily_reminder_timer.setInterval(60 * 1000)
+        self.daily_reminder_timer.timeout.connect(self._check_daily_report_reminder)
+        self.daily_reminder_timer.start()
+        QTimer.singleShot(5 * 1000, self._check_daily_report_reminder)
+
+    def _check_daily_report_reminder(self) -> None:
+        now = datetime.now()
+        today = now.date()
+        if now.hour < 18:
+            return
+        if self._last_daily_reminder_date == today:
+            return
+        if self.db.today_project_logs():
+            return
+        self._last_daily_reminder_date = today
+        self.pet.move_to_bottom_right()
+        self.pet.speak("18:00 到啦，今天还没写项目日报。先记一下今天做了什么吧。")
+
+    def _start_lan_update_reminder(self) -> None:
+        self.lan_update_reminder_timer = QTimer(self)
+        self.lan_update_reminder_timer.setInterval(5 * 60 * 1000)
+        self.lan_update_reminder_timer.timeout.connect(self._check_lan_update_reminder)
+        self.lan_update_reminder_timer.start()
+        QTimer.singleShot(20 * 1000, self._check_lan_update_reminder)
+
+    def _check_lan_update_reminder(self) -> None:
+        if self.discovery is None:
+            return
+        peers = [peer for peer in self.discovery.sorted_peers() if self._peer_has_lan_update(peer)]
+        if not peers:
+            return
+        now = datetime.now()
+        if (
+            self._last_lan_update_reminder_at is not None
+            and (now - self._last_lan_update_reminder_at).total_seconds() < 60 * 60
+        ):
+            return
+        self._last_lan_update_reminder_at = now
+        peer = max(peers, key=lambda item: version_tuple(item.app_version))
+        self.pet.move_to_bottom_right()
+        self.pet.speak(f"{peer.name} 那里有 v{peer.app_version} 更新包，可以去局域网下载更新。", mood="wave")
+
     def _auto_check_update(self) -> None:
         if self._update_worker is not None and self._update_worker.isRunning():
             return
@@ -918,6 +967,8 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
         title_box.addWidget(_label("项目面板", "sectionTitle"))
+        self.project_sync_hint = _label("项目数据会通过局域网同步。", "muted")
+        title_box.addWidget(self.project_sync_hint)
         header.addLayout(title_box)
         header.addStretch()
         show_page = QPushButton("自己")
@@ -936,7 +987,7 @@ class MainWindow(QMainWindow):
         header.addWidget(all_page)
         header.addWidget(config_page)
         refresh = QPushButton("刷新")
-        refresh.clicked.connect(self._load_projects)
+        refresh.clicked.connect(self._manual_project_refresh)
         header.addWidget(refresh)
         outer.addLayout(header)
 
@@ -1099,7 +1150,7 @@ class MainWindow(QMainWindow):
         self.member_name = QLineEdit()
         self.member_name.setPlaceholderText("姓名，例如 张三")
         self.member_role = QComboBox()
-        self.member_role.addItems(["前端开发", "后端开发", "测试", "产品经理", "设计", "运维"])
+        self.member_role.addItems(["前端开发", "后端开发", "数据开发", "测试", "产品经理", "设计", "运维"])
         self.add_member_button = QPushButton("添加成员")
         self.add_member_button.clicked.connect(self._add_project_member)
         member_form_layout.addWidget(self.member_name)
@@ -1306,6 +1357,33 @@ class MainWindow(QMainWindow):
         else:
             self.current_project_id = None
             self._clear_project_workspace()
+        self._update_project_sync_hint()
+
+    def _update_project_sync_hint(self, message: str | None = None) -> None:
+        if not hasattr(self, "project_sync_hint"):
+            return
+        total = len(self.db.list_projects())
+        visible = len(self._visible_projects())
+        scope = "全部" if getattr(self, "project_scope_value", "mine") == "all" else "自己"
+        base = f"{scope}视角：显示 {visible} / 本机已同步 {total} 个项目。"
+        self.project_sync_hint.setText(f"{message} · {base}" if message else base)
+
+    def _manual_project_refresh(self) -> None:
+        message = "已刷新本机项目。"
+        if self.discovery is not None:
+            self.discovery.announce()
+            self.discovery.broadcast_database()
+            changed_count, failed_count = self.discovery.pull_all_peer_snapshots()
+            if changed_count:
+                message = f"已从 {changed_count} 位同事同步新数据。"
+            elif failed_count:
+                message = f"刷新完成，但有 {failed_count} 位同事连接失败。"
+            else:
+                message = "刷新完成，没有发现比本机更新的数据。"
+        self._refresh_after_lan_sync()
+        if self.discovery is not None:
+            self._refresh_peers(self.discovery.sorted_peers())
+        self._update_project_sync_hint(message)
 
     def _visible_projects(self) -> list[Project]:
         projects = self.db.list_projects()
@@ -1332,7 +1410,7 @@ class MainWindow(QMainWindow):
         if index == 1:
             project = self._current_project()
             if project is None or not self._can_manage_project(project, None):
-                QMessageBox.information(self, "不能配置", "只有这个项目的负责人可以配置成员。")
+                QMessageBox.information(self, "不能配置", "只有这个项目的负责人或最高权限用户可以配置成员。")
                 index = 0
         if hasattr(self, "project_side_stack"):
             self.project_side_stack.setCurrentIndex(index)
@@ -1385,7 +1463,7 @@ class MainWindow(QMainWindow):
         if project is None:
             return
         if not self._can_manage_project(project, None):
-            QMessageBox.warning(self, "不能配置", "只有这个项目的负责人可以添加成员。")
+            QMessageBox.warning(self, "不能配置", "只有这个项目的负责人或最高权限用户可以添加成员。")
             return
         name = self.member_name.text().strip()
         role = self.member_role.currentText().strip()
@@ -1401,7 +1479,7 @@ class MainWindow(QMainWindow):
         if project is None:
             return
         if not self._can_manage_project(project, None):
-            QMessageBox.warning(self, "不能保存", "只有这个项目的负责人可以编辑项目简介。")
+            QMessageBox.warning(self, "不能保存", "只有这个项目的负责人或最高权限用户可以编辑项目简介。")
             return
         description = self.config_project_description.toPlainText().strip()
         if not description:
@@ -1419,7 +1497,7 @@ class MainWindow(QMainWindow):
         if project is None:
             return
         if not self._can_manage_project(project, None):
-            QMessageBox.warning(self, "不能删除", "只有这个项目的负责人可以删除项目。")
+            QMessageBox.warning(self, "不能删除", "只有这个项目的负责人或最高权限用户可以删除项目。")
             return
         message = f"确定删除项目「{project.name}」吗？\n\n项目成员、代办、日报、项目周报和文档记录都会一起删除。"
         if QMessageBox.question(self, "删除项目", message) != QMessageBox.StandardButton.Yes:
@@ -1740,6 +1818,8 @@ class MainWindow(QMainWindow):
         return None
 
     def _can_manage_project(self, project: Project, member: ProjectMember | None) -> bool:
+        if self.db.display_name() in SUPER_ADMIN_NAMES:
+            return True
         return self.db.is_current_user_name(project.owner)
 
     def _clear_layout(self, layout: QGridLayout) -> None:
@@ -1795,7 +1875,7 @@ class MainWindow(QMainWindow):
         if project is None:
             return
         if not self._can_manage_project(project, None):
-            QMessageBox.warning(self, "不能配置", "只有这个项目的负责人可以删除成员。")
+            QMessageBox.warning(self, "不能配置", "只有这个项目的负责人或最高权限用户可以删除成员。")
             return
         if self.db.is_current_user_name(member.name) or member.name == project.owner:
             QMessageBox.information(self, "不能删除", "负责人不能从项目成员里删除。")
@@ -2331,7 +2411,7 @@ class MainWindow(QMainWindow):
         header.addWidget(self.lan_peers_button)
         header.addWidget(self.lan_logs_button)
         refresh = QPushButton("刷新")
-        refresh.clicked.connect(self._announce_presence)
+        refresh.clicked.connect(self._manual_lan_refresh)
         header.addWidget(refresh)
         outer.addLayout(header)
 
@@ -2643,6 +2723,22 @@ class MainWindow(QMainWindow):
             self.discovery.announce()
             self.discovery.broadcast_database()
 
+    def _manual_lan_refresh(self) -> None:
+        if self.discovery is None:
+            self.lan_subtitle.setText("局域网发现没有启动。")
+            return
+        self.discovery.announce()
+        self.discovery.broadcast_database()
+        changed_count, failed_count = self.discovery.pull_all_peer_snapshots()
+        self._refresh_after_lan_sync()
+        self._refresh_peers(self.discovery.sorted_peers())
+        if changed_count:
+            self.lan_subtitle.setText(f"已从 {changed_count} 位同事同步新数据。")
+        elif failed_count:
+            self.lan_subtitle.setText(f"刷新完成，但有 {failed_count} 位同事连接失败。")
+        else:
+            self.lan_subtitle.setText("刷新完成，没有发现比本机更新的数据。")
+
     def _refresh_after_lan_sync(self) -> None:
         self._load_projects()
         self._load_reports()
@@ -2667,6 +2763,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "peer_list"):
             return
         self.current_lan_peers = peers
+        self._check_lan_update_reminder()
         if self.lan_view_mode == "logs":
             self._refresh_lan_logs(peers)
             return

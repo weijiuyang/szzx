@@ -36,6 +36,7 @@ APP_DIR = _default_app_dir()
 DB_PATH = APP_DIR / "szzx.json"
 LEGACY_DEMO_PROJECT_NAME = "GEO文库"
 LEGACY_DEMO_PROJECT_DESCRIPTION = "面向 GEO 内容沉淀、检索和复用的项目工作台。"
+PROJECT_ID_TIMESTAMP_FLOOR = 20000101000000000
 SHARED_TABLES = (
     "weekly_reports",
     "projects",
@@ -109,6 +110,7 @@ class Database:
             self.set_setting("display_name_locked", locked, save=False)
         self._remove_legacy_demo_project()
         self._migrate_project_decks()
+        self._migrate_project_ids_to_timestamps()
         self._migrate_weekly_report_owners()
         self._claim_display_name(self.display_name(), save=False)
         self._ensure_sync_state()
@@ -143,6 +145,26 @@ class Database:
         current = int(counters.get(table, 0)) + 1
         counters[table] = current
         return current
+
+    def _next_project_id(self, created_at: datetime) -> int:
+        base = int(created_at.strftime("%Y%m%d%H%M%S")) * 1000 + created_at.microsecond // 1000
+        existing_ids = {
+            int(row.get("id", 0) or 0)
+            for row in self.data.get("projects", [])
+            if isinstance(row, dict)
+        }
+        project_id = base
+        while project_id in existing_ids:
+            project_id += 1
+        counters = self.data.setdefault("counters", {})
+        counters["projects"] = max(int(counters.get("projects", 0) or 0), project_id)
+        return project_id
+
+    def _is_timestamp_project_id(self, value: Any) -> bool:
+        try:
+            return int(value) >= PROJECT_ID_TIMESTAMP_FLOOR
+        except (TypeError, ValueError):
+            return False
 
     def _with_operator(self, row: dict[str, Any]) -> dict[str, Any]:
         row["operator"] = self.display_name()
@@ -373,6 +395,59 @@ class Database:
                 }
             )
 
+    def _migrate_project_ids_to_timestamps(self) -> None:
+        projects = self.data.get("projects", [])
+        if not isinstance(projects, list):
+            return
+        id_map: dict[int, int] = {}
+        for row in projects:
+            if not isinstance(row, dict):
+                continue
+            try:
+                old_id = int(row.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if self._is_timestamp_project_id(old_id):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                created_at = datetime.now()
+            new_id = self._next_project_id(created_at)
+            if new_id == old_id:
+                continue
+            row["id"] = new_id
+            row.setdefault("legacy_project_id", old_id)
+            row.setdefault("source_device_id", str(row.get("operator_device_id") or self.device_id()))
+            row.setdefault("source_id", str(old_id))
+            id_map[old_id] = new_id
+
+        if not id_map:
+            self._sync_counters_to_rows()
+            return
+
+        for table in (
+            "project_members",
+            "daily_reports",
+            "project_weekly_reports",
+            "project_decks",
+            "project_documents",
+            "project_todos",
+        ):
+            rows = self.data.get(table, [])
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    old_project_id = int(row.get("project_id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if old_project_id in id_map:
+                    row["project_id"] = id_map[old_project_id]
+        self._sync_counters_to_rows()
+
     def _migrate_weekly_report_owners(self) -> None:
         for row in self.data.get("weekly_reports", []):
             if not isinstance(row, dict):
@@ -383,7 +458,7 @@ class Database:
     def add_project(self, name: str, owner: str, description: str, status: str = "推进中") -> Project:
         created_at = datetime.now()
         row = self._with_operator({
-            "id": self._next_id("projects"),
+            "id": self._next_project_id(created_at),
             "name": name.strip(),
             "owner": owner.strip(),
             "description": description.strip(),
@@ -789,8 +864,8 @@ class Database:
     def remote_sync_is_newer(self, sync: dict[str, Any]) -> bool:
         return self._remote_sync_key(sync) > self._local_sync_key()
 
-    def apply_shared_snapshot(self, snapshot: dict[str, Any]) -> bool:
-        if not self._is_remote_snapshot_newer(snapshot):
+    def apply_shared_snapshot(self, snapshot: dict[str, Any], force: bool = False) -> bool:
+        if not force and not self._is_remote_snapshot_newer(snapshot):
             return False
         tables = snapshot.get("tables")
         sync = snapshot.get("sync")
@@ -821,6 +896,201 @@ class Database:
         self._claim_display_name(self.display_name(), save=False)
         self._save(bump_sync=False)
         return True
+
+    def merge_missing_shared_snapshot(self, snapshot: dict[str, Any]) -> bool:
+        tables = snapshot.get("tables")
+        if not isinstance(tables, dict):
+            return False
+        changed = False
+        project_id_map, projects_changed = self._merge_remote_projects(tables.get("projects"))
+        changed = changed or projects_changed
+        for table in SHARED_TABLES:
+            if table in {"projects", "counters"}:
+                continue
+            if self._merge_remote_table(table, tables.get(table), project_id_map):
+                changed = True
+        if not changed:
+            return False
+        files = snapshot.get("files")
+        if isinstance(files, dict):
+            self._restore_document_files(self.data, files)
+        self._sync_counters_to_rows()
+        self._save()
+        return True
+
+    def _merge_remote_projects(self, remote_value: Any) -> tuple[dict[int, int], bool]:
+        project_id_map: dict[int, int] = {}
+        changed = False
+        local_projects = self.data.get("projects")
+        if not isinstance(remote_value, list) or not isinstance(local_projects, list):
+            return project_id_map, changed
+        existing_sources = self._source_index("projects")
+        existing_ids = self._id_index("projects")
+        for row in remote_value:
+            if not isinstance(row, dict):
+                continue
+            try:
+                remote_id = int(row.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            source = self._row_source_key(row)
+            if source and source in existing_sources:
+                project_id_map[remote_id] = int(existing_sources[source].get("id", remote_id))
+                continue
+            existing = existing_ids.get(remote_id)
+            if existing is not None and self._rows_match(existing, row):
+                self._remember_row_source(existing, row)
+                project_id_map[remote_id] = remote_id
+                continue
+            next_row = dict(row)
+            self._remember_row_source(next_row, row)
+            if existing is not None:
+                try:
+                    next_created_at = _parse_time(str(next_row.get("created_at", "")))
+                except ValueError:
+                    next_created_at = datetime.now()
+                next_row["id"] = self._next_project_id(next_created_at)
+            local_projects.append(next_row)
+            project_id_map[remote_id] = int(next_row["id"])
+            changed = True
+        return project_id_map, changed
+
+    def _merge_remote_table(self, table: str, remote_value: Any, project_id_map: dict[int, int]) -> bool:
+        local_value = self.data.get(table)
+        if isinstance(self._empty_data()[table], dict):
+            if not isinstance(remote_value, dict) or not isinstance(local_value, dict):
+                return False
+            changed = False
+            for key, value in remote_value.items():
+                try:
+                    remote_int = int(value)
+                except (TypeError, ValueError):
+                    continue
+                local_int = int(local_value.get(key, 0) or 0)
+                if remote_int > local_int:
+                    local_value[key] = remote_int
+                    changed = True
+            return changed
+        if not isinstance(remote_value, list) or not isinstance(local_value, list):
+            return False
+        existing_sources = self._source_index(table)
+        existing_ids = self._id_index(table)
+        changed = False
+        for row in remote_value:
+            if not isinstance(row, dict):
+                continue
+            source = self._row_source_key(row)
+            if source and source in existing_sources:
+                continue
+            next_row = dict(row)
+            if "project_id" in next_row:
+                try:
+                    remote_project_id = int(next_row.get("project_id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                next_row["project_id"] = project_id_map.get(remote_project_id, remote_project_id)
+            key = self._shared_row_key(table, next_row)
+            if table == "name_claims":
+                existing_keys = {
+                    self._shared_row_key(table, item)
+                    for item in local_value
+                    if isinstance(item, dict)
+                }
+                if key in existing_keys:
+                    continue
+                local_value.append(next_row)
+                changed = True
+                continue
+            try:
+                row_id = int(next_row.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            existing = existing_ids.get(row_id)
+            if existing is not None and self._rows_match(existing, next_row):
+                self._remember_row_source(existing, row)
+                continue
+            self._remember_row_source(next_row, row)
+            if existing is not None:
+                next_row["id"] = self._next_id(table)
+            local_value.append(next_row)
+            changed = True
+        return changed
+
+    def _id_index(self, table: str) -> dict[int, dict[str, Any]]:
+        rows = self.data.get(table)
+        if not isinstance(rows, list):
+            return {}
+        index: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                index[int(row.get("id", 0) or 0)] = row
+            except (TypeError, ValueError):
+                continue
+        return index
+
+    def _source_index(self, table: str) -> dict[tuple[str, str], dict[str, Any]]:
+        rows = self.data.get(table)
+        if not isinstance(rows, list):
+            return {}
+        index: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            source = self._row_source_key(row)
+            if source:
+                index[source] = row
+        return index
+
+    def _row_source_key(self, row: dict[str, Any]) -> tuple[str, str] | None:
+        source_device = str(row.get("source_device_id") or row.get("operator_device_id") or "").strip()
+        source_id = str(row.get("source_id") or row.get("id") or "").strip()
+        if not source_device or not source_id:
+            return None
+        return source_device, source_id
+
+    def _remember_row_source(self, target: dict[str, Any], source: dict[str, Any]) -> None:
+        source_device = str(source.get("source_device_id") or source.get("operator_device_id") or "").strip()
+        source_id = str(source.get("source_id") or source.get("id") or "").strip()
+        if source_device and source_id:
+            target.setdefault("source_device_id", source_device)
+            target.setdefault("source_id", source_id)
+
+    def _rows_match(self, left: dict[str, Any], right: dict[str, Any]) -> bool:
+        ignored = {"source_device_id", "source_id"}
+        left_clean = {key: value for key, value in left.items() if key not in ignored}
+        right_clean = {key: value for key, value in right.items() if key not in ignored}
+        return left_clean == right_clean
+
+    def _sync_counters_to_rows(self) -> None:
+        counters = self.data.setdefault("counters", {})
+        for table in SHARED_TABLES:
+            rows = self.data.get(table)
+            if not isinstance(rows, list):
+                continue
+            max_id = 0
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    max_id = max(max_id, int(row.get("id", 0) or 0))
+                except (TypeError, ValueError):
+                    continue
+            if max_id:
+                counters[table] = max(int(counters.get(table, 0) or 0), max_id)
+
+    def _shared_row_key(self, table: str, row: dict[str, Any]) -> tuple[str, ...]:
+        if table == "name_claims":
+            return (
+                table,
+                str(row.get("device_id", "")),
+                str(row.get("mac_address", "")),
+                self._normalize_display_name(str(row.get("name", ""))),
+            )
+        if "id" in row:
+            return (table, str(row.get("id", "")))
+        return (table, json.dumps(row, ensure_ascii=False, sort_keys=True))
 
     def _backup_before_sync(self) -> None:
         backup_dir = self.path.parent / "backups"

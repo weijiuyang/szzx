@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.25",
+  "version": "0.1.35",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "日志视角支持点开成员查看全部项目日志，按日期倒序平铺展示多个项目的日志。",
+  "notes": "历史项目 ID 迁移为时间戳格式，并同步更新成员、日报、周报、代办和文档的项目关联。",
   "history": [
     {
-      "version": "0.1.25",
+      "version": "0.1.35",
       "date": "2026-06-23",
-      "notes": "日志视角支持点开成员查看全部项目日志，按日期倒序平铺展示多个项目的日志。"
+      "notes": "历史项目 ID 迁移为时间戳格式，并同步更新成员、日报、周报、代办和文档的项目关联。"
     }
   ]
 }

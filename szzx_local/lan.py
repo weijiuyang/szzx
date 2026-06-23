@@ -311,20 +311,45 @@ class LanDiscovery(QObject):
         for peer in list(self.peers.values()):
             self._pull_peer_snapshot_if_newer(peer)
 
+    def pull_all_peer_snapshots(self) -> tuple[int, int]:
+        changed_count = 0
+        failed_count = 0
+        for peer in list(self.peers.values()):
+            try:
+                changed = self._pull_peer_snapshot(peer, force=False)
+            except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                failed_count += 1
+                continue
+            if changed:
+                changed_count += 1
+        if changed_count:
+            self.data_synced.emit()
+        return changed_count, failed_count
+
     def _pull_peer_snapshot_if_newer(self, peer: LanPeer) -> None:
         if self.db is None:
             return
         if not peer.sync or not self.db.remote_sync_is_newer(peer.sync):
             return
+        changed = False
         try:
-            snapshot = self._fetch_snapshot(peer)
+            changed = self._pull_peer_snapshot(peer, force=False)
         except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
             return
-        if not isinstance(snapshot, dict):
-            return
-        changed = self.db.apply_shared_snapshot(snapshot)
         if changed:
             self.data_synced.emit()
+
+    def _pull_peer_snapshot(self, peer: LanPeer, force: bool = False) -> bool:
+        if self.db is None:
+            return False
+        snapshot = self._fetch_snapshot(peer)
+        if not isinstance(snapshot, dict):
+            return False
+        if self.db.apply_shared_snapshot(snapshot, force=force):
+            return True
+        if force:
+            return False
+        return self.db.merge_missing_shared_snapshot(snapshot)
 
     def _fetch_snapshot(self, peer: LanPeer) -> dict[str, Any]:
         with socket.create_connection((peer.address, peer.sync_port), timeout=1.5) as client:
