@@ -112,6 +112,7 @@ class Database:
         self._migrate_project_decks()
         self._migrate_project_ids_to_timestamps()
         self._migrate_weekly_report_owners()
+        self._migrate_weekly_ids_to_timestamps()
         self._claim_display_name(self.display_name(), save=False)
         self._ensure_sync_state()
         self._save(bump_sync=False)
@@ -159,6 +160,20 @@ class Database:
         counters = self.data.setdefault("counters", {})
         counters["projects"] = max(int(counters.get("projects", 0) or 0), project_id)
         return project_id
+
+    def _next_timestamp_id(self, table: str, created_at: datetime) -> int:
+        base = int(created_at.strftime("%Y%m%d%H%M%S")) * 1000 + created_at.microsecond // 1000
+        existing_ids = {
+            int(row.get("id", 0) or 0)
+            for row in self.data.get(table, [])
+            if isinstance(row, dict)
+        }
+        next_id = base
+        while next_id in existing_ids:
+            next_id += 1
+        counters = self.data.setdefault("counters", {})
+        counters[table] = max(int(counters.get(table, 0) or 0), next_id)
+        return next_id
 
     def _is_timestamp_project_id(self, value: Any) -> bool:
         try:
@@ -455,6 +470,31 @@ class Database:
             row.setdefault("operator", self.display_name())
             row.setdefault("operator_device_id", self.device_id())
 
+    def _migrate_weekly_ids_to_timestamps(self) -> None:
+        for table in ("weekly_reports", "project_weekly_reports"):
+            rows = self.data.get(table, [])
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    old_id = int(row.get("id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if self._is_timestamp_project_id(old_id):
+                    continue
+                try:
+                    created_at = _parse_time(str(row.get("created_at", "")))
+                except ValueError:
+                    created_at = datetime.now()
+                new_id = self._next_timestamp_id(table, created_at)
+                if new_id == old_id:
+                    continue
+                row["id"] = new_id
+                row.setdefault("legacy_id", old_id)
+        self._sync_counters_to_rows()
+
     def add_project(self, name: str, owner: str, description: str, status: str = "推进中") -> Project:
         created_at = datetime.now()
         row = self._with_operator({
@@ -570,6 +610,52 @@ class Database:
         rows = [row for row in self.data["daily_reports"] if int(row["project_id"]) == project_id]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._daily_from_row(row) for row in rows[:limit]]
+
+    def daily_report_counts_by_day(self) -> dict[date, int]:
+        counts: dict[date, int] = {}
+        for row in self.data["daily_reports"]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                day = _parse_time(str(row.get("created_at", ""))).date()
+            except ValueError:
+                continue
+            counts[day] = counts.get(day, 0) + 1
+        return counts
+
+    def daily_reports_on_day(self, day: date) -> list[dict[str, Any]]:
+        project_names = {
+            int(row["id"]): str(row.get("name", "未知项目"))
+            for row in self.data["projects"]
+            if isinstance(row, dict)
+        }
+        reports: list[dict[str, Any]] = []
+        for row in self.data["daily_reports"]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            if created_at.date() != day:
+                continue
+            try:
+                project_id = int(row.get("project_id", 0) or 0)
+            except (TypeError, ValueError):
+                project_id = 0
+            reports.append(
+                {
+                    "report": self._daily_from_row(row),
+                    "project_id": project_id,
+                    "project_name": project_names.get(project_id, "未知项目"),
+                    "member_name": str(row.get("member_name", "")),
+                    "role": str(row.get("role", "")),
+                    "content": str(row.get("content", "")),
+                    "created_at": created_at,
+                }
+            )
+        reports.sort(key=lambda item: item["created_at"], reverse=True)
+        return reports
 
     def today_project_logs(self, member_name: str | None = None) -> list[dict[str, Any]]:
         today = date.today()
@@ -697,7 +783,7 @@ class Database:
     def add_project_weekly_report(self, project_id: int, author: str, content: str) -> ProjectWeeklyReport:
         created_at = datetime.now()
         row = self._with_operator({
-            "id": self._next_id("project_weekly_reports"),
+            "id": self._next_timestamp_id("project_weekly_reports", created_at),
             "project_id": project_id,
             "author": author.strip(),
             "content": content.strip(),
@@ -1152,7 +1238,7 @@ class Database:
     def add_weekly_report(self, content: str, summary: str, mood: str) -> WeeklyReport:
         created_at = datetime.now()
         row = self._with_operator({
-            "id": self._next_id("weekly_reports"),
+            "id": self._next_timestamp_id("weekly_reports", created_at),
             "content": content,
             "summary": summary,
             "mood": mood,

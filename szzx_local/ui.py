@@ -785,6 +785,7 @@ class MainWindow(QMainWindow):
         self._last_lan_update_reminder_at: datetime | None = None
         self.lan_view_mode = "peers"
         self.current_lan_peers: list[LanPeer] = []
+        self.calendar_mode = "rest"
         self.rest_calendar_month = date.today().replace(day=1)
         self.selected_rest_day: date | None = None
 
@@ -843,7 +844,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(subtitle)
         layout.addSpacing(28)
 
-        for index, text in enumerate(("项目面板", "个人周报", "休息日历", "局域网", "成长履历", "文档库")):
+        for index, text in enumerate(("项目面板", "个人周报", "日历", "局域网", "成长履历", "文档库")):
             button = QPushButton(text)
             button.setObjectName("navButton")
             button.setCheckable(True)
@@ -1750,7 +1751,14 @@ class MainWindow(QMainWindow):
         ]
         if not visible_daily_reports:
             empty_text = "还没有日报。" if is_manager else "你还没有写过日报。"
-            self._add_feed_card(self.developer_feed, "", "日报", empty_text)
+            self._add_feed_card(
+                self.developer_feed,
+                "",
+                "日报",
+                empty_text,
+                min_content_lines=2,
+                max_content_lines=5,
+            )
         for report in visible_daily_reports[:5]:
             self._add_feed_card(
                 self.developer_feed,
@@ -1758,6 +1766,8 @@ class MainWindow(QMainWindow):
                 f"日报 · {report.member_name} / {report.role}",
                 report.content,
                 daily_report=report,
+                min_content_lines=2,
+                max_content_lines=5,
             )
 
     def _clear_project_workspace(self) -> None:
@@ -1959,6 +1969,8 @@ class MainWindow(QMainWindow):
         document: ProjectDocument | None = None,
         daily_report: DailyReport | None = None,
         height: int | None = None,
+        min_content_lines: int = 1,
+        max_content_lines: int = 2,
     ) -> None:
         item = QListWidgetItem()
         item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -1973,7 +1985,7 @@ class MainWindow(QMainWindow):
         body.setSpacing(5)
         meta = _label(f"{time_text}  {kind}".strip(), "eyebrow")
         text = _label(content)
-        text.setMaximumHeight(42)
+        text.setMaximumHeight(max_content_lines * 24)
         body.addWidget(meta)
         body.addWidget(text)
         layout.addLayout(body, 1)
@@ -2000,19 +2012,21 @@ class MainWindow(QMainWindow):
             layout.addLayout(actions)
 
         if height is None:
-            height = self._feed_card_height(content)
+            height = self._feed_card_height(content, min_content_lines, max_content_lines)
         item.setSizeHint(QSize(0, height))
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
 
-    def _feed_card_height(self, content: str) -> int:
+    def _feed_card_height(self, content: str, min_lines: int = 1, max_lines: int = 2) -> int:
         normalized = " ".join(content.strip().split())
         if not normalized:
-            return 78
+            line_count = min_lines
+            return 56 + line_count * 24
         explicit_lines = len([line for line in content.splitlines() if line.strip()])
         visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
-        needs_two_lines = explicit_lines > 1 or visual_width > 48
-        return 104 if needs_two_lines else 78
+        visual_lines = max(1, (visual_width + 47) // 48)
+        line_count = max(min_lines, min(max_lines, max(explicit_lines, visual_lines)))
+        return 56 + line_count * 24
 
     def _delete_daily_report(self, report: DailyReport) -> None:
         message = f"确定删除 {report.created_at.strftime('%m-%d %H:%M')} 的日报吗？"
@@ -2022,6 +2036,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "删除失败", "只能删除自己的日报，或这条日报已经不存在。")
             return
         self._refresh_project_workspace()
+        self._refresh_rest_calendar()
         self._announce_presence()
 
     def _daily_feed_text(self, report: DailyReport) -> str:
@@ -2182,10 +2197,16 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         title_box = QVBoxLayout()
         title_box.setSpacing(4)
-        title_box.addWidget(_label("休息日历", "sectionTitle"))
-        title_box.addWidget(_label("看见已经休息的日子，也把下一周先安排好。", "muted"))
+        title_box.addWidget(_label("日历", "sectionTitle"))
+        title_box.addWidget(_label("按日期看休息安排，也能回看当天所有项目日报。", "muted"))
         header.addLayout(title_box)
         header.addStretch()
+        self.rest_calendar_mode_button = QPushButton("休息日历")
+        self.rest_calendar_mode_button.setCheckable(True)
+        self.rest_calendar_mode_button.clicked.connect(lambda checked=False: self._select_calendar_mode("rest"))
+        self.daily_calendar_mode_button = QPushButton("日报日历")
+        self.daily_calendar_mode_button.setCheckable(True)
+        self.daily_calendar_mode_button.clicked.connect(lambda checked=False: self._select_calendar_mode("daily"))
         previous_month = QPushButton("上月")
         previous_month.setObjectName("smallButton")
         previous_month.clicked.connect(lambda checked=False: self._move_rest_calendar_month(-1))
@@ -2194,6 +2215,8 @@ class MainWindow(QMainWindow):
         next_month.clicked.connect(lambda checked=False: self._move_rest_calendar_month(1))
         self.rest_month_label = _label("", "sectionTitle")
         self.rest_month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(self.rest_calendar_mode_button)
+        header.addWidget(self.daily_calendar_mode_button)
         header.addWidget(previous_month)
         header.addWidget(self.rest_month_label)
         header.addWidget(next_month)
@@ -2214,9 +2237,14 @@ class MainWindow(QMainWindow):
 
         side_panel = _panel()
         side_layout = QVBoxLayout(side_panel)
-        side_layout.setContentsMargins(20, 20, 20, 20)
-        side_layout.setSpacing(14)
-        side_layout.addWidget(_label("选中日期", "eyebrow"))
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        self.calendar_side_stack = QStackedWidget()
+
+        rest_side = QWidget()
+        rest_layout = QVBoxLayout(rest_side)
+        rest_layout.setContentsMargins(20, 20, 20, 20)
+        rest_layout.setSpacing(14)
+        rest_layout.addWidget(_label("选中日期", "eyebrow"))
         self.rest_selected_label = _label("", "memberName")
         self.rest_selected_detail = _label("", "muted")
         self.rest_note = QLineEdit()
@@ -2224,11 +2252,11 @@ class MainWindow(QMainWindow):
         self.rest_toggle_button = QPushButton("安排休息")
         self.rest_toggle_button.setObjectName("primaryButton")
         self.rest_toggle_button.clicked.connect(self._toggle_selected_rest_day)
-        side_layout.addWidget(self.rest_selected_label)
-        side_layout.addWidget(self.rest_selected_detail)
-        side_layout.addWidget(self.rest_note)
-        side_layout.addWidget(self.rest_toggle_button)
-        side_layout.addSpacing(16)
+        rest_layout.addWidget(self.rest_selected_label)
+        rest_layout.addWidget(self.rest_selected_detail)
+        rest_layout.addWidget(self.rest_note)
+        rest_layout.addWidget(self.rest_toggle_button)
+        rest_layout.addSpacing(16)
         next_week_header = QHBoxLayout()
         next_week_header.addWidget(_label("下一周", "eyebrow"))
         next_week_header.addStretch()
@@ -2236,15 +2264,34 @@ class MainWindow(QMainWindow):
         all_next_week.setObjectName("smallButton")
         all_next_week.clicked.connect(self._open_next_week_roster)
         next_week_header.addWidget(all_next_week)
-        side_layout.addLayout(next_week_header)
+        rest_layout.addLayout(next_week_header)
         self.next_week_layout = QVBoxLayout()
         self.next_week_layout.setSpacing(8)
-        side_layout.addLayout(self.next_week_layout)
-        side_layout.addStretch()
+        rest_layout.addLayout(self.next_week_layout)
+        rest_layout.addStretch()
+
+        daily_side = QWidget()
+        daily_layout = QVBoxLayout(daily_side)
+        daily_layout.setContentsMargins(20, 20, 20, 20)
+        daily_layout.setSpacing(14)
+        daily_layout.addWidget(_label("当日日报", "eyebrow"))
+        self.daily_calendar_selected_label = _label("", "memberName")
+        self.daily_calendar_summary = _label("", "muted")
+        self.daily_calendar_list = QListWidget()
+        self.daily_calendar_list.setObjectName("plainList")
+        self.daily_calendar_list.setSpacing(8)
+        daily_layout.addWidget(self.daily_calendar_selected_label)
+        daily_layout.addWidget(self.daily_calendar_summary)
+        daily_layout.addWidget(self.daily_calendar_list, 1)
+
+        self.calendar_side_stack.addWidget(rest_side)
+        self.calendar_side_stack.addWidget(daily_side)
+        side_layout.addWidget(self.calendar_side_stack)
 
         splitter.addWidget(calendar_panel)
         splitter.addWidget(side_panel)
         splitter.setSizes([760, 360])
+        self._select_calendar_mode("rest")
         return page
 
     def _refresh_rest_calendar(self) -> None:
@@ -2253,18 +2300,27 @@ class MainWindow(QMainWindow):
 
         rest_days = self.db.list_rest_days()
         rest_by_day = {item.day: item for item in rest_days}
+        daily_counts = self.db.daily_report_counts_by_day()
         today = date.today()
         month = self.rest_calendar_month
         if self.selected_rest_day is None:
             self.selected_rest_day = today
 
         self.rest_month_label.setText(month.strftime("%Y年%m月"))
-        month_rest_count = sum(
-            1 for item in rest_days
-            if item.day.year == month.year and item.day.month == month.month
-        )
-        past_rest_count = sum(1 for item in rest_days if item.day <= today)
-        self.rest_summary.setText(f"本月已安排 {month_rest_count} 天休息。今天之前含今天共记录 {past_rest_count} 天休息。")
+        if self.calendar_mode == "daily":
+            month_daily_count = sum(
+                count for day, count in daily_counts.items()
+                if day.year == month.year and day.month == month.month
+            )
+            selected_count = daily_counts.get(self.selected_rest_day, 0)
+            self.rest_summary.setText(f"本月共记录 {month_daily_count} 篇日报。选中日期 {selected_count} 篇日报。")
+        else:
+            month_rest_count = sum(
+                1 for item in rest_days
+                if item.day.year == month.year and item.day.month == month.month
+            )
+            past_rest_count = sum(1 for item in rest_days if item.day <= today)
+            self.rest_summary.setText(f"本月已安排 {month_rest_count} 天休息。今天之前含今天共记录 {past_rest_count} 天休息。")
 
         self._clear_layout(self.rest_calendar_grid)
         for column, text in enumerate(("一", "二", "三", "四", "五", "六", "日")):
@@ -2276,13 +2332,37 @@ class MainWindow(QMainWindow):
         for row_index, week in enumerate(weeks, start=1):
             for column, day in enumerate(week):
                 rest_day = rest_by_day.get(day)
-                button = QPushButton(self._rest_day_button_text(day, rest_day, today))
-                button.setObjectName(self._rest_day_object_name(day, rest_day, today, month))
+                if self.calendar_mode == "daily":
+                    button = QPushButton(self._daily_day_button_text(day, daily_counts.get(day, 0), today))
+                    button.setObjectName(self._daily_day_object_name(day, daily_counts.get(day, 0), today, month))
+                else:
+                    button = QPushButton(self._rest_day_button_text(day, rest_day, today))
+                    button.setObjectName(self._rest_day_object_name(day, rest_day, today, month))
                 button.clicked.connect(lambda checked=False, selected=day: self._select_rest_day(selected))
                 self.rest_calendar_grid.addWidget(button, row_index, column)
 
-        self._refresh_next_week(rest_by_day)
-        self._update_rest_selection(rest_by_day)
+        if self.calendar_mode == "daily":
+            self._update_daily_calendar_selection()
+        else:
+            self._refresh_next_week(rest_by_day)
+            self._update_rest_selection(rest_by_day)
+
+    def _select_calendar_mode(self, mode: str) -> None:
+        self.calendar_mode = mode
+        if hasattr(self, "calendar_side_stack"):
+            self.calendar_side_stack.setCurrentIndex(1 if mode == "daily" else 0)
+        for button, button_mode in (
+            (getattr(self, "rest_calendar_mode_button", None), "rest"),
+            (getattr(self, "daily_calendar_mode_button", None), "daily"),
+        ):
+            if button is None:
+                continue
+            active = mode == button_mode
+            button.setChecked(active)
+            button.setObjectName("primaryButton" if active else "smallButton")
+            button.style().unpolish(button)
+            button.style().polish(button)
+        self._refresh_rest_calendar()
 
     def _rest_day_button_text(self, day: date, rest_day: RestDay | None, today: date) -> str:
         labels = [str(day.day)]
@@ -2308,6 +2388,50 @@ class MainWindow(QMainWindow):
         if day.month != month.month:
             return "calendarMuted"
         return "calendarDay"
+
+    def _daily_day_button_text(self, day: date, count: int, today: date) -> str:
+        labels = [str(day.day)]
+        if day == today:
+            labels.append("今天")
+        if count:
+            labels.append(f"{count} 篇日报")
+        return "\n".join(labels)
+
+    def _daily_day_object_name(self, day: date, count: int, today: date, month: date) -> str:
+        if count:
+            return "calendarRest"
+        if day == today:
+            return "calendarToday"
+        if day.month != month.month:
+            return "calendarMuted"
+        return "calendarDay"
+
+    def _update_daily_calendar_selection(self) -> None:
+        selected = self.selected_rest_day or date.today()
+        reports = self.db.daily_reports_on_day(selected)
+        self.daily_calendar_selected_label.setText(selected.strftime("%Y-%m-%d"))
+        self.daily_calendar_summary.setText(f"这天共有 {len(reports)} 篇项目日报。")
+        self.daily_calendar_list.clear()
+        if not reports:
+            self._add_feed_card(
+                self.daily_calendar_list,
+                "",
+                "当日日报",
+                "这天还没有项目日报。",
+            )
+            return
+        for item in reports:
+            report = item["report"]
+            meta = f"{item['created_at'].strftime('%H:%M')}  {item['project_name']} · {item['member_name']} / {item['role']}"
+            self._add_feed_card(
+                self.daily_calendar_list,
+                meta,
+                "日报",
+                str(item["content"]),
+                daily_report=report if isinstance(report, DailyReport) else None,
+                min_content_lines=1,
+                max_content_lines=5,
+            )
 
     def _refresh_next_week(self, rest_by_day: dict[date, RestDay]) -> None:
         self._clear_layout(self.next_week_layout)
