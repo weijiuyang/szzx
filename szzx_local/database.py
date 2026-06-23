@@ -498,6 +498,10 @@ class Database:
 
     def today_project_logs(self, member_name: str | None = None) -> list[dict[str, Any]]:
         today = date.today()
+        logs = self.project_logs_for_member(member_name)
+        return [log for log in logs if _parse_time(str(log["created_at"])).date() == today]
+
+    def project_logs_for_member(self, member_name: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         target = self._normalize_display_name(member_name or self.display_name())
         project_names = {
             int(row["id"]): str(row.get("name", "未知项目"))
@@ -515,9 +519,10 @@ class Database:
                 created_at = _parse_time(str(row.get("created_at", "")))
             except ValueError:
                 continue
-            if created_at.date() != today:
-                continue
-            project_id = int(row.get("project_id", 0) or 0)
+            try:
+                project_id = int(row.get("project_id", 0) or 0)
+            except (TypeError, ValueError):
+                project_id = 0
             logs.append(
                 {
                     "project_id": project_id,
@@ -529,7 +534,7 @@ class Database:
                 }
             )
         logs.sort(key=lambda item: str(item["created_at"]), reverse=True)
-        return logs
+        return logs if limit is None else logs[:limit]
 
     def delete_daily_report(self, report_id: int, mine_only: bool = True) -> bool:
         rows = self.data["daily_reports"]

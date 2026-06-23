@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.24",
+  "version": "0.1.25",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "局域网页新增日志视角，可查看当天在线同事是否填写项目日志，并汇总展示今日项目日志内容。",
+  "notes": "日志视角支持点开成员查看全部项目日志，按日期倒序平铺展示多个项目的日志。",
   "history": [
     {
-      "version": "0.1.24",
+      "version": "0.1.25",
       "date": "2026-06-23",
-      "notes": "局域网页新增日志视角，可查看当天在线同事是否填写项目日志，并汇总展示今日项目日志内容。"
+      "notes": "日志视角支持点开成员查看全部项目日志，按日期倒序平铺展示多个项目的日志。"
     }
   ]
 }

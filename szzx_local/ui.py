@@ -513,6 +513,67 @@ class VersionDialog(QDialog):
         layout.addWidget(history)
 
 
+class ProjectLogHistoryDialog(QDialog):
+    def __init__(self, member_name: str, logs: list[dict[str, object]], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"{member_name} 的项目日志")
+        self.resize(820, 620)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        layout.addWidget(_label(f"{member_name} 的全部项目日志", "sectionTitle"))
+        layout.addWidget(_label(f"按日期倒序排列，共 {len(logs)} 条。", "muted"))
+
+        self.log_list = QListWidget()
+        self.log_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self.log_list, 1)
+
+        if not logs:
+            item = QListWidgetItem("还没有同步到这个人的项目日志。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.log_list.addItem(item)
+            return
+
+        for log in logs:
+            self._add_log_card(log)
+
+    def _add_log_card(self, log: dict[str, object]) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        created_at = self._format_log_time(str(log.get("created_at", "")))
+        project_name = str(log.get("project_name", "未知项目"))
+        role = str(log.get("role", "")).strip()
+        content = str(log.get("content", "")).strip() or "空日志"
+        meta = " · ".join(part for part in (created_at, project_name, role) if part)
+
+        layout.addWidget(_label(meta, "eyebrow"))
+        layout.addWidget(_label(content))
+
+        item.setSizeHint(QSize(0, self._history_card_height(content)))
+        self.log_list.addItem(item)
+        self.log_list.setItemWidget(item, card)
+
+    def _format_log_time(self, value: str) -> str:
+        try:
+            return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            return value
+
+    def _history_card_height(self, content: str) -> int:
+        normalized = " ".join(content.strip().split())
+        visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
+        lines = max(1, min(7, (visual_width // 72) + 1))
+        return 66 + lines * 24
+
+
 class NextWeekRosterDialog(QDialog):
     def __init__(self, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2282,6 +2343,7 @@ class MainWindow(QMainWindow):
         panel_layout.addWidget(self.lan_panel_title)
         self.peer_list = QListWidget()
         self.peer_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.peer_list.itemClicked.connect(self._open_lan_log_item)
         panel_layout.addWidget(self.peer_list)
         outer.addWidget(panel)
         return page
@@ -2657,6 +2719,7 @@ class MainWindow(QMainWindow):
             "本机",
             people[0][1],
             supports_logs=True,
+            member_name=self.db.display_name(),
         )
         for peer, (_, logs, supports_logs) in zip(peers, people[1:]):
             self._add_lan_log_card(
@@ -2664,6 +2727,7 @@ class MainWindow(QMainWindow):
                 f"{peer.address} · {peer.last_seen.strftime('%H:%M:%S')}",
                 logs,
                 supports_logs=supports_logs,
+                member_name=peer.name,
             )
 
     def _add_lan_log_card(
@@ -2672,9 +2736,11 @@ class MainWindow(QMainWindow):
         meta_text: str,
         logs: list[dict[str, object]],
         supports_logs: bool,
+        member_name: str,
     ) -> None:
         item = QListWidgetItem()
-        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        item.setData(Qt.ItemDataRole.UserRole, ("project_logs", member_name))
         card = QWidget()
         card.setObjectName("feedCard")
         layout = QVBoxLayout(card)
@@ -2693,6 +2759,10 @@ class MainWindow(QMainWindow):
         status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         status_label.setFixedWidth(92)
         header.addWidget(status_label)
+        history_button = QPushButton("全部日志")
+        history_button.setObjectName("smallButton")
+        history_button.clicked.connect(lambda checked=False, selected=member_name: self._open_lan_member_logs(selected))
+        header.addWidget(history_button)
         layout.addLayout(header)
 
         if logs:
@@ -2705,6 +2775,17 @@ class MainWindow(QMainWindow):
         item.setSizeHint(QSize(0, 82 + max(1, len(logs)) * 58))
         self.peer_list.addItem(item)
         self.peer_list.setItemWidget(item, card)
+
+    def _open_lan_member_logs(self, member_name: str) -> None:
+        logs = self.db.project_logs_for_member(member_name)
+        dialog = ProjectLogHistoryDialog(member_name, logs, self)
+        dialog.exec()
+
+    def _open_lan_log_item(self, item: QListWidgetItem) -> None:
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, tuple) or len(data) != 2 or data[0] != "project_logs":
+            return
+        self._open_lan_member_logs(str(data[1]))
 
     def _lan_log_line(self, log: dict[str, object]) -> QWidget:
         row = QWidget()
