@@ -571,7 +571,9 @@ class ProjectLogHistoryDialog(QDialog):
     def _history_card_height(self, content: str) -> int:
         normalized = " ".join(content.strip().split())
         visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
-        lines = max(1, min(7, (visual_width // 72) + 1))
+        explicit_lines = len([line for line in content.splitlines() if line.strip()])
+        visual_lines = max(1, (visual_width // 72) + 1)
+        lines = max(1, explicit_lines, visual_lines)
         return 66 + lines * 24
 
 
@@ -1757,7 +1759,7 @@ class MainWindow(QMainWindow):
                 "日报",
                 empty_text,
                 min_content_lines=2,
-                max_content_lines=5,
+                max_content_lines=None,
             )
         for report in visible_daily_reports[:5]:
             self._add_feed_card(
@@ -1767,7 +1769,7 @@ class MainWindow(QMainWindow):
                 report.content,
                 daily_report=report,
                 min_content_lines=2,
-                max_content_lines=5,
+                max_content_lines=None,
             )
 
     def _clear_project_workspace(self) -> None:
@@ -1970,7 +1972,7 @@ class MainWindow(QMainWindow):
         daily_report: DailyReport | None = None,
         height: int | None = None,
         min_content_lines: int = 1,
-        max_content_lines: int = 2,
+        max_content_lines: int | None = 2,
     ) -> None:
         item = QListWidgetItem()
         item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -1985,7 +1987,8 @@ class MainWindow(QMainWindow):
         body.setSpacing(5)
         meta = _label(f"{time_text}  {kind}".strip(), "eyebrow")
         text = _label(content)
-        text.setMaximumHeight(max_content_lines * 24)
+        if max_content_lines is not None:
+            text.setMaximumHeight(max_content_lines * 24)
         body.addWidget(meta)
         body.addWidget(text)
         layout.addLayout(body, 1)
@@ -2017,15 +2020,16 @@ class MainWindow(QMainWindow):
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
 
-    def _feed_card_height(self, content: str, min_lines: int = 1, max_lines: int = 2) -> int:
+    def _feed_card_height(self, content: str, min_lines: int = 1, max_lines: int | None = 2) -> int:
         normalized = " ".join(content.strip().split())
         if not normalized:
             line_count = min_lines
             return 56 + line_count * 24
         explicit_lines = len([line for line in content.splitlines() if line.strip()])
         visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
-        visual_lines = max(1, (visual_width + 47) // 48)
-        line_count = max(min_lines, min(max_lines, max(explicit_lines, visual_lines)))
+        visual_lines = max(1, (visual_width + 31) // 32)
+        content_lines = max(explicit_lines, visual_lines)
+        line_count = max(min_lines, content_lines if max_lines is None else min(max_lines, content_lines))
         return 56 + line_count * 24
 
     def _delete_daily_report(self, report: DailyReport) -> None:
@@ -2430,7 +2434,7 @@ class MainWindow(QMainWindow):
                 str(item["content"]),
                 daily_report=report if isinstance(report, DailyReport) else None,
                 min_content_lines=1,
-                max_content_lines=5,
+                max_content_lines=None,
             )
 
     def _refresh_next_week(self, rest_by_day: dict[date, RestDay]) -> None:
@@ -2993,7 +2997,8 @@ class MainWindow(QMainWindow):
             message = "今天还没有项目日志。" if supports_logs else "对方版本暂未共享日志状态。"
             layout.addWidget(_label(message, "muted"))
 
-        item.setSizeHint(QSize(0, 82 + max(1, len(logs)) * 58))
+        logs_height = sum(self._lan_log_line_height(str(log.get("content", ""))) for log in logs)
+        item.setSizeHint(QSize(0, 82 + (logs_height if logs else 58)))
         self.peer_list.addItem(item)
         self.peer_list.setItemWidget(item, card)
 
@@ -3021,10 +3026,16 @@ class MainWindow(QMainWindow):
         meta = " · ".join(part for part in (created_at, project_name, role) if part)
         content = str(log.get("content", "")).strip() or "空日志"
         content_label = _label(content)
-        content_label.setMaximumHeight(42)
         layout.addWidget(_label(meta, "eyebrow"))
         layout.addWidget(content_label)
         return row
+
+    def _lan_log_line_height(self, content: str) -> int:
+        normalized = " ".join(content.strip().split())
+        explicit_lines = len([line for line in content.splitlines() if line.strip()])
+        visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
+        visual_lines = max(1, (visual_width + 39) // 40)
+        return 44 + max(1, explicit_lines, visual_lines) * 24
 
     def _format_lan_log_time(self, value: str) -> str:
         try:

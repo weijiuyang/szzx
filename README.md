@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.38",
+  "version": "0.1.39",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "休息日历升级为日历页，新增日报日历子页面，可按日期查看当天所有项目日报。",
+  "notes": "日报内容在所有日报相关卡片中完整显示，卡片高度随内容自动展开。",
   "history": [
     {
-      "version": "0.1.38",
+      "version": "0.1.39",
       "date": "2026-06-23",
-      "notes": "休息日历升级为日历页，新增日报日历子页面，可按日期查看当天所有项目日报。"
+      "notes": "日报内容在所有日报相关卡片中完整显示，卡片高度随内容自动展开。"
     }
   ]
 }
