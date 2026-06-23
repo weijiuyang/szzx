@@ -1374,8 +1374,7 @@ class MainWindow(QMainWindow):
     def _manual_project_refresh(self) -> None:
         message = "已刷新本机项目。"
         if self.discovery is not None:
-            self.discovery.announce()
-            self.discovery.broadcast_database()
+            self.discovery.announce_burst()
             changed_count, failed_count = self.discovery.pull_all_peer_snapshots()
             if changed_count:
                 message = f"已从 {changed_count} 位同事同步新数据。"
@@ -2930,15 +2929,13 @@ class MainWindow(QMainWindow):
 
     def _announce_presence(self) -> None:
         if self.discovery is not None:
-            self.discovery.announce()
-            self.discovery.broadcast_database()
+            self.discovery.announce_burst()
 
     def _manual_lan_refresh(self) -> None:
         if self.discovery is None:
             self.lan_subtitle.setText("局域网发现没有启动。")
             return
-        self.discovery.announce()
-        self.discovery.broadcast_database()
+        self.discovery.announce_burst()
         changed_count, failed_count = self.discovery.pull_all_peer_snapshots()
         self._refresh_after_lan_sync()
         self._refresh_peers(self.discovery.sorted_peers())

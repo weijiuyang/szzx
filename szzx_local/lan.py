@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QNetworkDatagram, QUdpSocket
+from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QNetworkDatagram, QNetworkInterface, QUdpSocket
 
 from .changelog import CHANGELOG, current_release_notes
 from .version import APP_VERSION
@@ -80,8 +80,7 @@ class LanDiscovery(QObject):
 
     def start(self) -> None:
         self._start_snapshot_server()
-        self.announce()
-        self.broadcast_database()
+        self.announce_burst()
         self.announce_timer.start(3500)
         self.sync_timer.start(8000)
         self.sweep_timer.start(5000)
@@ -105,7 +104,14 @@ class LanDiscovery(QObject):
             "today_project_logs": self._today_project_logs(),
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_socket.writeDatagram(data, QHostAddress.SpecialAddress.Broadcast, self.port)
+        self._send_broadcast(data)
+
+    def announce_burst(self) -> None:
+        self.announce()
+        self.broadcast_database()
+        QTimer.singleShot(250, self.announce)
+        QTimer.singleShot(500, self.broadcast_database)
+        QTimer.singleShot(900, self.announce)
 
     def broadcast_database(self) -> None:
         if self.db is None:
@@ -123,8 +129,51 @@ class LanDiscovery(QObject):
             "today_project_logs": self._today_project_logs(),
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_socket.writeDatagram(data, QHostAddress.SpecialAddress.Broadcast, self.port)
+        self._send_broadcast(data)
         self._pull_newer_peer_snapshots()
+
+    def _send_broadcast(self, data: bytes) -> None:
+        for address in self._broadcast_targets():
+            self.send_socket.writeDatagram(data, address, self.port)
+
+    def _broadcast_targets(self) -> list[QHostAddress]:
+        targets: dict[str, QHostAddress] = {}
+
+        def add(address: QHostAddress) -> None:
+            text = address.toString()
+            if text and text not in {"0.0.0.0", "127.0.0.1"}:
+                targets[text] = address
+
+        add(QHostAddress(QHostAddress.SpecialAddress.Broadcast))
+        for interface in QNetworkInterface.allInterfaces():
+            flags = interface.flags()
+            if not flags & QNetworkInterface.InterfaceFlag.IsUp:
+                continue
+            if flags & QNetworkInterface.InterfaceFlag.IsLoopBack:
+                continue
+            for entry in interface.addressEntries():
+                ip = entry.ip()
+                if ip.protocol() != QAbstractSocket.NetworkLayerProtocol.IPv4Protocol:
+                    continue
+                broadcast = entry.broadcast()
+                if not broadcast.isNull():
+                    add(broadcast)
+                inferred = self._infer_class_c_broadcast(ip.toString())
+                if inferred is not None:
+                    add(inferred)
+        return list(targets.values())
+
+    def _infer_class_c_broadcast(self, address: str) -> QHostAddress | None:
+        parts = address.split(".")
+        if len(parts) != 4:
+            return None
+        try:
+            values = [int(part) for part in parts]
+        except ValueError:
+            return None
+        if values[0] in {0, 127} or any(value < 0 or value > 255 for value in values):
+            return None
+        return QHostAddress(f"{values[0]}.{values[1]}.{values[2]}.255")
 
     def _start_snapshot_server(self) -> None:
         if self.db is None or self.server_socket is not None:

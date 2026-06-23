@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.45",
+  "version": "0.1.46",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "项目进展流取消查看权限限制，所有人都能查看成员配置、项目周报、文档和完成代办。",
+  "notes": "增强局域网发现广播：同时向网卡定向广播地址发送，并在启动、刷新和数据变更时短时间多次广播。",
   "history": [
     {
-      "version": "0.1.45",
+      "version": "0.1.46",
       "date": "2026-06-23",
-      "notes": "项目进展流取消查看权限限制，所有人都能查看成员配置、项目周报、文档和完成代办。"
+      "notes": "增强局域网发现广播：同时向网卡定向广播地址发送，并在启动、刷新和数据变更时短时间多次广播。"
     }
   ]
 }
