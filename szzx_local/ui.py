@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from .ai import LocalSummarizer
+from .changelog import changelog_text, current_release_notes
 from .database import APP_DIR, Database
 from .lan import LanDiscovery, LanPeer
 from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, RestDay, WeeklyReport
@@ -221,6 +222,11 @@ QWidget#memberCard {
     border: 1px solid #dfe4dc;
     border-radius: 6px;
 }
+QWidget#compactMemberCard {
+    background: #f6f8f4;
+    border: 1px solid #dfe7dd;
+    border-radius: 6px;
+}
 QLabel#avatar {
     background: #263126;
     color: #faf9f2;
@@ -230,6 +236,17 @@ QLabel#avatar {
     min-height: 32px;
     max-height: 32px;
     font-weight: 700;
+}
+QLabel#compactAvatar {
+    background: #263126;
+    color: #faf9f2;
+    border-radius: 14px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    font-weight: 700;
+    font-size: 12px;
 }
 QLabel#memberName {
     font-size: 15px;
@@ -242,6 +259,15 @@ QLabel#roleBadge {
     border: 1px solid #cfded3;
     border-radius: 4px;
     padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QLabel#compactRoleBadge {
+    background: #e5eee8;
+    color: #42624d;
+    border: 1px solid #cfded3;
+    border-radius: 4px;
+    padding: 2px 8px;
     font-size: 12px;
     font-weight: 600;
 }
@@ -268,6 +294,7 @@ DOCUMENT_TYPES = [
     "会议纪要",
     "其他",
 ]
+PROJECT_HERO_HEIGHT = 300
 
 
 def _label(text: str, object_name: str | None = None) -> QLabel:
@@ -474,8 +501,16 @@ class VersionDialog(QDialog):
 
         layout.addWidget(_label("数智中心", "appTitle"))
         layout.addWidget(_label(f"当前版本：v{APP_VERSION}", "muted"))
+        layout.addWidget(_label(f"本版更新：{current_release_notes()}", "muted"))
         layout.addWidget(_label("更新方式：本地 / 局域网", "muted"))
         layout.addWidget(_label("打开「局域网」面板，可以从同系统、高版本同事电脑下载安装包。", "muted"))
+        history_title = _label("全部历史记录", "eyebrow")
+        history = QTextEdit()
+        history.setReadOnly(True)
+        history.setFixedHeight(210)
+        history.setPlainText(changelog_text())
+        layout.addWidget(history_title)
+        layout.addWidget(history)
 
 
 class NextWeekRosterDialog(QDialog):
@@ -684,6 +719,8 @@ class MainWindow(QMainWindow):
         self._metric_labels: dict[str, QLabel] = {}
         self._update_worker: UpdateCheckWorker | None = None
         self._notified_update_version: str | None = None
+        self.lan_view_mode = "peers"
+        self.current_lan_peers: list[LanPeer] = []
         self.rest_calendar_month = date.today().replace(day=1)
         self.selected_rest_day: date | None = None
 
@@ -788,7 +825,20 @@ class MainWindow(QMainWindow):
         self._notified_update_version = latest_version
         notes = getattr(info, "notes", "")
         download_url = getattr(info, "download_url", "")
-        message = f"发现新版本 v{latest_version}。\n\n{notes}\n\n是否打开下载地址？"
+        history = getattr(info, "history", [])
+        history_text = ""
+        if isinstance(history, list):
+            lines: list[str] = []
+            for entry in history[:5]:
+                if not isinstance(entry, dict):
+                    continue
+                version = str(entry.get("version", "")).strip()
+                note = str(entry.get("notes", "")).strip()
+                if version and note:
+                    lines.append(f"v{version}：{note}")
+            if lines:
+                history_text = "\n\n全部历史记录：\n" + "\n".join(lines)
+        message = f"发现新版本 v{latest_version}。\n\n{notes}{history_text}\n\n是否打开下载地址？"
         if QMessageBox.question(self, "发现新版本", message) == QMessageBox.StandardButton.Yes:
             QDesktopServices.openUrl(QUrl(str(download_url)))
 
@@ -800,14 +850,13 @@ class MainWindow(QMainWindow):
         page.setMinimumWidth(1020)
         scroll.setWidget(page)
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(34, 30, 34, 30)
-        outer.setSpacing(18)
+        outer.setContentsMargins(34, 22, 34, 30)
+        outer.setSpacing(12)
 
         header = QHBoxLayout()
         title_box = QVBoxLayout()
-        title_box.setSpacing(4)
+        title_box.setSpacing(0)
         title_box.addWidget(_label("项目面板", "sectionTitle"))
-        title_box.addWidget(_label("按项目看成员、日报、周报和项目文档。", "muted"))
         header.addLayout(title_box)
         header.addStretch()
         show_page = QPushButton("自己")
@@ -872,6 +921,7 @@ class MainWindow(QMainWindow):
         overview_layout.setSpacing(14)
         hero = QWidget()
         hero.setObjectName("heroPanel")
+        hero.setFixedHeight(PROJECT_HERO_HEIGHT)
         hero_layout = QVBoxLayout(hero)
         hero_layout.setContentsMargins(24, 22, 24, 22)
         hero_layout.setSpacing(10)
@@ -894,32 +944,37 @@ class MainWindow(QMainWindow):
         overview_layout.addWidget(hero)
 
         member_panel = _panel()
-        member_panel.setMinimumHeight(150)
+        member_panel.setFixedHeight(PROJECT_HERO_HEIGHT)
         member_layout = QVBoxLayout(member_panel)
         member_layout.setContentsMargins(18, 18, 18, 18)
         member_layout.setSpacing(12)
         member_layout.addWidget(_label("项目成员与角色", "eyebrow"))
+        member_scroll = QScrollArea()
+        member_scroll.setWidgetResizable(True)
+        member_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        member_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        member_scroll.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.member_cards = QWidget()
         self.member_cards_layout = QGridLayout(self.member_cards)
         self.member_cards_layout.setContentsMargins(0, 0, 0, 0)
         self.member_cards_layout.setSpacing(10)
-        member_layout.addWidget(self.member_cards)
-        member_layout.addStretch()
+        self.member_cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        member_scroll.setWidget(self.member_cards)
+        member_layout.addWidget(member_scroll, 1)
 
-        progress_panel = _panel()
+        self.progress_panel = _panel()
+        progress_panel = self.progress_panel
         progress_panel.setMinimumHeight(620)
         progress_layout = QVBoxLayout(progress_panel)
         progress_layout.setContentsMargins(18, 18, 18, 18)
         progress_layout.setSpacing(12)
-        self.feed_scope_label = _label("当前视角", "eyebrow")
-        progress_layout.addWidget(self.feed_scope_label)
         feed_split = QSplitter(Qt.Orientation.Vertical)
 
         product_feed_panel = QWidget()
         product_feed_layout = QVBoxLayout(product_feed_panel)
         product_feed_layout.setContentsMargins(0, 0, 0, 0)
         product_feed_layout.setSpacing(8)
-        product_feed_layout.addWidget(_label("产品经理进展流", "eyebrow"))
+        product_feed_layout.addWidget(_label("项目进展流", "eyebrow"))
         self.product_feed = QListWidget()
         self.product_feed.setMinimumHeight(410)
         product_feed_layout.addWidget(self.product_feed)
@@ -939,8 +994,25 @@ class MainWindow(QMainWindow):
         feed_split.setSizes([430, 430])
         progress_layout.addWidget(feed_split)
 
-        overview_layout.addWidget(member_panel)
+        self.config_project_panel = _panel()
+        self.config_project_panel.setFixedHeight(260)
+        config_project_layout = QVBoxLayout(self.config_project_panel)
+        config_project_layout.setContentsMargins(18, 18, 18, 18)
+        config_project_layout.setSpacing(12)
+        config_project_layout.addWidget(_label("项目简介", "eyebrow"))
+        self.config_project_description = QTextEdit()
+        self.config_project_description.setPlaceholderText("项目目标、范围、当前进展或待办。")
+        self.config_project_description.setFixedHeight(130)
+        self.save_project_description_button = QPushButton("保存项目简介")
+        self.save_project_description_button.setObjectName("primaryButton")
+        self.save_project_description_button.clicked.connect(self._save_project_description)
+        config_project_layout.addWidget(self.config_project_description)
+        config_project_layout.addWidget(self.save_project_description_button)
+        self.config_project_panel.setVisible(False)
+
         overview_layout.addWidget(progress_panel)
+        overview_layout.addWidget(self.config_project_panel)
+        overview_layout.addStretch()
         self.project_content_stack.addWidget(overview_page)
         self.project_content_stack.addWidget(self._deck_detail_page())
 
@@ -972,6 +1044,16 @@ class MainWindow(QMainWindow):
         member_form_layout.addWidget(self.member_name)
         member_form_layout.addWidget(self.member_role)
         member_form_layout.addWidget(self.add_member_button)
+
+        config_member_panel = _panel()
+        config_member_layout = QVBoxLayout(config_member_panel)
+        config_member_layout.setContentsMargins(18, 18, 18, 18)
+        config_member_layout.setSpacing(10)
+        config_member_layout.addWidget(_label("删除成员", "eyebrow"))
+        self.config_member_list = QListWidget()
+        self.config_member_list.setMinimumHeight(220)
+        self.config_member_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        config_member_layout.addWidget(self.config_member_list)
 
         project_danger = _panel()
         project_danger_layout = QVBoxLayout(project_danger)
@@ -1052,11 +1134,13 @@ class MainWindow(QMainWindow):
         weekly_layout.addWidget(self.project_document_visibility)
         weekly_layout.addWidget(self.upload_deck_button)
 
+        display_side_layout.addWidget(member_panel, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addWidget(todo_panel, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addWidget(daily_form, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addWidget(weekly_form, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addStretch()
         config_side_layout.addWidget(member_form)
+        config_side_layout.addWidget(config_member_panel)
         config_side_layout.addWidget(project_danger)
         config_side_layout.addStretch()
         self.project_side_stack.addWidget(display_side)
@@ -1184,9 +1268,18 @@ class MainWindow(QMainWindow):
             self._refresh_project_workspace()
 
     def _select_project_mode(self, index: int) -> None:
+        if index == 1:
+            project = self._current_project()
+            if project is None or not self._can_manage_project(project, None):
+                QMessageBox.information(self, "不能配置", "只有这个项目的负责人可以配置成员。")
+                index = 0
         if hasattr(self, "project_side_stack"):
             self.project_side_stack.setCurrentIndex(index)
         is_config = index == 1
+        if hasattr(self, "progress_panel"):
+            self.progress_panel.setVisible(not is_config)
+        if hasattr(self, "config_project_panel"):
+            self.config_project_panel.setVisible(is_config)
         if hasattr(self, "project_config_button"):
             self.project_config_button.setChecked(is_config)
             self.project_config_button.setObjectName("primaryButton" if is_config else "")
@@ -1230,6 +1323,9 @@ class MainWindow(QMainWindow):
         project = self._current_project()
         if project is None:
             return
+        if not self._can_manage_project(project, None):
+            QMessageBox.warning(self, "不能配置", "只有这个项目的负责人可以添加成员。")
+            return
         name = self.member_name.text().strip()
         role = self.member_role.currentText().strip()
         if not name:
@@ -1239,14 +1335,30 @@ class MainWindow(QMainWindow):
         self.member_name.clear()
         self._refresh_project_workspace()
 
+    def _save_project_description(self) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        if not self._can_manage_project(project, None):
+            QMessageBox.warning(self, "不能保存", "只有这个项目的负责人可以编辑项目简介。")
+            return
+        description = self.config_project_description.toPlainText().strip()
+        if not description:
+            QMessageBox.information(self, "简介为空", "先写一点项目简介。")
+            return
+        updated = self.db.update_project_description(project.id, description)
+        if updated is None:
+            QMessageBox.warning(self, "保存失败", "这个项目记录已经不存在。")
+            self._load_projects()
+            return
+        self._refresh_project_workspace()
+
     def _delete_current_project(self) -> None:
         project = self._current_project()
         if project is None:
             return
-        members = self.db.list_project_members(project.id)
-        current_member = self._current_project_member(project, members)
-        if not self._can_manage_project(project, current_member):
-            QMessageBox.warning(self, "不能删除", "只有这个项目的产品经理可以删除项目。")
+        if not self._can_manage_project(project, None):
+            QMessageBox.warning(self, "不能删除", "只有这个项目的负责人可以删除项目。")
             return
         message = f"确定删除项目「{project.name}」吗？\n\n项目成员、代办、日报、项目周报和文档记录都会一起删除。"
         if QMessageBox.question(self, "删除项目", message) != QMessageBox.StandardButton.Yes:
@@ -1279,6 +1391,7 @@ class MainWindow(QMainWindow):
         self.db.add_daily_report(project.id, current_member.name, current_member.role, content)
         self.daily_editor.clear()
         self._refresh_project_workspace()
+        self._announce_presence()
 
     def _add_project_todo(self) -> None:
         project = self._current_project()
@@ -1310,6 +1423,7 @@ class MainWindow(QMainWindow):
         if report is None:
             QMessageBox.information(self, "已完成", "这个代办已经被完成。")
         self._refresh_project_workspace()
+        self._announce_presence()
 
     def _save_project_weekly_report(self) -> None:
         project = self._current_project()
@@ -1387,6 +1501,7 @@ class MainWindow(QMainWindow):
         self.project_status.setText(f"{project.status} · 负责人 {project.owner}")
         self.project_title.setText(project.name)
         self.project_description.setText(project.description)
+        self.config_project_description.setPlainText(project.description)
         self._set_metric(self.metric_members, len(members))
         self._set_metric(self.metric_todos, len(todos))
         self._set_metric(self.metric_daily, len(daily_reports))
@@ -1396,10 +1511,10 @@ class MainWindow(QMainWindow):
         self._clear_layout(self.member_cards_layout)
         current_member = self._current_project_member(project, members)
         is_manager = self._can_manage_project(project, current_member)
-        current_name = self.db.display_name()
-        self.feed_scope_label.setText(
-            f"当前视角：{'产品经理' if is_manager else '开发成员'} · {current_name}"
-        )
+        if hasattr(self, "project_config_button"):
+            self.project_config_button.setEnabled(is_manager)
+        if not is_manager and self.project_side_stack.currentIndex() == 1:
+            self._select_project_mode(0)
         can_update_todos = current_member is not None
         self.todo_panel.setVisible(can_update_todos)
         self.daily_form.setVisible(can_update_todos)
@@ -1413,6 +1528,8 @@ class MainWindow(QMainWindow):
         self.member_name.setEnabled(is_manager)
         self.member_role.setEnabled(is_manager)
         self.add_member_button.setEnabled(is_manager)
+        self.config_project_description.setEnabled(is_manager)
+        self.save_project_description_button.setEnabled(is_manager)
         self.delete_project_button.setEnabled(is_manager)
         self.weekly_form.setVisible(is_manager)
         self.project_weekly_editor.setEnabled(is_manager)
@@ -1422,6 +1539,7 @@ class MainWindow(QMainWindow):
         self.upload_deck_button.setEnabled(is_manager)
         for member in members:
             self._add_member_card(member)
+        self._refresh_config_member_list(project, members, is_manager)
 
         self.todo_board.clear()
         self.todo_count_label.setText(f"{len(todos)} 个待完成")
@@ -1477,7 +1595,7 @@ class MainWindow(QMainWindow):
                 )
             )
         if product_items:
-            for _, time_text, kind, content, document in sorted(product_items, reverse=True)[:8]:
+            for _, time_text, kind, content, document in sorted(product_items, reverse=True)[:5]:
                 self._add_feed_card(self.product_feed, time_text, kind, content, document)
         else:
             self._add_feed_card(
@@ -1538,6 +1656,10 @@ class MainWindow(QMainWindow):
         self.member_name.setEnabled(False)
         self.member_role.setEnabled(False)
         self.add_member_button.setEnabled(False)
+        self.config_project_description.clear()
+        self.config_project_description.setEnabled(False)
+        self.save_project_description_button.setEnabled(False)
+        self.config_project_panel.setVisible(False)
         self.delete_project_button.setEnabled(False)
         self.weekly_form.setVisible(False)
         self.project_weekly_editor.setEnabled(False)
@@ -1545,6 +1667,8 @@ class MainWindow(QMainWindow):
         self.project_document_type.setEnabled(False)
         self.project_document_visibility.setEnabled(False)
         self.upload_deck_button.setEnabled(False)
+        self.project_config_button.setEnabled(False)
+        self.config_member_list.clear()
 
     def _current_project_member(self, project: Project, members: list[ProjectMember]) -> ProjectMember | None:
         for member in members:
@@ -1555,11 +1679,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _can_manage_project(self, project: Project, member: ProjectMember | None) -> bool:
-        if self.db.is_current_user_name(project.owner):
-            return True
-        if member is None:
-            return False
-        return member.role == "产品经理"
+        return self.db.is_current_user_name(project.owner)
 
     def _clear_layout(self, layout: QGridLayout) -> None:
         while layout.count():
@@ -1568,31 +1688,96 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
 
-    def _add_member_card(self, member: ProjectMember) -> None:
-        card = QWidget()
-        card.setObjectName("memberCard")
-        card.setMinimumHeight(58)
-        layout = QHBoxLayout(card)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(8)
+    def _refresh_config_member_list(
+        self,
+        project: Project,
+        members: list[ProjectMember],
+        can_manage: bool,
+    ) -> None:
+        self.config_member_list.clear()
+        if not members:
+            item = QListWidgetItem("还没有成员。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.config_member_list.addItem(item)
+            return
+        for member in members:
+            self._add_config_member_card(project, member, can_manage)
 
-        avatar = _label((member.name[:1] or "?").upper(), "avatar")
-        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    def _add_config_member_card(self, project: Project, member: ProjectMember, can_manage: bool) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
 
         text_box = QVBoxLayout()
         text_box.setSpacing(4)
+        text_box.addWidget(_label(member.name, "memberName"))
+        text_box.addWidget(_label(member.role, "muted"))
+        layout.addLayout(text_box, 1)
+
+        delete_button = QPushButton("删除")
+        delete_button.setObjectName("smallButton")
+        delete_button.setEnabled(can_manage and not self.db.is_current_user_name(member.name) and member.name != project.owner)
+        delete_button.clicked.connect(lambda checked=False, selected=member: self._delete_project_member(selected))
+        layout.addWidget(delete_button)
+
+        item.setSizeHint(QSize(0, 74))
+        self.config_member_list.addItem(item)
+        self.config_member_list.setItemWidget(item, card)
+
+    def _delete_project_member(self, member: ProjectMember) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        if not self._can_manage_project(project, None):
+            QMessageBox.warning(self, "不能配置", "只有这个项目的负责人可以删除成员。")
+            return
+        if self.db.is_current_user_name(member.name) or member.name == project.owner:
+            QMessageBox.information(self, "不能删除", "负责人不能从项目成员里删除。")
+            return
+        message = f"确定从项目「{project.name}」删除成员「{member.name}」吗？"
+        if QMessageBox.question(self, "删除成员", message) != QMessageBox.StandardButton.Yes:
+            return
+        if not self.db.delete_project_member(member.id):
+            QMessageBox.warning(self, "删除失败", "这个成员记录已经不存在。")
+            return
+        self._refresh_project_workspace()
+
+    def _add_member_card(self, member: ProjectMember) -> None:
+        card = QWidget()
+        card.setObjectName("compactMemberCard")
+        card.setFixedHeight(64)
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        avatar = _label((member.name[:1] or "?").upper(), "compactAvatar")
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        text_box = QVBoxLayout()
+        text_box.setSpacing(2)
         name = _label(member.name, "memberName")
-        role = _label(member.role, "roleBadge")
-        role.setFixedWidth(78)
+        role = _label(member.role, "compactRoleBadge")
+        role.setFixedWidth(82)
         text_box.addWidget(name)
-        text_box.addWidget(role)
+        role_row = QHBoxLayout()
+        role_row.setContentsMargins(0, 0, 0, 0)
+        role_row.setSpacing(0)
+        role_row.addWidget(role)
+        role_row.addStretch()
+        text_box.addLayout(role_row)
 
         layout.addWidget(avatar)
         layout.addLayout(text_box, 1)
-        layout.addStretch()
 
         index = self.member_cards_layout.count()
-        self.member_cards_layout.addWidget(card, index // 3, index % 3)
+        self.member_cards_layout.addWidget(card, index, 0)
+        self.member_cards_layout.setRowStretch(index, 0)
+        self.member_cards_layout.setRowStretch(index + 1, 1)
 
     def _add_todo_card(self, todo: ProjectTodo | None, title: str, can_complete: bool) -> None:
         item = QListWidgetItem()
@@ -1632,6 +1817,7 @@ class MainWindow(QMainWindow):
         content: str,
         document: ProjectDocument | None = None,
         daily_report: DailyReport | None = None,
+        height: int | None = None,
     ) -> None:
         item = QListWidgetItem()
         item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -1646,6 +1832,7 @@ class MainWindow(QMainWindow):
         body.setSpacing(5)
         meta = _label(f"{time_text}  {kind}".strip(), "eyebrow")
         text = _label(content)
+        text.setMaximumHeight(42)
         body.addWidget(meta)
         body.addWidget(text)
         layout.addLayout(body, 1)
@@ -1671,9 +1858,20 @@ class MainWindow(QMainWindow):
             actions.addWidget(delete_button)
             layout.addLayout(actions)
 
-        item.setSizeHint(QSize(0, 78))
+        if height is None:
+            height = self._feed_card_height(content)
+        item.setSizeHint(QSize(0, height))
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
+
+    def _feed_card_height(self, content: str) -> int:
+        normalized = " ".join(content.strip().split())
+        if not normalized:
+            return 78
+        explicit_lines = len([line for line in content.splitlines() if line.strip()])
+        visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
+        needs_two_lines = explicit_lines > 1 or visual_width > 48
+        return 104 if needs_two_lines else 78
 
     def _delete_daily_report(self, report: DailyReport) -> None:
         message = f"确定删除 {report.created_at.strftime('%m-%d %H:%M')} 的日报吗？"
@@ -1683,6 +1881,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "删除失败", "只能删除自己的日报，或这条日报已经不存在。")
             return
         self._refresh_project_workspace()
+        self._announce_presence()
 
     def _daily_feed_text(self, report: DailyReport) -> str:
         return (
@@ -2060,6 +2259,16 @@ class MainWindow(QMainWindow):
         title_box.addWidget(self.lan_subtitle)
         header.addLayout(title_box)
         header.addStretch()
+        self.lan_peers_button = QPushButton("在线同事")
+        self.lan_peers_button.setCheckable(True)
+        self.lan_peers_button.setChecked(True)
+        self.lan_peers_button.setObjectName("primaryButton")
+        self.lan_peers_button.clicked.connect(lambda: self._set_lan_view("peers"))
+        self.lan_logs_button = QPushButton("日志视角")
+        self.lan_logs_button.setCheckable(True)
+        self.lan_logs_button.clicked.connect(lambda: self._set_lan_view("logs"))
+        header.addWidget(self.lan_peers_button)
+        header.addWidget(self.lan_logs_button)
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self._announce_presence)
         header.addWidget(refresh)
@@ -2069,7 +2278,8 @@ class MainWindow(QMainWindow):
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(20, 20, 20, 20)
         panel_layout.setSpacing(14)
-        panel_layout.addWidget(_label("在线同事", "eyebrow"))
+        self.lan_panel_title = _label("在线同事", "eyebrow")
+        panel_layout.addWidget(self.lan_panel_title)
         self.peer_list = QListWidget()
         self.peer_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         panel_layout.addWidget(self.peer_list)
@@ -2377,11 +2587,29 @@ class MainWindow(QMainWindow):
         self._refresh_rest_calendar()
         self._refresh_document_library()
         self._refresh_home()
+        if self.lan_view_mode == "logs":
+            self._refresh_lan_logs(self.current_lan_peers)
+
+    def _set_lan_view(self, mode: str) -> None:
+        self.lan_view_mode = "logs" if mode == "logs" else "peers"
+        self.lan_peers_button.setChecked(self.lan_view_mode == "peers")
+        self.lan_logs_button.setChecked(self.lan_view_mode == "logs")
+        self.lan_peers_button.setObjectName("primaryButton" if self.lan_view_mode == "peers" else "")
+        self.lan_logs_button.setObjectName("primaryButton" if self.lan_view_mode == "logs" else "")
+        for button in (self.lan_peers_button, self.lan_logs_button):
+            button.style().unpolish(button)
+            button.style().polish(button)
+        self._refresh_peers(self.current_lan_peers)
 
     def _refresh_peers(self, peers: list[LanPeer]) -> None:
         if not hasattr(self, "peer_list"):
             return
+        self.current_lan_peers = peers
+        if self.lan_view_mode == "logs":
+            self._refresh_lan_logs(peers)
+            return
         self.peer_list.clear()
+        self.lan_panel_title.setText("在线同事")
         if self.discovery is not None and not self.discovery.is_bound:
             self.lan_subtitle.setText("局域网发现没有启动。请检查系统网络权限或端口占用。")
             item = QListWidgetItem("UDP 45454 端口未能绑定。")
@@ -2397,6 +2625,110 @@ class MainWindow(QMainWindow):
         for peer in peers:
             seen = peer.last_seen.strftime("%H:%M:%S")
             self._add_peer_card(peer, seen)
+
+    def _refresh_lan_logs(self, peers: list[LanPeer]) -> None:
+        self.peer_list.clear()
+        self.lan_panel_title.setText("今日项目日志")
+        if self.discovery is not None and not self.discovery.is_bound:
+            self.lan_subtitle.setText("局域网发现没有启动。请检查系统网络权限或端口占用。")
+            item = QListWidgetItem("UDP 45454 端口未能绑定。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.peer_list.addItem(item)
+            return
+        today = date.today().strftime("%Y-%m-%d")
+        people = [
+            (self.db.display_name(), self.db.today_project_logs(), True),
+            *[
+                (
+                    peer.name,
+                    [item for item in peer.today_project_logs if isinstance(item, dict)],
+                    version_tuple(peer.app_version) >= version_tuple("0.1.24"),
+                )
+                for peer in peers
+            ],
+        ]
+        done_count = sum(1 for _, logs, _ in people if logs)
+        missing_count = sum(1 for _, logs, supports in people if supports and not logs)
+        self.lan_subtitle.setText(
+            f"日志视角：{today}。共 {len(people)} 人，已写 {done_count} 人，未写 {missing_count} 人。"
+        )
+        self._add_lan_log_card(
+            self.db.display_name(),
+            "本机",
+            people[0][1],
+            supports_logs=True,
+        )
+        for peer, (_, logs, supports_logs) in zip(peers, people[1:]):
+            self._add_lan_log_card(
+                peer.name,
+                f"{peer.address} · {peer.last_seen.strftime('%H:%M:%S')}",
+                logs,
+                supports_logs=supports_logs,
+            )
+
+    def _add_lan_log_card(
+        self,
+        name: str,
+        meta_text: str,
+        logs: list[dict[str, object]],
+        supports_logs: bool,
+    ) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+        title_box.addWidget(_label(name, "memberName"))
+        title_box.addWidget(_label(meta_text, "muted"))
+        header.addLayout(title_box, 1)
+        status = "已写" if logs else ("未写" if supports_logs else "未共享")
+        count = f"{len(logs)} 条" if logs else "0 条"
+        status_label = _label(f"{status} · {count}", "roleBadge")
+        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_label.setFixedWidth(92)
+        header.addWidget(status_label)
+        layout.addLayout(header)
+
+        if logs:
+            for log in logs:
+                layout.addWidget(self._lan_log_line(log))
+        else:
+            message = "今天还没有项目日志。" if supports_logs else "对方版本暂未共享日志状态。"
+            layout.addWidget(_label(message, "muted"))
+
+        item.setSizeHint(QSize(0, 82 + max(1, len(logs)) * 58))
+        self.peer_list.addItem(item)
+        self.peer_list.setItemWidget(item, card)
+
+    def _lan_log_line(self, log: dict[str, object]) -> QWidget:
+        row = QWidget()
+        row.setObjectName("compactMemberCard")
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(4)
+
+        created_at = self._format_lan_log_time(str(log.get("created_at", "")))
+        project_name = str(log.get("project_name", "未知项目"))
+        role = str(log.get("role", "")).strip()
+        meta = " · ".join(part for part in (created_at, project_name, role) if part)
+        content = str(log.get("content", "")).strip() or "空日志"
+        content_label = _label(content)
+        content_label.setMaximumHeight(42)
+        layout.addWidget(_label(meta, "eyebrow"))
+        layout.addWidget(content_label)
+        return row
+
+    def _format_lan_log_time(self, value: str) -> str:
+        try:
+            return datetime.fromisoformat(value).strftime("%H:%M")
+        except ValueError:
+            return ""
 
     def _add_peer_card(self, peer: LanPeer, seen: str) -> None:
         item = QListWidgetItem()
@@ -2441,7 +2773,7 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(
             self,
             "下载局域网更新",
-            f"从 {peer.name} 下载 v{peer.app_version} 安装包吗？\n\n下载后需要手动关闭当前程序并运行安装包。",
+            self._lan_update_message(peer),
         ) != QMessageBox.StandardButton.Yes:
             return
         try:
@@ -2452,6 +2784,30 @@ class MainWindow(QMainWindow):
         message = f"安装包已保存到：\n{target}\n\n是否现在打开？"
         if QMessageBox.question(self, "下载完成", message) == QMessageBox.StandardButton.Yes:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
+    def _lan_update_message(self, peer: LanPeer) -> str:
+        package = peer.update_package
+        notes = str(package.get("notes", "")).strip()
+        history = package.get("changelog")
+        history_text = ""
+        if isinstance(history, list):
+            lines: list[str] = []
+            for entry in history[:5]:
+                if not isinstance(entry, dict):
+                    continue
+                version = str(entry.get("version", "")).strip()
+                note = str(entry.get("notes", "")).strip()
+                if version and note:
+                    lines.append(f"v{version}：{note}")
+            if lines:
+                history_text = "\n\n全部历史记录：\n" + "\n".join(lines)
+        notes_text = f"\n\n更新内容：\n{notes}" if notes else ""
+        return (
+            f"从 {peer.name} 下载 v{peer.app_version} 安装包吗？"
+            f"{notes_text}"
+            f"{history_text}"
+            "\n\n下载后需要手动关闭当前程序并运行安装包。"
+        )
 
     def _peer_list_text(self, peer: LanPeer, seen: str) -> str:
         platform = self._platform_label(peer.platform)

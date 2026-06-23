@@ -421,6 +421,15 @@ class Database:
         self._save()
         return True
 
+    def update_project_description(self, project_id: int, description: str) -> Project | None:
+        for row in self.data["projects"]:
+            if int(row["id"]) != project_id:
+                continue
+            row["description"] = description.strip()
+            self._save()
+            return self._project_from_row(row)
+        return None
+
     def _project_from_row(self, row: dict[str, Any]) -> Project:
         return Project(
             id=int(row["id"]),
@@ -449,6 +458,16 @@ class Database:
         rows.sort(key=lambda row: int(row["id"]))
         return [self._member_from_row(row) for row in rows]
 
+    def delete_project_member(self, member_id: int) -> bool:
+        rows = self.data["project_members"]
+        for index, row in enumerate(rows):
+            if int(row["id"]) != member_id:
+                continue
+            del rows[index]
+            self._save()
+            return True
+        return False
+
     def _member_from_row(self, row: dict[str, Any]) -> ProjectMember:
         return ProjectMember(
             id=int(row["id"]),
@@ -476,6 +495,41 @@ class Database:
         rows = [row for row in self.data["daily_reports"] if int(row["project_id"]) == project_id]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._daily_from_row(row) for row in rows[:limit]]
+
+    def today_project_logs(self, member_name: str | None = None) -> list[dict[str, Any]]:
+        today = date.today()
+        target = self._normalize_display_name(member_name or self.display_name())
+        project_names = {
+            int(row["id"]): str(row.get("name", "未知项目"))
+            for row in self.data["projects"]
+            if isinstance(row, dict)
+        }
+        logs: list[dict[str, Any]] = []
+        for row in self.data["daily_reports"]:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("member_name", "")).strip()
+            if target and self._normalize_display_name(name) != target:
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            if created_at.date() != today:
+                continue
+            project_id = int(row.get("project_id", 0) or 0)
+            logs.append(
+                {
+                    "project_id": project_id,
+                    "project_name": project_names.get(project_id, "未知项目"),
+                    "member_name": name,
+                    "role": str(row.get("role", "")),
+                    "content": str(row.get("content", "")),
+                    "created_at": created_at.isoformat(timespec="seconds"),
+                }
+            )
+        logs.sort(key=lambda item: str(item["created_at"]), reverse=True)
+        return logs
 
     def delete_daily_report(self, report_id: int, mine_only: bool = True) -> bool:
         rows = self.data["daily_reports"]

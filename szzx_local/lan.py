@@ -15,6 +15,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QNetworkDatagram, QUdpSocket
 
+from .changelog import CHANGELOG, current_release_notes
 from .version import APP_VERSION
 
 
@@ -37,6 +38,7 @@ class LanPeer:
     app_version: str
     platform: str
     update_package: dict[str, Any]
+    today_project_logs: list[dict[str, Any]]
 
 
 class LanDiscovery(QObject):
@@ -100,6 +102,7 @@ class LanDiscovery(QObject):
             "app_version": APP_VERSION,
             "platform": sys.platform,
             "update_package": self._update_package_info(),
+            "today_project_logs": self._today_project_logs(),
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_socket.writeDatagram(data, QHostAddress.SpecialAddress.Broadcast, self.port)
@@ -117,6 +120,7 @@ class LanDiscovery(QObject):
             "app_version": APP_VERSION,
             "platform": sys.platform,
             "update_package": self._update_package_info(),
+            "today_project_logs": self._today_project_logs(),
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_socket.writeDatagram(data, QHostAddress.SpecialAddress.Broadcast, self.port)
@@ -206,7 +210,26 @@ class LanDiscovery(QObject):
             "size": stat.st_size,
             "version": APP_VERSION,
             "platform": sys.platform,
+            "notes": current_release_notes(),
+            "changelog": CHANGELOG,
         }
+
+    def _today_project_logs(self) -> list[dict[str, Any]]:
+        if self.db is None:
+            return []
+        logs: list[dict[str, Any]] = []
+        for item in self.db.today_project_logs(self.display_name):
+            content = str(item.get("content", "")).strip()
+            logs.append(
+                {
+                    "project_name": str(item.get("project_name", "未知项目")),
+                    "member_name": str(item.get("member_name", self.display_name)),
+                    "role": str(item.get("role", "")),
+                    "content": content[:260],
+                    "created_at": str(item.get("created_at", "")),
+                }
+            )
+        return logs[:12]
 
     def _send_update_package(self, client: socket.socket) -> None:
         path = self.update_package_path
@@ -273,6 +296,11 @@ class LanDiscovery(QObject):
             app_version=str(payload.get("app_version") or ""),
             platform=str(payload.get("platform") or ""),
             update_package=payload.get("update_package") if isinstance(payload.get("update_package"), dict) else {},
+            today_project_logs=(
+                payload.get("today_project_logs")
+                if isinstance(payload.get("today_project_logs"), list)
+                else []
+            ),
         )
         self.peers[device_id] = peer
         if kind == "db_state":

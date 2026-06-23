@@ -4,6 +4,7 @@ import json
 import os
 import ssl
 from dataclasses import dataclass
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -19,6 +20,7 @@ class UpdateInfo:
     latest_version: str
     download_url: str
     notes: str
+    history: list[dict[str, Any]]
     is_newer: bool
 
 
@@ -36,6 +38,7 @@ def check_for_update(url: str | None = None) -> UpdateInfo:
     latest_version = str(payload.get("version", "")).strip()
     download_url = str(payload.get("download_url", "")).strip()
     notes = str(payload.get("notes", "")).strip()
+    history = payload.get("history")
     if not latest_version or not download_url:
         raise ValueError("更新配置缺少 version 或 download_url。")
 
@@ -43,6 +46,7 @@ def check_for_update(url: str | None = None) -> UpdateInfo:
         latest_version=latest_version,
         download_url=download_url,
         notes=notes,
+        history=history if isinstance(history, list) else [],
         is_newer=version_tuple(latest_version) > version_tuple(APP_VERSION),
     )
 
