@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.51",
+  "version": "0.1.52",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "名字/PIN 窗口固定显示「退出登录」按钮，换电脑时可直接从当前设备释放姓名。",
+  "notes": "桌宠窗口新增「隐藏桌宠」按钮，可临时收起桌面宠物。",
   "history": [
     {
-      "version": "0.1.51",
+      "version": "0.1.52",
       "date": "2026-06-24",
-      "notes": "名字/PIN 窗口固定显示「退出登录」按钮，换电脑时可直接从当前设备释放姓名。"
+      "notes": "桌宠窗口新增「隐藏桌宠」按钮，可临时收起桌面宠物。"
     }
   ]
 }

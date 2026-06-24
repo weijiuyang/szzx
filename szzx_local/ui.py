@@ -488,10 +488,16 @@ class PetDialog(QDialog):
             actions.addWidget(button, index // 3, index % 3)
         layout.addLayout(actions)
 
+        visibility_actions = QHBoxLayout()
+        visibility_actions.setSpacing(10)
+        hide_pet = QPushButton("隐藏桌宠")
+        hide_pet.clicked.connect(self._hide_pet)
         show_pet = QPushButton("显示桌宠")
         show_pet.setObjectName("primaryButton")
         show_pet.clicked.connect(self._show_pet_bottom_right)
-        layout.addWidget(show_pet)
+        visibility_actions.addWidget(hide_pet)
+        visibility_actions.addWidget(show_pet)
+        layout.addLayout(visibility_actions)
 
     def _select_pet(self, kind: str) -> None:
         self.db.set_pet_kind(kind)
@@ -507,6 +513,9 @@ class PetDialog(QDialog):
     def _show_pet_bottom_right(self) -> None:
         self.pet.move_to_bottom_right()
         self.pet.show()
+
+    def _hide_pet(self) -> None:
+        self.pet.hide()
 
 
 class VersionDialog(QDialog):
