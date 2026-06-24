@@ -374,32 +374,44 @@ class SettingsDialog(QDialog):
         self.setFixedWidth(420)
         self.setStyleSheet(APP_STYLE)
 
-        layout = QFormLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
+        form = QFormLayout()
+        form.setSpacing(14)
         self.display_name: QLineEdit | None = None
         if self.db.display_name_locked():
             locked_name = _label(self.db.display_name(), "memberName")
             locked_name.setToolTip("名字已经锁定")
-            layout.addRow("名字", locked_name)
+            form.addRow("名字", locked_name)
         else:
             self.display_name = QLineEdit()
             self.display_name.setMaxLength(32)
             self.display_name.setText(self.db.display_name())
             self.display_name.setPlaceholderText("显示给局域网同事的名字")
-            layout.addRow("名字", self.display_name)
+            form.addRow("名字", self.display_name)
 
         self.new_pin = QLineEdit()
         self.new_pin.setEchoMode(QLineEdit.EchoMode.Password)
         self.new_pin.setMaxLength(12)
         self.new_pin.setPlaceholderText("本地密码，留空则不修改")
 
+        form.addRow("本地密码", self.new_pin)
+        layout.addLayout(form)
+        layout.addWidget(_label("换电脑时，先在旧电脑退出当前姓名，再在新电脑设置同一个姓名。", "muted"))
+
         save = QPushButton("保存")
         save.setObjectName("primaryButton")
         save.clicked.connect(self._save)
+        logout = QPushButton("退出登录")
+        logout.setObjectName("dangerButton")
+        logout.clicked.connect(self._release_name)
 
-        layout.addRow("本地密码", self.new_pin)
-        layout.addRow("", save)
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        actions.addWidget(logout)
+        actions.addWidget(save)
+        layout.addLayout(actions)
 
     def _save(self) -> None:
         if self.display_name is not None:
@@ -423,6 +435,14 @@ class SettingsDialog(QDialog):
             return
         if pin:
             self.db.change_pin(pin)
+        self.accept()
+
+    def _release_name(self) -> None:
+        name = self.db.display_name()
+        message = f"确定在这台电脑退出登录「{name}」吗？\n\n退出后，新电脑同步刷新后才能使用这个姓名。"
+        if QMessageBox.question(self, "退出登录", message) != QMessageBox.StandardButton.Yes:
+            return
+        self.db.release_display_name()
         self.accept()
 
     def _online_name_owner(self, name: str) -> str | None:
@@ -787,6 +807,7 @@ class MainWindow(QMainWindow):
         self._last_lan_update_reminder_at: datetime | None = None
         self.lan_view_mode = "peers"
         self.current_lan_peers: list[LanPeer] = []
+        self._lan_logs_signature: tuple[object, ...] | None = None
         self.calendar_mode = "rest"
         self.rest_calendar_month = date.today().replace(day=1)
         self.selected_rest_day: date | None = None
@@ -1515,6 +1536,7 @@ class MainWindow(QMainWindow):
         self._show_project_overview()
         self._load_projects()
         self._refresh_document_library()
+        self._announce_presence()
 
     def _save_daily_report(self) -> None:
         project = self._current_project()
@@ -2957,6 +2979,8 @@ class MainWindow(QMainWindow):
 
     def _set_lan_view(self, mode: str) -> None:
         self.lan_view_mode = "logs" if mode == "logs" else "peers"
+        if self.lan_view_mode != "logs":
+            self._lan_logs_signature = None
         self.lan_peers_button.setChecked(self.lan_view_mode == "peers")
         self.lan_logs_button.setChecked(self.lan_view_mode == "logs")
         self.lan_peers_button.setObjectName("primaryButton" if self.lan_view_mode == "peers" else "")
@@ -2993,10 +3017,11 @@ class MainWindow(QMainWindow):
             self._add_peer_card(peer, seen)
 
     def _refresh_lan_logs(self, peers: list[LanPeer]) -> None:
-        self.peer_list.clear()
         self.lan_panel_title.setText("今日项目日志")
         if self.discovery is not None and not self.discovery.is_bound:
+            self._lan_logs_signature = None
             self.lan_subtitle.setText("局域网发现没有启动。请检查系统网络权限或端口占用。")
+            self.peer_list.clear()
             item = QListWidgetItem("UDP 45454 端口未能绑定。")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.peer_list.addItem(item)
@@ -3018,6 +3043,15 @@ class MainWindow(QMainWindow):
         self.lan_subtitle.setText(
             f"日志视角：{today}。共 {len(people)} 人，已写 {done_count} 人，未写 {missing_count} 人。"
         )
+        signature = self._lan_logs_signature_for(today, people)
+        if signature == self._lan_logs_signature:
+            return
+        self._lan_logs_signature = signature
+        scrollbar = self.peer_list.verticalScrollBar()
+        scroll_value = scrollbar.value()
+        was_at_bottom = scroll_value >= scrollbar.maximum() - 4
+        self.peer_list.setUpdatesEnabled(False)
+        self.peer_list.clear()
         self._add_lan_log_card(
             self.db.display_name(),
             "本机",
@@ -3033,6 +3067,33 @@ class MainWindow(QMainWindow):
                 supports_logs=supports_logs,
                 member_name=peer.name,
             )
+        self.peer_list.setUpdatesEnabled(True)
+        QTimer.singleShot(0, lambda value=scroll_value, bottom=was_at_bottom: self._restore_lan_log_scroll(value, bottom))
+
+    def _lan_logs_signature_for(
+        self,
+        today: str,
+        people: list[tuple[str, list[dict[str, object]], bool]],
+    ) -> tuple[object, ...]:
+        rows: list[object] = [today]
+        for name, logs, supports_logs in people:
+            log_rows = tuple(
+                (
+                    str(log.get("created_at", "")),
+                    str(log.get("project_name", "")),
+                    str(log.get("role", "")),
+                    str(log.get("content", "")),
+                )
+                for log in logs
+            )
+            rows.append((name, supports_logs, log_rows))
+        return tuple(rows)
+
+    def _restore_lan_log_scroll(self, value: int, was_at_bottom: bool) -> None:
+        if not hasattr(self, "peer_list") or self.lan_view_mode != "logs":
+            return
+        scrollbar = self.peer_list.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum() if was_at_bottom else min(value, scrollbar.maximum()))
 
     def _add_lan_log_card(
         self,

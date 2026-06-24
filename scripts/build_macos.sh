@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 export PYINSTALLER_CONFIG_DIR="$ROOT_DIR/.pyinstaller-cache"
+MACOS_TARGET_ARCH="${MACOS_TARGET_ARCH:-universal2}"
 
 PYTHON_BIN=""
 for candidate in python3.12 python3.11 python3.10 python3; do
@@ -44,12 +45,14 @@ fi
 .venv/bin/python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
 .venv/bin/python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org pyinstaller
 
+chflags -R nouchg,nohidden build dist 2>/dev/null || true
 rm -rf build dist
 .venv/bin/pyinstaller \
   --noconfirm \
   --windowed \
   --name SZZXLocalDesk \
   --osx-bundle-identifier com.szzx.localdesk \
+  --target-architecture "$MACOS_TARGET_ARCH" \
   --add-data "szzx_local/assets:szzx_local/assets" \
   --clean \
   run.py

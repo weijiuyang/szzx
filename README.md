@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.46",
+  "version": "0.1.51",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "增强局域网发现广播：同时向网卡定向广播地址发送，并在启动、刷新和数据变更时短时间多次广播。",
+  "notes": "名字/PIN 窗口固定显示「退出登录」按钮，换电脑时可直接从当前设备释放姓名。",
   "history": [
     {
-      "version": "0.1.46",
-      "date": "2026-06-23",
-      "notes": "增强局域网发现广播：同时向网卡定向广播地址发送，并在启动、刷新和数据变更时短时间多次广播。"
+      "version": "0.1.51",
+      "date": "2026-06-24",
+      "notes": "名字/PIN 窗口固定显示「退出登录」按钮，换电脑时可直接从当前设备释放姓名。"
     }
   ]
 }

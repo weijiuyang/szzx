@@ -48,6 +48,7 @@ SHARED_TABLES = (
     "project_todos",
     "rest_days",
     "name_claims",
+    "deleted_projects",
     "counters",
 )
 
@@ -88,6 +89,7 @@ class Database:
             "project_todos": [],
             "rest_days": [],
             "name_claims": [],
+            "deleted_projects": [],
             "counters": {},
             "sync": {},
         }
@@ -259,6 +261,17 @@ class Database:
             return
         self._claim_display_name(next_name)
 
+    def release_display_name(self) -> None:
+        previous = self.display_name()
+        aliases = self.display_name_aliases()
+        if previous and previous not in aliases:
+            aliases.append(previous)
+            self.set_setting("display_name_aliases", json.dumps(aliases, ensure_ascii=False), save=False)
+        self._remove_own_display_name_claim(previous)
+        self.set_setting("display_name", self._default_display_name(), save=False)
+        self.set_setting("display_name_locked", "false", save=False)
+        self._save()
+
     def display_name_aliases(self) -> list[str]:
         raw = self.get_setting("display_name_aliases")
         if not raw:
@@ -340,7 +353,8 @@ class Database:
             for row in claims
             if not isinstance(row, dict)
             or (
-                str(row.get("device_id", "")) != device_id
+                self._normalize_display_name(str(row.get("name", ""))) != normalized
+                and str(row.get("device_id", "")) != device_id
                 and str(row.get("mac_address", "")) != mac_address
             )
         ]
@@ -355,6 +369,22 @@ class Database:
         )
         if save:
             self._save()
+
+    def _remove_own_display_name_claim(self, name: str) -> None:
+        normalized = self._normalize_display_name(name)
+        device_id = self.device_id()
+        mac_address = self.mac_address()
+        claims = self.data.setdefault("name_claims", [])
+        claims[:] = [
+            row
+            for row in claims
+            if not isinstance(row, dict)
+            or self._normalize_display_name(str(row.get("name", ""))) != normalized
+            or (
+                str(row.get("device_id", "")) != device_id
+                and str(row.get("mac_address", "")) != mac_address
+            )
+        ]
 
     def _remove_legacy_demo_project(self) -> None:
         legacy_project_ids = [
@@ -520,10 +550,26 @@ class Database:
         return None
 
     def delete_project(self, project_id: int) -> bool:
-        before = len(self.data["projects"])
-        self.data["projects"] = [row for row in self.data["projects"] if int(row["id"]) != project_id]
-        if len(self.data["projects"]) == before:
+        project_row = self._project_row(project_id)
+        if project_row is None:
             return False
+        self._remember_deleted_project(project_row)
+        self._remove_project_rows(project_id)
+        self._save()
+        return True
+
+    def _project_row(self, project_id: int) -> dict[str, Any] | None:
+        for row in self.data["projects"]:
+            if isinstance(row, dict) and int(row.get("id", 0) or 0) == project_id:
+                return row
+        return None
+
+    def _remove_project_rows(self, project_id: int) -> None:
+        self.data["projects"] = [
+            row
+            for row in self.data["projects"]
+            if not isinstance(row, dict) or int(row.get("id", 0) or 0) != project_id
+        ]
         for table in (
             "project_members",
             "daily_reports",
@@ -532,9 +578,34 @@ class Database:
             "project_documents",
             "project_todos",
         ):
-            self.data[table] = [row for row in self.data[table] if int(row["project_id"]) != project_id]
-        self._save()
-        return True
+            self.data[table] = [
+                row
+                for row in self.data[table]
+                if not isinstance(row, dict) or int(row.get("project_id", 0) or 0) != project_id
+            ]
+
+    def _remember_deleted_project(self, project_row: dict[str, Any]) -> None:
+        source = self._row_source_key(project_row)
+        if source is None:
+            source = (self.device_id(), str(project_row.get("id", "")))
+        source_device, source_id = source
+        tombstones = self.data.setdefault("deleted_projects", [])
+        tombstone = {
+            "source_device_id": source_device,
+            "source_id": source_id,
+            "project_id": int(project_row.get("id", 0) or 0),
+            "name": str(project_row.get("name", "")),
+            "deleted_by": self.display_name(),
+            "deleted_by_device_id": self.device_id(),
+            "deleted_at": datetime.now().isoformat(timespec="microseconds"),
+        }
+        for index, row in enumerate(tombstones):
+            if not isinstance(row, dict):
+                continue
+            if self._deleted_project_key(row) == (source_device, source_id):
+                tombstones[index] = tombstone
+                return
+        tombstones.append(tombstone)
 
     def update_project_description(self, project_id: int, description: str) -> Project | None:
         for row in self.data["projects"]:
@@ -998,8 +1069,8 @@ class Database:
             return False
         for table in SHARED_TABLES:
             if table not in tables:
-                if table in ("name_claims", "project_todos"):
-                    tables[table] = []
+                if table in ("name_claims", "project_todos", "deleted_projects"):
+                    tables[table] = list(self.data.get(table, [])) if table == "deleted_projects" else []
                 else:
                     return False
         self._backup_before_sync()
@@ -1018,6 +1089,7 @@ class Database:
             "origin": str(sync.get("origin", "")),
             "actor": str(sync.get("actor", "")),
         }
+        self._apply_deleted_projects()
         self._claim_display_name(self.display_name(), save=False)
         self._save(bump_sync=False)
         return True
@@ -1027,13 +1099,19 @@ class Database:
         if not isinstance(tables, dict):
             return False
         changed = False
+        if self._merge_deleted_projects(tables.get("deleted_projects")):
+            changed = True
+        if self._apply_deleted_projects():
+            changed = True
         project_id_map, projects_changed = self._merge_remote_projects(tables.get("projects"))
         changed = changed or projects_changed
         for table in SHARED_TABLES:
-            if table in {"projects", "counters"}:
+            if table in {"projects", "deleted_projects", "counters"}:
                 continue
             if self._merge_remote_table(table, tables.get(table), project_id_map):
                 changed = True
+        if self._apply_deleted_projects():
+            changed = True
         if not changed:
             return False
         files = snapshot.get("files")
@@ -1051,6 +1129,7 @@ class Database:
             return project_id_map, changed
         existing_sources = self._source_index("projects")
         existing_ids = self._id_index("projects")
+        deleted_sources = self._deleted_project_keys()
         for row in remote_value:
             if not isinstance(row, dict):
                 continue
@@ -1059,6 +1138,8 @@ class Database:
             except (TypeError, ValueError):
                 continue
             source = self._row_source_key(row)
+            if source and source in deleted_sources:
+                continue
             if source and source in existing_sources:
                 project_id_map[remote_id] = int(existing_sources[source].get("id", remote_id))
                 continue
@@ -1113,15 +1194,30 @@ class Database:
                     remote_project_id = int(next_row.get("project_id", 0) or 0)
                 except (TypeError, ValueError):
                     continue
-                next_row["project_id"] = project_id_map.get(remote_project_id, remote_project_id)
+                if remote_project_id not in project_id_map:
+                    continue
+                next_row["project_id"] = project_id_map[remote_project_id]
             key = self._shared_row_key(table, next_row)
             if table == "name_claims":
-                existing_keys = {
-                    self._shared_row_key(table, item)
-                    for item in local_value
-                    if isinstance(item, dict)
-                }
-                if key in existing_keys:
+                existing = next(
+                    (
+                        item
+                        for item in local_value
+                        if isinstance(item, dict) and self._shared_row_key(table, item) == key
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    same_device = (
+                        str(next_row.get("device_id", "")) == str(existing.get("device_id", ""))
+                        and str(next_row.get("mac_address", "")) == str(existing.get("mac_address", ""))
+                    )
+                    if (
+                        not same_device
+                        and str(next_row.get("claimed_at", "")) >= str(existing.get("claimed_at", ""))
+                    ) or str(next_row.get("claimed_at", "")) > str(existing.get("claimed_at", "")):
+                        existing.update(next_row)
+                        changed = True
                     continue
                 local_value.append(next_row)
                 changed = True
@@ -1140,6 +1236,70 @@ class Database:
             local_value.append(next_row)
             changed = True
         return changed
+
+    def _merge_deleted_projects(self, remote_value: Any) -> bool:
+        if not isinstance(remote_value, list):
+            return False
+        tombstones = self.data.setdefault("deleted_projects", [])
+        existing = {
+            key: row
+            for row in tombstones
+            if isinstance(row, dict) and (key := self._deleted_project_key(row)) is not None
+        }
+        changed = False
+        for row in remote_value:
+            if not isinstance(row, dict):
+                continue
+            key = self._deleted_project_key(row)
+            if key is None:
+                continue
+            current = existing.get(key)
+            if current is not None:
+                if str(row.get("deleted_at", "")) > str(current.get("deleted_at", "")):
+                    current.update(dict(row))
+                    changed = True
+                continue
+            next_row = dict(row)
+            tombstones.append(next_row)
+            existing[key] = next_row
+            changed = True
+        return changed
+
+    def _apply_deleted_projects(self) -> bool:
+        deleted_sources = self._deleted_project_keys()
+        if not deleted_sources:
+            return False
+        changed = False
+        for row in list(self.data.get("projects", [])):
+            if not isinstance(row, dict):
+                continue
+            source = self._row_source_key(row)
+            if source is None or source not in deleted_sources:
+                continue
+            try:
+                project_id = int(row.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            self._remove_project_rows(project_id)
+            changed = True
+        return changed
+
+    def _deleted_project_keys(self) -> set[tuple[str, str]]:
+        keys: set[tuple[str, str]] = set()
+        for row in self.data.get("deleted_projects", []):
+            if not isinstance(row, dict):
+                continue
+            key = self._deleted_project_key(row)
+            if key is not None:
+                keys.add(key)
+        return keys
+
+    def _deleted_project_key(self, row: dict[str, Any]) -> tuple[str, str] | None:
+        source_device = str(row.get("source_device_id") or row.get("deleted_by_device_id") or "").strip()
+        source_id = str(row.get("source_id") or row.get("project_id") or "").strip()
+        if not source_device or not source_id:
+            return None
+        return source_device, source_id
 
     def _id_index(self, table: str) -> dict[int, dict[str, Any]]:
         rows = self.data.get(table)
@@ -1209,10 +1369,12 @@ class Database:
         if table == "name_claims":
             return (
                 table,
-                str(row.get("device_id", "")),
-                str(row.get("mac_address", "")),
                 self._normalize_display_name(str(row.get("name", ""))),
             )
+        if table == "deleted_projects":
+            key = self._deleted_project_key(row)
+            if key is not None:
+                return (table, key[0], key[1])
         if "id" in row:
             return (table, str(row.get("id", "")))
         return (table, json.dumps(row, ensure_ascii=False, sort_keys=True))
