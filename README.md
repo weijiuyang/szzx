@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.52",
+  "version": "0.1.54",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "桌宠窗口新增「隐藏桌宠」按钮，可临时收起桌面宠物。",
+  "notes": "晚上 8 点后保存日报或周报时，桌宠会切到困困并提醒注意身体。",
   "history": [
     {
-      "version": "0.1.52",
-      "date": "2026-06-24",
-      "notes": "桌宠窗口新增「隐藏桌宠」按钮，可临时收起桌面宠物。"
+      "version": "0.1.54",
+      "date": "2026-06-25",
+      "notes": "晚上 8 点后保存日报或周报时，桌宠会切到困困并提醒注意身体。"
     }
   ]
 }

@@ -930,6 +930,12 @@ class MainWindow(QMainWindow):
         self.pet.move_to_bottom_right()
         self.pet.speak("18:00 到啦，今天还没写项目日报。先记一下今天做了什么吧。")
 
+    def _nudge_after_late_record(self) -> None:
+        if datetime.now().hour < 20:
+            return
+        self.pet.move_to_bottom_right()
+        self.pet.speak("辛苦了，工作到这么晚，要保重身体啊", mood="sleepy")
+
     def _start_lan_update_reminder(self) -> None:
         self.lan_update_reminder_timer = QTimer(self)
         self.lan_update_reminder_timer.setInterval(5 * 60 * 1000)
@@ -1563,6 +1569,7 @@ class MainWindow(QMainWindow):
         self.db.add_daily_report(project.id, current_member.name, current_member.role, content)
         self.daily_editor.clear()
         self._refresh_project_workspace()
+        self._nudge_after_late_record()
         self._announce_presence()
 
     def _add_project_todo(self) -> None:
@@ -1571,8 +1578,8 @@ class MainWindow(QMainWindow):
             return
         members = self.db.list_project_members(project.id)
         current_member = self._current_project_member(project, members)
-        if current_member is None:
-            QMessageBox.information(self, "不能添加", "只有项目成员可以添加代办。")
+        if not self._can_manage_project(project, current_member):
+            QMessageBox.information(self, "不能添加", "只有项目负责人或最高权限用户可以添加代办。")
             return
         title = self.project_todo_input.text().strip()
         if not title:
@@ -1594,6 +1601,8 @@ class MainWindow(QMainWindow):
         report = self.db.complete_project_todo(todo.id, current_member.name, current_member.role)
         if report is None:
             QMessageBox.information(self, "已完成", "这个代办已经被完成。")
+        else:
+            self._nudge_after_late_record()
         self._refresh_project_workspace()
         self._announce_presence()
 
@@ -1608,6 +1617,7 @@ class MainWindow(QMainWindow):
         self.db.add_project_weekly_report(project.id, self.db.display_name(), content)
         self.project_weekly_editor.clear()
         self._refresh_project_workspace()
+        self._nudge_after_late_record()
 
     def _upload_project_deck(self) -> None:
         project = self._current_project()
@@ -1664,11 +1674,6 @@ class MainWindow(QMainWindow):
         weekly_reports = self.db.list_project_weekly_reports(project.id)
         documents = self.db.list_project_documents(project.id)
         todos = self.db.list_project_todos(project.id)
-        completed_todos = [
-            todo
-            for todo in self.db.list_project_todos(project.id, include_completed=True)
-            if todo.status == "done" and todo.completed_at is not None
-        ]
 
         self.project_status.setText(f"{project.status} · 负责人 {project.owner}")
         self.project_title.setText(project.name)
@@ -1687,13 +1692,16 @@ class MainWindow(QMainWindow):
             self.project_config_button.setEnabled(is_manager)
         if not is_manager and self.project_side_stack.currentIndex() == 1:
             self._select_project_mode(0)
-        can_update_todos = current_member is not None
-        self.todo_panel.setVisible(can_update_todos)
-        self.daily_form.setVisible(can_update_todos)
-        self.project_todo_input.setEnabled(can_update_todos)
-        self.add_todo_button.setEnabled(can_update_todos)
-        self.daily_editor.setEnabled(can_update_todos)
-        self.save_daily_button.setEnabled(can_update_todos)
+        can_complete_todos = current_member is not None
+        can_add_todos = is_manager
+        self.todo_panel.setVisible(can_complete_todos or can_add_todos)
+        self.daily_form.setVisible(can_complete_todos)
+        self.project_todo_input.setVisible(can_add_todos)
+        self.add_todo_button.setVisible(can_add_todos)
+        self.project_todo_input.setEnabled(can_add_todos)
+        self.add_todo_button.setEnabled(can_add_todos)
+        self.daily_editor.setEnabled(can_complete_todos)
+        self.save_daily_button.setEnabled(can_complete_todos)
         self.daily_member_label.setText(
             f"当前身份：{current_member.name} · {current_member.role}" if current_member is not None else "当前身份：非项目成员"
         )
@@ -1718,7 +1726,7 @@ class MainWindow(QMainWindow):
         if not todos:
             self._add_todo_card(None, "当前没有待完成 todo。", False)
         for todo in todos:
-            self._add_todo_card(todo, todo.title, can_update_todos)
+            self._add_todo_card(todo, todo.title, can_complete_todos)
 
         self.product_feed.clear()
         product_items: list[tuple[str, str, str, str, ProjectDocument | None, tuple[str, int, str] | None]] = []
@@ -1753,18 +1761,6 @@ class MainWindow(QMainWindow):
                     document.title,
                     document,
                     ("document", document.id, f"文档：{document.title}") if is_manager else None,
-                )
-            )
-        for todo in completed_todos:
-            completed_at = todo.completed_at
-            product_items.append(
-                (
-                    completed_at.isoformat(),
-                    completed_at.strftime("%m-%d %H:%M"),
-                    f"完成代办 · {todo.completed_by or '项目成员'}",
-                    todo.title,
-                    None,
-                    ("todo", todo.id, f"完成代办：{todo.title}") if is_manager else None,
                 )
             )
         if product_items:
@@ -2859,6 +2855,7 @@ class MainWindow(QMainWindow):
         self.editor.clear()
         self._prepend_report(report)
         self._refresh_home()
+        self._nudge_after_late_record()
 
     def _load_reports(self) -> None:
         self.history.clear()
