@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.54",
+  "version": "0.1.55",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "晚上 8 点后保存日报或周报时，桌宠会切到困困并提醒注意身体。",
+  "notes": "代办看板拆分为个人代办和项目代办：个人完成进入日报流，项目完成进入项目进展流，并按项目角色限制操作权限。",
   "history": [
     {
-      "version": "0.1.54",
+      "version": "0.1.55",
       "date": "2026-06-25",
-      "notes": "晚上 8 点后保存日报或周报时，桌宠会切到困困并提醒注意身体。"
+      "notes": "代办看板拆分为个人代办和项目代办：个人完成进入日报流，项目完成进入项目进展流，并按项目角色限制操作权限。"
     }
   ]
 }

@@ -794,13 +794,15 @@ class Database:
             created_at=_parse_time(str(row["created_at"])),
         )
 
-    def add_project_todo(self, project_id: int, title: str, creator: str) -> ProjectTodo:
+    def add_project_todo(self, project_id: int, title: str, creator: str, scope: str = "personal") -> ProjectTodo:
         created_at = datetime.now()
+        todo_scope = "project" if scope == "project" else "personal"
         row = self._with_operator({
             "id": self._next_id("project_todos"),
             "project_id": project_id,
             "title": title.strip(),
             "creator": creator.strip(),
+            "scope": todo_scope,
             "status": "todo",
             "completed_by": "",
             "created_at": created_at.isoformat(timespec="seconds"),
@@ -810,8 +812,15 @@ class Database:
         self._save()
         return self._todo_from_row(row)
 
-    def list_project_todos(self, project_id: int, include_completed: bool = False) -> list[ProjectTodo]:
+    def list_project_todos(
+        self,
+        project_id: int,
+        include_completed: bool = False,
+        scope: str | None = None,
+    ) -> list[ProjectTodo]:
         rows = [row for row in self.data["project_todos"] if int(row["project_id"]) == project_id]
+        if scope in {"personal", "project"}:
+            rows = [row for row in rows if str(row.get("scope", "personal")) == scope]
         if not include_completed:
             rows = [row for row in rows if str(row.get("status", "todo")) != "done"]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
@@ -833,7 +842,7 @@ class Database:
         member_name: str,
         role: str,
         progress_prefix: str = "完成待办",
-    ) -> DailyReport | None:
+    ) -> DailyReport | ProjectTodo | None:
         for row in self.data["project_todos"]:
             if int(row["id"]) != todo_id:
                 continue
@@ -843,6 +852,9 @@ class Database:
             row["status"] = "done"
             row["completed_by"] = member_name.strip()
             row["completed_at"] = completed_at.isoformat(timespec="seconds")
+            if str(row.get("scope", "personal")) == "project":
+                self._save()
+                return self._todo_from_row(row)
             report = self.add_daily_report(
                 int(row["project_id"]),
                 member_name,
@@ -859,6 +871,7 @@ class Database:
             project_id=int(row["project_id"]),
             title=str(row["title"]),
             creator=str(row.get("creator", "")),
+            scope=str(row.get("scope", "personal")),
             status=str(row.get("status", "todo")),
             completed_by=str(row.get("completed_by", "")),
             created_at=_parse_time(str(row["created_at"])),

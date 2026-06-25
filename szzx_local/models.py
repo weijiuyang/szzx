@@ -60,6 +60,7 @@ class ProjectTodo:
     project_id: int
     title: str
     creator: str
+    scope: str
     status: str
     completed_by: str
     created_at: datetime

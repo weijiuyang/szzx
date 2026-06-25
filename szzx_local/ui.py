@@ -815,6 +815,7 @@ class MainWindow(QMainWindow):
         self._last_daily_reminder_date: date | None = None
         self._last_lan_update_reminder_at: datetime | None = None
         self.lan_view_mode = "peers"
+        self.todo_view_mode = "personal"
         self.current_lan_peers: list[LanPeer] = []
         self._lan_logs_signature: tuple[object, ...] | None = None
         self.calendar_mode = "rest"
@@ -1222,7 +1223,14 @@ class MainWindow(QMainWindow):
         todo_layout.setContentsMargins(18, 18, 18, 18)
         todo_layout.setSpacing(10)
         todo_header = QHBoxLayout()
-        todo_header.addWidget(_label("代办看板", "eyebrow"))
+        self.personal_todo_button = QPushButton("个人代办")
+        self.personal_todo_button.setCheckable(True)
+        self.personal_todo_button.clicked.connect(lambda checked=False: self._set_todo_view("personal"))
+        self.project_todo_button = QPushButton("项目代办")
+        self.project_todo_button.setCheckable(True)
+        self.project_todo_button.clicked.connect(lambda checked=False: self._set_todo_view("project"))
+        todo_header.addWidget(self.personal_todo_button)
+        todo_header.addWidget(self.project_todo_button)
         todo_header.addStretch()
         self.todo_count_label = _label("0 个待完成", "muted")
         todo_header.addWidget(self.todo_count_label)
@@ -1476,6 +1484,22 @@ class MainWindow(QMainWindow):
         self._select_project_mode(0)
         self._load_projects()
 
+    def _set_todo_view(self, mode: str) -> None:
+        self.todo_view_mode = "project" if mode == "project" else "personal"
+        self._set_todo_view_buttons()
+        if self._current_project() is not None:
+            self._refresh_project_workspace()
+
+    def _set_todo_view_buttons(self) -> None:
+        if hasattr(self, "personal_todo_button"):
+            self.personal_todo_button.setChecked(self.todo_view_mode == "personal")
+            self.project_todo_button.setChecked(self.todo_view_mode == "project")
+            self.personal_todo_button.setObjectName("primaryButton" if self.todo_view_mode == "personal" else "")
+            self.project_todo_button.setObjectName("primaryButton" if self.todo_view_mode == "project" else "")
+            for button in (self.personal_todo_button, self.project_todo_button):
+                button.style().unpolish(button)
+                button.style().polish(button)
+
     def _current_project(self) -> Project | None:
         if self.current_project_id is None:
             return None
@@ -1578,14 +1602,18 @@ class MainWindow(QMainWindow):
             return
         members = self.db.list_project_members(project.id)
         current_member = self._current_project_member(project, members)
-        if not self._can_manage_project(project, current_member):
-            QMessageBox.information(self, "不能添加", "只有项目负责人或最高权限用户可以添加代办。")
+        is_manager = self._can_manage_project(project, current_member)
+        if self.todo_view_mode == "project" and not is_manager:
+            QMessageBox.information(self, "不能添加", "只有项目负责人或最高权限用户可以添加项目代办。")
+            return
+        if self.todo_view_mode == "personal" and current_member is None and not is_manager:
+            QMessageBox.information(self, "不能添加", "只有项目成员可以添加个人代办。")
             return
         title = self.project_todo_input.text().strip()
         if not title:
             QMessageBox.information(self, "代办为空", "先写一个 todo。")
             return
-        self.db.add_project_todo(project.id, title, self.db.display_name())
+        self.db.add_project_todo(project.id, title, self.db.display_name(), scope=self.todo_view_mode)
         self.project_todo_input.clear()
         self._refresh_project_workspace()
 
@@ -1595,8 +1623,12 @@ class MainWindow(QMainWindow):
             return
         members = self.db.list_project_members(project.id)
         current_member = self._current_project_member(project, members)
+        is_manager = self._can_manage_project(project, current_member)
         if current_member is None:
             QMessageBox.information(self, "不能完成", "只有项目成员可以完成代办。")
+            return
+        if todo.scope == "project" and not is_manager:
+            QMessageBox.information(self, "不能完成", "只有项目负责人或最高权限用户可以完成项目代办。")
             return
         report = self.db.complete_project_todo(todo.id, current_member.name, current_member.role)
         if report is None:
@@ -1673,14 +1705,20 @@ class MainWindow(QMainWindow):
         daily_reports = self.db.list_daily_reports(project.id)
         weekly_reports = self.db.list_project_weekly_reports(project.id)
         documents = self.db.list_project_documents(project.id)
-        todos = self.db.list_project_todos(project.id)
+        open_todos = self.db.list_project_todos(project.id)
+        todos = self.db.list_project_todos(project.id, scope=self.todo_view_mode)
+        completed_project_todos = [
+            todo
+            for todo in self.db.list_project_todos(project.id, include_completed=True, scope="project")
+            if todo.status == "done" and todo.completed_at is not None
+        ]
 
         self.project_status.setText(f"{project.status} · 负责人 {project.owner}")
         self.project_title.setText(project.name)
         self.project_description.setText(project.description)
         self.config_project_description.setPlainText(project.description)
         self._set_metric(self.metric_members, len(members))
-        self._set_metric(self.metric_todos, len(todos))
+        self._set_metric(self.metric_todos, len(open_todos))
         self._set_metric(self.metric_daily, len(daily_reports))
         self._set_metric(self.metric_weekly, len(weekly_reports))
         self._set_metric(self.metric_decks, len(documents))
@@ -1692,16 +1730,25 @@ class MainWindow(QMainWindow):
             self.project_config_button.setEnabled(is_manager)
         if not is_manager and self.project_side_stack.currentIndex() == 1:
             self._select_project_mode(0)
-        can_complete_todos = current_member is not None
-        can_add_todos = is_manager
-        self.todo_panel.setVisible(can_complete_todos or can_add_todos)
-        self.daily_form.setVisible(can_complete_todos)
+        if current_member is None and not is_manager and self.todo_view_mode != "project":
+            self.todo_view_mode = "project"
+        self._set_todo_view_buttons()
+        self.personal_todo_button.setEnabled(current_member is not None or is_manager)
+        self.project_todo_button.setEnabled(True)
+        can_complete_todos = current_member is not None and (self.todo_view_mode == "personal" or is_manager)
+        can_add_todos = is_manager or (self.todo_view_mode == "personal" and current_member is not None)
+        self.todo_panel.setVisible(current_member is not None or is_manager or self.todo_view_mode == "project")
+        can_write_daily = current_member is not None
+        self.daily_form.setVisible(can_write_daily)
+        self.project_todo_input.setPlaceholderText(
+            "新增一个个人代办" if self.todo_view_mode == "personal" else "新增一个项目代办"
+        )
         self.project_todo_input.setVisible(can_add_todos)
         self.add_todo_button.setVisible(can_add_todos)
         self.project_todo_input.setEnabled(can_add_todos)
         self.add_todo_button.setEnabled(can_add_todos)
-        self.daily_editor.setEnabled(can_complete_todos)
-        self.save_daily_button.setEnabled(can_complete_todos)
+        self.daily_editor.setEnabled(can_write_daily)
+        self.save_daily_button.setEnabled(can_write_daily)
         self.daily_member_label.setText(
             f"当前身份：{current_member.name} · {current_member.role}" if current_member is not None else "当前身份：非项目成员"
         )
@@ -1724,7 +1771,8 @@ class MainWindow(QMainWindow):
         self.todo_board.clear()
         self.todo_count_label.setText(f"{len(todos)} 个待完成")
         if not todos:
-            self._add_todo_card(None, "当前没有待完成 todo。", False)
+            empty_todo_text = "当前没有待完成个人代办。" if self.todo_view_mode == "personal" else "当前没有待完成项目代办。"
+            self._add_todo_card(None, empty_todo_text, False)
         for todo in todos:
             self._add_todo_card(todo, todo.title, can_complete_todos)
 
@@ -1761,6 +1809,18 @@ class MainWindow(QMainWindow):
                     document.title,
                     document,
                     ("document", document.id, f"文档：{document.title}") if is_manager else None,
+                )
+            )
+        for todo in completed_project_todos:
+            completed_at = todo.completed_at
+            product_items.append(
+                (
+                    completed_at.isoformat(),
+                    completed_at.strftime("%m-%d %H:%M"),
+                    f"完成项目代办 · {todo.completed_by or '项目成员'}",
+                    todo.title,
+                    None,
+                    ("todo", todo.id, f"完成项目代办：{todo.title}") if is_manager else None,
                 )
             )
         if product_items:
