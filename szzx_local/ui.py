@@ -837,6 +837,7 @@ class MainWindow(QMainWindow):
         shell_layout.setSpacing(0)
         shell_layout.addWidget(self._sidebar())
 
+        self.stack.addWidget(self._my_tab())
         self.stack.addWidget(self._project_tab())
         self.stack.addWidget(self._weekly_tab())
         self.stack.addWidget(self._rest_calendar_tab())
@@ -877,7 +878,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(subtitle)
         layout.addSpacing(28)
 
-        for index, text in enumerate(("项目面板", "个人周报", "日历", "局域网", "成长履历", "文档库")):
+        for index, text in enumerate(("我的面板", "项目面板", "个人周报", "日历", "局域网", "成长履历", "文档库")):
             button = QPushButton(text)
             button.setObjectName("navButton")
             button.setCheckable(True)
@@ -992,6 +993,66 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "发现新版本", message) == QMessageBox.StandardButton.Yes:
             QDesktopServices.openUrl(QUrl(str(download_url)))
 
+    def _my_tab(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        page = QWidget()
+        scroll.setWidget(page)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(42, 38, 42, 38)
+        outer.setSpacing(22)
+
+        header = QVBoxLayout()
+        header.setSpacing(4)
+        header.addWidget(_label("我的面板", "sectionTitle"))
+        header.addWidget(_label("集中查看参与项目、分配任务和完成提醒。", "muted"))
+        outer.addLayout(header)
+
+        projects_panel = _panel()
+        projects_layout = QVBoxLayout(projects_panel)
+        projects_layout.setContentsMargins(20, 20, 20, 20)
+        projects_layout.setSpacing(14)
+        projects_layout.addWidget(_label("参与项目", "eyebrow"))
+        self.my_projects_body = QWidget()
+        self.my_projects_layout = QGridLayout(self.my_projects_body)
+        self.my_projects_layout.setContentsMargins(0, 0, 0, 0)
+        self.my_projects_layout.setSpacing(12)
+        projects_layout.addWidget(self.my_projects_body)
+
+        tasks_panel = _panel()
+        tasks_layout = QVBoxLayout(tasks_panel)
+        tasks_layout.setContentsMargins(20, 20, 20, 20)
+        tasks_layout.setSpacing(14)
+        tasks_header = QHBoxLayout()
+        tasks_header.addWidget(_label("分配任务 / 被分配任务", "eyebrow"))
+        tasks_header.addStretch()
+        self.my_tasks_count_label = _label("", "muted")
+        tasks_header.addWidget(self.my_tasks_count_label)
+        tasks_layout.addLayout(tasks_header)
+        self.my_tasks_body = QWidget()
+        self.my_tasks_layout = QVBoxLayout(self.my_tasks_body)
+        self.my_tasks_layout.setContentsMargins(0, 0, 0, 0)
+        self.my_tasks_layout.setSpacing(12)
+        tasks_layout.addWidget(self.my_tasks_body)
+
+        messages_panel = _panel()
+        messages_layout = QVBoxLayout(messages_panel)
+        messages_layout.setContentsMargins(20, 20, 20, 20)
+        messages_layout.setSpacing(14)
+        messages_layout.addWidget(_label("消息提醒", "eyebrow"))
+        self.my_messages_body = QWidget()
+        self.my_messages_layout = QVBoxLayout(self.my_messages_body)
+        self.my_messages_layout.setContentsMargins(0, 0, 0, 0)
+        self.my_messages_layout.setSpacing(10)
+        messages_layout.addWidget(self.my_messages_body)
+
+        outer.addWidget(projects_panel)
+        outer.addWidget(tasks_panel)
+        outer.addWidget(messages_panel)
+        outer.addStretch()
+        return scroll
+
     def _project_tab(self) -> QWidget:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1039,6 +1100,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(18, 18, 18, 18)
         left_layout.setSpacing(12)
+
         left_layout.addWidget(_label("项目", "eyebrow"))
         self.project_list = QListWidget()
         self.project_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1169,8 +1231,8 @@ class MainWindow(QMainWindow):
         self.project_content_stack.addWidget(self._deck_detail_page())
 
         self.project_side_stack = QStackedWidget()
-        self.project_side_stack.setMinimumWidth(260)
-        self.project_side_stack.setMaximumWidth(340)
+        self.project_side_stack.setMinimumWidth(380)
+        self.project_side_stack.setMaximumWidth(520)
 
         display_side = QWidget()
         display_side_layout = QVBoxLayout(display_side)
@@ -1226,15 +1288,22 @@ class MainWindow(QMainWindow):
         self.personal_todo_button = QPushButton("个人代办")
         self.personal_todo_button.setCheckable(True)
         self.personal_todo_button.clicked.connect(lambda checked=False: self._set_todo_view("personal"))
+        self.assigned_todo_button = QPushButton("分配任务")
+        self.assigned_todo_button.setCheckable(True)
+        self.assigned_todo_button.clicked.connect(lambda checked=False: self._set_todo_view("assigned"))
         self.project_todo_button = QPushButton("项目代办")
         self.project_todo_button.setCheckable(True)
         self.project_todo_button.clicked.connect(lambda checked=False: self._set_todo_view("project"))
         todo_header.addWidget(self.personal_todo_button)
+        todo_header.addWidget(self.assigned_todo_button)
         todo_header.addWidget(self.project_todo_button)
         todo_header.addStretch()
         self.todo_count_label = _label("0 个待完成", "muted")
         todo_header.addWidget(self.todo_count_label)
         todo_layout.addLayout(todo_header)
+        self.assigned_todo_assignee = QComboBox()
+        self.assigned_todo_assignee.setVisible(False)
+        todo_layout.addWidget(self.assigned_todo_assignee)
         todo_input_row = QHBoxLayout()
         todo_input_row.setSpacing(8)
         self.project_todo_input = QLineEdit()
@@ -1309,7 +1378,10 @@ class MainWindow(QMainWindow):
         splitter.addWidget(middle)
         splitter.addWidget(self.project_side_stack)
         splitter.setChildrenCollapsible(False)
-        splitter.setSizes([260, 590, 300])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes([260, 560, 430])
         self._select_project_scope("mine")
         self._select_project_mode(0)
         return scroll
@@ -1405,6 +1477,7 @@ class MainWindow(QMainWindow):
             self.current_project_id = None
             self._clear_project_workspace()
         self._update_project_sync_hint()
+        self._refresh_my_panel()
 
     def _update_project_sync_hint(self, message: str | None = None) -> None:
         if not hasattr(self, "project_sync_hint"):
@@ -1444,6 +1517,171 @@ class MainWindow(QMainWindow):
             self.db.is_current_user_name(member.name)
             for member in self.db.list_project_members(project.id)
         )
+
+    def _project_role_for_me(self, project: Project) -> str:
+        if self.db.is_current_user_name(project.owner):
+            return "产品经理"
+        for member in self.db.list_project_members(project.id):
+            if self.db.is_current_user_name(member.name):
+                return member.role
+        return "未参与"
+
+    def _refresh_my_panel(self) -> None:
+        if not hasattr(self, "my_projects_layout"):
+            return
+        projects = [project for project in self.db.list_projects() if self._project_involves_current_user(project)]
+        all_projects = self.db.list_projects()
+        projects_by_id = {project.id: project for project in all_projects}
+
+        self._clear_layout(self.my_projects_layout)
+        if not projects:
+            self.my_projects_layout.addWidget(self._empty_my_card("还没有参与项目。"), 0, 0)
+        for index, project in enumerate(projects):
+            self.my_projects_layout.addWidget(self._my_project_card(project), index // 3, index % 3)
+        for column in range(3):
+            self.my_projects_layout.setColumnStretch(column, 1)
+
+        all_assigned = self.db.list_all_project_todos(include_completed=True, scope="assigned")
+        active_tasks = [
+            todo
+            for todo in all_assigned
+            if todo.status != "done"
+            and (self.db.is_current_user_name(todo.assignee) or self.db.is_current_user_name(todo.assigned_by))
+        ]
+        self._clear_layout(self.my_tasks_layout)
+        self.my_tasks_count_label.setText(f"{len(active_tasks)} 个进行中")
+        if not active_tasks:
+            self.my_tasks_layout.addWidget(self._empty_my_card("当前没有分配任务。"))
+        for project_id, todos in self._group_todos_by_project(active_tasks).items():
+            project = projects_by_id.get(project_id)
+            project_name = project.name if project is not None else "未知项目"
+            self.my_tasks_layout.addWidget(self._my_task_project_card(project_name, todos))
+        self.my_tasks_layout.addStretch()
+
+        messages = [
+            todo
+            for todo in all_assigned
+            if todo.status == "done"
+            and todo.completed_at is not None
+            and self.db.is_current_user_name(todo.assigned_by)
+        ]
+        messages.sort(key=lambda todo: todo.completed_at or todo.created_at, reverse=True)
+        self._clear_layout(self.my_messages_layout)
+        if not messages:
+            self.my_messages_layout.addWidget(self._empty_my_card("暂时没有新的完成提醒。"))
+        for todo in messages[:10]:
+            project = projects_by_id.get(todo.project_id)
+            self.my_messages_layout.addWidget(self._my_message_card(todo, project.name if project is not None else "未知项目"))
+        self.my_messages_layout.addStretch()
+
+    def _group_todos_by_project(self, todos: list[ProjectTodo]) -> dict[int, list[ProjectTodo]]:
+        grouped: dict[int, list[ProjectTodo]] = {}
+        for todo in todos:
+            grouped.setdefault(todo.project_id, []).append(todo)
+        for rows in grouped.values():
+            rows.sort(key=lambda todo: todo.created_at, reverse=True)
+        return grouped
+
+    def _days_since(self, value: datetime) -> int:
+        return max(1, (date.today() - value.date()).days + 1)
+
+    def _project_joined_days(self, project: Project) -> int:
+        joined_at = project.created_at
+        if not self.db.is_current_user_name(project.owner):
+            for member in self.db.list_project_members(project.id):
+                if self.db.is_current_user_name(member.name):
+                    joined_at = member.created_at
+                    break
+        return self._days_since(joined_at)
+
+    def _empty_my_card(self, text: str) -> QWidget:
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        label = _label(text, "muted")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+        return card
+
+    def _my_project_card(self, project: Project) -> QWidget:
+        card = QWidget()
+        card.setObjectName("feedCard")
+        card.setMinimumHeight(116)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(_label(project.name, "memberName"))
+        title_row.addStretch()
+        title_row.addWidget(_label(project.status, "compactRoleBadge"))
+        layout.addLayout(title_row)
+        layout.addWidget(_label(f"{self._project_role_for_me(project)} · 参与 {self._project_joined_days(project)} 天", "muted"))
+        layout.addWidget(_label(f"负责人 {project.owner}", "eyebrow"))
+        return card
+
+    def _my_task_project_card(self, project_name: str, todos: list[ProjectTodo]) -> QWidget:
+        card = QWidget()
+        card.setObjectName("softPanel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        assigned_to_me = [todo for todo in todos if self.db.is_current_user_name(todo.assignee)]
+        assigned_by_me = [todo for todo in todos if self.db.is_current_user_name(todo.assigned_by)]
+        header = QHBoxLayout()
+        header.addWidget(_label(project_name, "memberName"))
+        header.addStretch()
+        header.addWidget(_label(f"分配给我 {len(assigned_to_me)} · 我分配 {len(assigned_by_me)}", "eyebrow"))
+        layout.addLayout(header)
+
+        for todo in todos:
+            layout.addWidget(self._my_task_card(todo))
+        return card
+
+    def _my_task_card(self, todo: ProjectTodo) -> QWidget:
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(10)
+
+        body = QVBoxLayout()
+        body.setSpacing(4)
+        direction = "分配给我" if self.db.is_current_user_name(todo.assignee) else f"我分配给 {todo.assignee}"
+        body.addWidget(_label(
+            f"{direction} · {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {self._days_since(todo.created_at)} 天",
+            "eyebrow",
+        ))
+        body.addWidget(_label(todo.title))
+        layout.addLayout(body, 1)
+
+        project = self.db.get_project(todo.project_id)
+        if project is not None and self.db.is_current_user_name(todo.assignee):
+            done_button = QPushButton("完成")
+            done_button.setObjectName("smallButton")
+            done_button.clicked.connect(lambda checked=False, p=project, selected=todo: self._complete_todo_for_project(p, selected))
+            layout.addWidget(done_button)
+        if self.db.is_current_user_name(todo.assigned_by):
+            delete_button = QPushButton("删除")
+            delete_button.setObjectName("smallButton")
+            delete_button.clicked.connect(lambda checked=False, selected=todo: self._delete_assigned_todo_from_my_panel(selected))
+            layout.addWidget(delete_button)
+
+        return card
+
+    def _my_message_card(self, todo: ProjectTodo, project_name: str) -> QWidget:
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(5)
+        completed_at = todo.completed_at.strftime("%m-%d %H:%M") if todo.completed_at is not None else ""
+        layout.addWidget(_label(f"{completed_at} · {project_name}", "eyebrow"))
+        layout.addWidget(_label(f"{todo.completed_by or todo.assignee} 完成了你分配的任务"))
+        layout.addWidget(_label(todo.title, "muted"))
+        return card
 
     def _select_project_item(self, item: QListWidgetItem) -> None:
         project_id = item.data(Qt.ItemDataRole.UserRole)
@@ -1485,7 +1723,7 @@ class MainWindow(QMainWindow):
         self._load_projects()
 
     def _set_todo_view(self, mode: str) -> None:
-        self.todo_view_mode = "project" if mode == "project" else "personal"
+        self.todo_view_mode = mode if mode in {"personal", "assigned", "project"} else "personal"
         self._set_todo_view_buttons()
         if self._current_project() is not None:
             self._refresh_project_workspace()
@@ -1493,10 +1731,12 @@ class MainWindow(QMainWindow):
     def _set_todo_view_buttons(self) -> None:
         if hasattr(self, "personal_todo_button"):
             self.personal_todo_button.setChecked(self.todo_view_mode == "personal")
+            self.assigned_todo_button.setChecked(self.todo_view_mode == "assigned")
             self.project_todo_button.setChecked(self.todo_view_mode == "project")
             self.personal_todo_button.setObjectName("primaryButton" if self.todo_view_mode == "personal" else "")
+            self.assigned_todo_button.setObjectName("primaryButton" if self.todo_view_mode == "assigned" else "")
             self.project_todo_button.setObjectName("primaryButton" if self.todo_view_mode == "project" else "")
-            for button in (self.personal_todo_button, self.project_todo_button):
+            for button in (self.personal_todo_button, self.assigned_todo_button, self.project_todo_button):
                 button.style().unpolish(button)
                 button.style().polish(button)
 
@@ -1603,6 +1843,9 @@ class MainWindow(QMainWindow):
         members = self.db.list_project_members(project.id)
         current_member = self._current_project_member(project, members)
         is_manager = self._can_manage_project(project, current_member)
+        if self.todo_view_mode == "assigned" and not is_manager:
+            QMessageBox.information(self, "不能分配", "只有项目负责人或最高权限用户可以分配任务。")
+            return
         if self.todo_view_mode == "project" and not is_manager:
             QMessageBox.information(self, "不能添加", "只有项目负责人或最高权限用户可以添加项目代办。")
             return
@@ -1613,14 +1856,31 @@ class MainWindow(QMainWindow):
         if not title:
             QMessageBox.information(self, "代办为空", "先写一个 todo。")
             return
-        self.db.add_project_todo(project.id, title, self.db.display_name(), scope=self.todo_view_mode)
+        assignee = ""
+        if self.todo_view_mode == "assigned":
+            assignee = str(self.assigned_todo_assignee.currentData() or self.assigned_todo_assignee.currentText()).strip()
+            if not assignee:
+                QMessageBox.information(self, "没有接收人", "先选择要分配给谁。")
+                return
+        self.db.add_project_todo(
+            project.id,
+            title,
+            self.db.display_name(),
+            scope=self.todo_view_mode,
+            assignee=assignee,
+            assigned_by=self.db.display_name() if self.todo_view_mode == "assigned" else "",
+        )
         self.project_todo_input.clear()
         self._refresh_project_workspace()
+        self._refresh_my_panel()
 
     def _complete_project_todo(self, todo: ProjectTodo) -> None:
         project = self._current_project()
         if project is None:
             return
+        self._complete_todo_for_project(project, todo)
+
+    def _complete_todo_for_project(self, project: Project, todo: ProjectTodo) -> None:
         members = self.db.list_project_members(project.id)
         current_member = self._current_project_member(project, members)
         is_manager = self._can_manage_project(project, current_member)
@@ -1630,12 +1890,32 @@ class MainWindow(QMainWindow):
         if todo.scope == "project" and not is_manager:
             QMessageBox.information(self, "不能完成", "只有项目负责人或最高权限用户可以完成项目代办。")
             return
+        if todo.scope == "assigned" and not self.db.is_current_user_name(todo.assignee):
+            QMessageBox.information(self, "不能完成", "只有任务接收人可以完成这条分配任务。")
+            return
         report = self.db.complete_project_todo(todo.id, current_member.name, current_member.role)
         if report is None:
             QMessageBox.information(self, "已完成", "这个代办已经被完成。")
         else:
             self._nudge_after_late_record()
         self._refresh_project_workspace()
+        self._refresh_my_panel()
+        self._announce_presence()
+
+    def _delete_assigned_todo_from_my_panel(self, todo: ProjectTodo) -> None:
+        if not self.db.is_current_user_name(todo.assigned_by):
+            QMessageBox.information(self, "不能删除", "只能删除自己分配出去的任务。")
+            return
+        if todo.status == "done":
+            QMessageBox.information(self, "不能删除", "已完成的分配任务会作为提醒保留。")
+            return
+        message = f"确定删除分配给「{todo.assignee}」的任务吗？"
+        if QMessageBox.question(self, "删除分配任务", message) != QMessageBox.StandardButton.Yes:
+            return
+        if not self.db.delete_project_todo(todo.id):
+            QMessageBox.warning(self, "删除失败", "这条任务已经不存在。")
+        self._refresh_project_workspace()
+        self._refresh_my_panel()
         self._announce_presence()
 
     def _save_project_weekly_report(self) -> None:
@@ -1706,7 +1986,6 @@ class MainWindow(QMainWindow):
         weekly_reports = self.db.list_project_weekly_reports(project.id)
         documents = self.db.list_project_documents(project.id)
         open_todos = self.db.list_project_todos(project.id)
-        todos = self.db.list_project_todos(project.id, scope=self.todo_view_mode)
         completed_project_todos = [
             todo
             for todo in self.db.list_project_todos(project.id, include_completed=True, scope="project")
@@ -1734,15 +2013,23 @@ class MainWindow(QMainWindow):
             self.todo_view_mode = "project"
         self._set_todo_view_buttons()
         self.personal_todo_button.setEnabled(current_member is not None or is_manager)
+        self.assigned_todo_button.setEnabled(current_member is not None or is_manager)
         self.project_todo_button.setEnabled(True)
-        can_complete_todos = current_member is not None and (self.todo_view_mode == "personal" or is_manager)
-        can_add_todos = is_manager or (self.todo_view_mode == "personal" and current_member is not None)
+        can_add_todos = (
+            is_manager
+            or (self.todo_view_mode == "personal" and current_member is not None)
+        )
         self.todo_panel.setVisible(current_member is not None or is_manager or self.todo_view_mode == "project")
         can_write_daily = current_member is not None
         self.daily_form.setVisible(can_write_daily)
-        self.project_todo_input.setPlaceholderText(
-            "新增一个个人代办" if self.todo_view_mode == "personal" else "新增一个项目代办"
-        )
+        placeholder_by_mode = {
+            "personal": "新增一个个人代办",
+            "assigned": "写下要分配的任务",
+            "project": "新增一个项目代办",
+        }
+        self.project_todo_input.setPlaceholderText(placeholder_by_mode.get(self.todo_view_mode, "新增一个 todo"))
+        self._refresh_assigned_todo_assignees(members, is_manager)
+        self.assigned_todo_assignee.setVisible(self.todo_view_mode == "assigned" and is_manager)
         self.project_todo_input.setVisible(can_add_todos)
         self.add_todo_button.setVisible(can_add_todos)
         self.project_todo_input.setEnabled(can_add_todos)
@@ -1769,12 +2056,17 @@ class MainWindow(QMainWindow):
         self._refresh_config_member_list(project, members, is_manager)
 
         self.todo_board.clear()
+        todos = self._todos_for_current_view(project.id, is_manager)
         self.todo_count_label.setText(f"{len(todos)} 个待完成")
         if not todos:
-            empty_todo_text = "当前没有待完成个人代办。" if self.todo_view_mode == "personal" else "当前没有待完成项目代办。"
+            empty_todo_text = {
+                "personal": "当前没有待完成个人代办。",
+                "assigned": "当前没有待完成分配任务。",
+                "project": "当前没有待完成项目代办。",
+            }.get(self.todo_view_mode, "当前没有待完成 todo。")
             self._add_todo_card(None, empty_todo_text, False)
         for todo in todos:
-            self._add_todo_card(todo, todo.title, can_complete_todos)
+            self._add_todo_card(todo, todo.title, self._can_complete_todo(todo, current_member, is_manager))
 
         self.product_feed.clear()
         product_items: list[tuple[str, str, str, str, ProjectDocument | None, tuple[str, int, str] | None]] = []
@@ -1867,6 +2159,7 @@ class MainWindow(QMainWindow):
                 min_content_lines=2,
                 max_content_lines=None,
             )
+        self._refresh_my_panel()
 
     def _clear_project_workspace(self) -> None:
         if not hasattr(self, "project_title"):
@@ -1892,6 +2185,9 @@ class MainWindow(QMainWindow):
         self.project_todo_input.clear()
         self.project_todo_input.setEnabled(False)
         self.add_todo_button.setEnabled(False)
+        if hasattr(self, "assigned_todo_assignee"):
+            self.assigned_todo_assignee.clear()
+            self.assigned_todo_assignee.setVisible(False)
         self.todo_count_label.setText("0 个待完成")
         self.todo_board.clear()
         self._add_todo_card(None, "选择项目后，这里会显示 todo。", False)
@@ -1929,6 +2225,52 @@ class MainWindow(QMainWindow):
         if self.db.display_name() in SUPER_ADMIN_NAMES:
             return True
         return self.db.is_current_user_name(project.owner)
+
+    def _refresh_assigned_todo_assignees(self, members: list[ProjectMember], is_manager: bool) -> None:
+        if not hasattr(self, "assigned_todo_assignee"):
+            return
+        current = self.assigned_todo_assignee.currentData()
+        self.assigned_todo_assignee.blockSignals(True)
+        self.assigned_todo_assignee.clear()
+        if is_manager:
+            for member in members:
+                self.assigned_todo_assignee.addItem(f"{member.name} · {member.role}", member.name)
+        if current is not None:
+            for index in range(self.assigned_todo_assignee.count()):
+                if self.assigned_todo_assignee.itemData(index) == current:
+                    self.assigned_todo_assignee.setCurrentIndex(index)
+                    break
+        self.assigned_todo_assignee.blockSignals(False)
+
+    def _todos_for_current_view(self, project_id: int, is_manager: bool) -> list[ProjectTodo]:
+        todos = self.db.list_project_todos(project_id, scope=self.todo_view_mode)
+        if self.todo_view_mode == "personal":
+            if is_manager:
+                return todos
+            return [todo for todo in todos if self.db.is_current_user_name(todo.creator)]
+        if self.todo_view_mode == "assigned":
+            return [
+                todo
+                for todo in todos
+                if self.db.is_current_user_name(todo.assignee)
+                or self.db.is_current_user_name(todo.assigned_by)
+                or is_manager
+            ]
+        return todos
+
+    def _can_complete_todo(
+        self,
+        todo: ProjectTodo,
+        current_member: ProjectMember | None,
+        is_manager: bool,
+    ) -> bool:
+        if current_member is None or todo.status == "done":
+            return False
+        if todo.scope == "project":
+            return is_manager
+        if todo.scope == "assigned":
+            return self.db.is_current_user_name(todo.assignee)
+        return True
 
     def _clear_layout(self, layout: QGridLayout) -> None:
         while layout.count():
@@ -2073,6 +2415,10 @@ class MainWindow(QMainWindow):
         meta_text = "待完成"
         if todo is not None:
             meta_text = f"{todo.created_at.strftime('%m-%d %H:%M')}  {todo.creator or '项目成员'}"
+            if todo.scope == "assigned":
+                meta_text = f"{todo.created_at.strftime('%m-%d %H:%M')}  {todo.assigned_by or todo.creator} -> {todo.assignee}"
+            elif todo.scope == "project":
+                meta_text = f"{todo.created_at.strftime('%m-%d %H:%M')}  项目代办"
         body.addWidget(_label(meta_text, "eyebrow"))
         body.addWidget(_label(title))
         layout.addLayout(body, 1)

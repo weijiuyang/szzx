@@ -794,15 +794,25 @@ class Database:
             created_at=_parse_time(str(row["created_at"])),
         )
 
-    def add_project_todo(self, project_id: int, title: str, creator: str, scope: str = "personal") -> ProjectTodo:
+    def add_project_todo(
+        self,
+        project_id: int,
+        title: str,
+        creator: str,
+        scope: str = "personal",
+        assignee: str = "",
+        assigned_by: str = "",
+    ) -> ProjectTodo:
         created_at = datetime.now()
-        todo_scope = "project" if scope == "project" else "personal"
+        todo_scope = scope if scope in {"personal", "project", "assigned"} else "personal"
         row = self._with_operator({
             "id": self._next_id("project_todos"),
             "project_id": project_id,
             "title": title.strip(),
             "creator": creator.strip(),
             "scope": todo_scope,
+            "assignee": assignee.strip(),
+            "assigned_by": assigned_by.strip(),
             "status": "todo",
             "completed_by": "",
             "created_at": created_at.isoformat(timespec="seconds"),
@@ -819,7 +829,20 @@ class Database:
         scope: str | None = None,
     ) -> list[ProjectTodo]:
         rows = [row for row in self.data["project_todos"] if int(row["project_id"]) == project_id]
-        if scope in {"personal", "project"}:
+        if scope in {"personal", "project", "assigned"}:
+            rows = [row for row in rows if str(row.get("scope", "personal")) == scope]
+        if not include_completed:
+            rows = [row for row in rows if str(row.get("status", "todo")) != "done"]
+        rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        return [self._todo_from_row(row) for row in rows]
+
+    def list_all_project_todos(
+        self,
+        include_completed: bool = False,
+        scope: str | None = None,
+    ) -> list[ProjectTodo]:
+        rows = list(self.data["project_todos"])
+        if scope in {"personal", "project", "assigned"}:
             rows = [row for row in rows if str(row.get("scope", "personal")) == scope]
         if not include_completed:
             rows = [row for row in rows if str(row.get("status", "todo")) != "done"]
@@ -872,6 +895,8 @@ class Database:
             title=str(row["title"]),
             creator=str(row.get("creator", "")),
             scope=str(row.get("scope", "personal")),
+            assignee=str(row.get("assignee", "")),
+            assigned_by=str(row.get("assigned_by", "")),
             status=str(row.get("status", "todo")),
             completed_by=str(row.get("completed_by", "")),
             created_at=_parse_time(str(row["created_at"])),
@@ -1086,25 +1111,34 @@ class Database:
                     tables[table] = list(self.data.get(table, [])) if table == "deleted_projects" else []
                 else:
                     return False
+        local_has_missing_rows = self._snapshot_missing_local_shared_rows(tables)
         self._backup_before_sync()
         files = snapshot.get("files")
-        if isinstance(files, dict):
-            self._restore_document_files(tables, files)
+        changed = False
+        if self._merge_deleted_projects(tables.get("deleted_projects")):
+            changed = True
+        if self._apply_deleted_projects():
+            changed = True
+        project_id_map, projects_changed = self._merge_remote_projects(tables.get("projects"))
+        changed = changed or projects_changed
         for table in SHARED_TABLES:
-            value = tables[table]
-            if isinstance(self._empty_data()[table], dict):
-                self.data[table] = dict(value) if isinstance(value, dict) else {}
-            else:
-                self.data[table] = list(value) if isinstance(value, list) else []
+            if table in {"projects", "deleted_projects", "counters"}:
+                continue
+            if self._merge_remote_table(table, tables.get(table), project_id_map):
+                changed = True
+        if self._apply_deleted_projects():
+            changed = True
+        if isinstance(files, dict) and changed:
+            self._restore_document_files(self.data, files)
+        self._sync_counters_to_rows()
         self.data["sync"] = {
             "revision": int(sync.get("revision", 0)),
             "updated_at": str(sync.get("updated_at", "")),
             "origin": str(sync.get("origin", "")),
             "actor": str(sync.get("actor", "")),
         }
-        self._apply_deleted_projects()
         self._claim_display_name(self.display_name(), save=False)
-        self._save(bump_sync=False)
+        self._save(bump_sync=local_has_missing_rows)
         return True
 
     def merge_missing_shared_snapshot(self, snapshot: dict[str, Any]) -> bool:
@@ -1277,6 +1311,33 @@ class Database:
             existing[key] = next_row
             changed = True
         return changed
+
+    def _snapshot_missing_local_shared_rows(self, tables: dict[str, Any]) -> bool:
+        for table in SHARED_TABLES:
+            if table == "counters" or isinstance(self._empty_data()[table], dict):
+                continue
+            remote_value = tables.get(table)
+            local_value = self.data.get(table)
+            if not isinstance(remote_value, list) or not isinstance(local_value, list):
+                continue
+            remote_keys: set[tuple[str, ...]] = set()
+            for row in remote_value:
+                if not isinstance(row, dict):
+                    continue
+                source = self._row_source_key(row)
+                if source is not None:
+                    remote_keys.add((table, "source", source[0], source[1]))
+                remote_keys.add(self._shared_row_key(table, row))
+            for row in local_value:
+                if not isinstance(row, dict):
+                    continue
+                source = self._row_source_key(row)
+                if source is not None and (table, "source", source[0], source[1]) in remote_keys:
+                    continue
+                if self._shared_row_key(table, row) in remote_keys:
+                    continue
+                return True
+        return False
 
     def _apply_deleted_projects(self) -> bool:
         deleted_sources = self._deleted_project_keys()

@@ -61,6 +61,8 @@ class ProjectTodo:
     title: str
     creator: str
     scope: str
+    assignee: str
+    assigned_by: str
     status: str
     completed_by: str
     created_at: datetime
