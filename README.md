@@ -65,14 +65,14 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.60",
+  "version": "0.1.65",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "我的面板改为上下分区卡片布局：参与项目显示参与天数，分配任务按项目卡片分组并展示分配时间和已分配天数。",
+  "notes": "项目面板左侧项目卡去掉状态标签和列表选中框，只保留单层卡片展示项目名与完整负责人。",
   "history": [
     {
-      "version": "0.1.60",
+      "version": "0.1.65",
       "date": "2026-06-26",
-      "notes": "我的面板改为上下分区卡片布局：参与项目显示参与天数，分配任务按项目卡片分组并展示分配时间和已分配天数。"
+      "notes": "项目面板左侧项目卡去掉状态标签和列表选中框，只保留单层卡片展示项目名与完整负责人。"
     }
   ]
 }

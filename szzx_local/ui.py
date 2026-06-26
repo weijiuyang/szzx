@@ -186,6 +186,18 @@ QListWidget::item:selected {
     background: #ecefe9;
     color: #23241f;
 }
+QListWidget#projectList {
+    padding: 6px;
+}
+QListWidget#projectList::item {
+    padding: 0;
+    margin: 6px 0;
+    border-radius: 0;
+    background: transparent;
+}
+QListWidget#projectList::item:selected {
+    background: transparent;
+}
 QSplitter::handle {
     background: transparent;
     width: 18px;
@@ -215,6 +227,16 @@ QWidget#heroPanel {
 QWidget#feedCard {
     background: #eef2eb;
     border: 1px solid #d8ded2;
+    border-radius: 6px;
+}
+QWidget#projectListCard {
+    background: #eef2eb;
+    border: 1px solid #d8ded2;
+    border-radius: 6px;
+}
+QWidget#projectListCardActive {
+    background: #e2ebe2;
+    border: 1px solid #c9d7c9;
     border-radius: 6px;
 }
 QWidget#memberCard {
@@ -1022,14 +1044,8 @@ class MainWindow(QMainWindow):
 
         tasks_panel = _panel()
         tasks_layout = QVBoxLayout(tasks_panel)
-        tasks_layout.setContentsMargins(20, 20, 20, 20)
-        tasks_layout.setSpacing(14)
-        tasks_header = QHBoxLayout()
-        tasks_header.addWidget(_label("分配任务 / 被分配任务", "eyebrow"))
-        tasks_header.addStretch()
-        self.my_tasks_count_label = _label("", "muted")
-        tasks_header.addWidget(self.my_tasks_count_label)
-        tasks_layout.addLayout(tasks_header)
+        tasks_layout.setContentsMargins(0, 0, 0, 0)
+        tasks_layout.setSpacing(0)
         self.my_tasks_body = QWidget()
         self.my_tasks_layout = QVBoxLayout(self.my_tasks_body)
         self.my_tasks_layout.setContentsMargins(0, 0, 0, 0)
@@ -1103,6 +1119,7 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(_label("项目", "eyebrow"))
         self.project_list = QListWidget()
+        self.project_list.setObjectName("projectList")
         self.project_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.project_list.setFixedHeight(260)
         self.project_list.itemClicked.connect(self._select_project_item)
@@ -1458,10 +1475,11 @@ class MainWindow(QMainWindow):
         self.project_list.clear()
         projects = self._visible_projects()
         for project in projects:
-            item = QListWidgetItem(f"{project.name}\n负责人 {project.owner}\n{project.status}")
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, project.id)
-            item.setSizeHint(QSize(0, 78))
+            item.setSizeHint(QSize(0, 82))
             self.project_list.addItem(item)
+            self.project_list.setItemWidget(item, self._project_list_card(project, project.id == self.current_project_id))
         if projects:
             selected_id = self.current_project_id or projects[0].id
             if all(project.id != selected_id for project in projects):
@@ -1478,6 +1496,22 @@ class MainWindow(QMainWindow):
             self._clear_project_workspace()
         self._update_project_sync_hint()
         self._refresh_my_panel()
+
+    def _project_list_card(self, project: Project, active: bool = False) -> QWidget:
+        card = QWidget()
+        card.setObjectName("projectListCardActive" if active else "projectListCard")
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(6)
+
+        title = _label(project.name, "memberName")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+        owner = _label(f"负责人 {project.owner}", "muted")
+        owner.setWordWrap(True)
+        layout.addWidget(owner)
+        return card
 
     def _update_project_sync_hint(self, message: str | None = None) -> None:
         if not hasattr(self, "project_sync_hint"):
@@ -1548,14 +1582,23 @@ class MainWindow(QMainWindow):
             if todo.status != "done"
             and (self.db.is_current_user_name(todo.assignee) or self.db.is_current_user_name(todo.assigned_by))
         ]
+        assigned_to_me = [todo for todo in active_tasks if self.db.is_current_user_name(todo.assignee)]
+        assigned_by_me = [todo for todo in active_tasks if self.db.is_current_user_name(todo.assigned_by)]
         self._clear_layout(self.my_tasks_layout)
-        self.my_tasks_count_label.setText(f"{len(active_tasks)} 个进行中")
         if not active_tasks:
             self.my_tasks_layout.addWidget(self._empty_my_card("当前没有分配任务。"))
-        for project_id, todos in self._group_todos_by_project(active_tasks).items():
-            project = projects_by_id.get(project_id)
-            project_name = project.name if project is not None else "未知项目"
-            self.my_tasks_layout.addWidget(self._my_task_project_card(project_name, todos))
+        elif assigned_to_me and assigned_by_me:
+            task_row = QWidget()
+            task_row_layout = QHBoxLayout(task_row)
+            task_row_layout.setContentsMargins(0, 0, 0, 0)
+            task_row_layout.setSpacing(12)
+            task_row_layout.addWidget(self._my_task_bucket_panel("我的任务", assigned_to_me, projects_by_id), 1)
+            task_row_layout.addWidget(self._my_task_bucket_panel("由我分配", assigned_by_me, projects_by_id), 1)
+            self.my_tasks_layout.addWidget(task_row)
+        elif assigned_to_me:
+            self.my_tasks_layout.addWidget(self._my_task_bucket_panel("我的任务", assigned_to_me, projects_by_id))
+        else:
+            self.my_tasks_layout.addWidget(self._my_task_bucket_panel("由我分配", assigned_by_me, projects_by_id))
         self.my_tasks_layout.addStretch()
 
         messages = [
@@ -1608,6 +1651,9 @@ class MainWindow(QMainWindow):
         card = QWidget()
         card.setObjectName("feedCard")
         card.setMinimumHeight(116)
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setToolTip("进入项目面板")
+        card.mousePressEvent = lambda event, selected=project.id: self._open_project_from_my_panel(selected)  # type: ignore[method-assign]
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
@@ -1621,19 +1667,49 @@ class MainWindow(QMainWindow):
         layout.addWidget(_label(f"负责人 {project.owner}", "eyebrow"))
         return card
 
+    def _open_project_from_my_panel(self, project_id: int) -> None:
+        self.current_project_id = project_id
+        self.project_scope_value = "mine"
+        self._select_page(1)
+        self._select_project_mode(0)
+        self._load_projects()
+        self._show_project_overview()
+
+    def _my_task_bucket_panel(
+        self,
+        title: str,
+        todos: list[ProjectTodo],
+        projects_by_id: dict[int, Project],
+    ) -> QWidget:
+        panel = QWidget()
+        panel.setObjectName("softPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.addWidget(_label(title, "memberName"))
+        header.addStretch()
+        header.addWidget(_label(f"{len(todos)} 个进行中", "eyebrow"))
+        layout.addLayout(header)
+
+        for project_id, project_todos in self._group_todos_by_project(todos).items():
+            project = projects_by_id.get(project_id)
+            project_name = project.name if project is not None else "未知项目"
+            layout.addWidget(self._my_task_project_card(project_name, project_todos))
+        return panel
+
     def _my_task_project_card(self, project_name: str, todos: list[ProjectTodo]) -> QWidget:
         card = QWidget()
-        card.setObjectName("softPanel")
+        card.setObjectName("feedCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
-        assigned_to_me = [todo for todo in todos if self.db.is_current_user_name(todo.assignee)]
-        assigned_by_me = [todo for todo in todos if self.db.is_current_user_name(todo.assigned_by)]
         header = QHBoxLayout()
         header.addWidget(_label(project_name, "memberName"))
         header.addStretch()
-        header.addWidget(_label(f"分配给我 {len(assigned_to_me)} · 我分配 {len(assigned_by_me)}", "eyebrow"))
+        header.addWidget(_label(f"{len(todos)} 个任务", "eyebrow"))
         layout.addLayout(header)
 
         for todo in todos:
@@ -1642,7 +1718,7 @@ class MainWindow(QMainWindow):
 
     def _my_task_card(self, todo: ProjectTodo) -> QWidget:
         card = QWidget()
-        card.setObjectName("feedCard")
+        card.setObjectName("compactMemberCard")
         layout = QHBoxLayout(card)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(10)

@@ -45,7 +45,11 @@ fi
 .venv/bin/python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
 .venv/bin/python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org pyinstaller
 
-chflags -R nouchg,nohidden build dist 2>/dev/null || true
+for path in build dist; do
+  if [ -e "$path" ]; then
+    chflags -R nouchg,nohidden "$path" 2>/dev/null || true
+  fi
+done
 rm -rf build dist
 .venv/bin/pyinstaller \
   --noconfirm \
