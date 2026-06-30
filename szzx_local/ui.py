@@ -9,10 +9,12 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QDesktopServices, QFont, QKeySequence, QShortcut, QTextDocument
+from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
     QFileDialog,
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -37,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from .ai import LocalSummarizer
+from .autostart import autostart_registered, is_supported as autostart_supported, set_autostart
 from .changelog import changelog_text, current_release_notes
 from .database import APP_DIR, Database
 from .lan import LanDiscovery, LanPeer
@@ -420,6 +423,14 @@ class SettingsDialog(QDialog):
 
         form.addRow("本地密码", self.new_pin)
         layout.addLayout(form)
+        self.autostart = QCheckBox("开机自动启动")
+        self.autostart.setChecked(self.db.get_setting("autostart_enabled") != "false")
+        self.autostart.setEnabled(autostart_supported())
+        layout.addWidget(self.autostart)
+        if not autostart_supported():
+            layout.addWidget(_label("当前系统暂不支持开机自动启动。", "muted"))
+        elif self.db.get_setting("autostart_enabled") != "false" and not autostart_registered():
+            layout.addWidget(_label("打包安装后的应用会在下次启动时写入开机自动启动。", "muted"))
         layout.addWidget(_label("换电脑时，先在旧电脑退出当前姓名，再在新电脑设置同一个姓名。", "muted"))
 
         save = QPushButton("保存")
@@ -457,6 +468,15 @@ class SettingsDialog(QDialog):
             return
         if pin:
             self.db.change_pin(pin)
+        self.db.set_setting("autostart_enabled", "true" if self.autostart.isChecked() else "false", save=False)
+        try:
+            set_autostart(self.autostart.isChecked())
+        except OSError as exc:
+            QMessageBox.warning(self, "开机启动失败", f"保存名字和密码成功，但开机自动启动设置失败：{exc}")
+            self.db.save_local_settings()
+            self.accept()
+            return
+        self.db.save_local_settings()
         self.accept()
 
     def _release_name(self) -> None:
@@ -534,7 +554,7 @@ class PetDialog(QDialog):
 
     def _show_pet_bottom_right(self) -> None:
         self.pet.move_to_bottom_right()
-        self.pet.show()
+        self.pet.show_manually()
 
     def _hide_pet(self) -> None:
         self.pet.hide()
@@ -2534,7 +2554,8 @@ class MainWindow(QMainWindow):
 
         body = QVBoxLayout()
         body.setSpacing(5)
-        meta = _label(f"{time_text}  {kind}".strip(), "eyebrow")
+        meta_text = f"{time_text}  {kind}".strip()
+        meta = _label(meta_text, "eyebrow")
         text = _label(content)
         if max_content_lines is not None:
             text.setMaximumHeight(max_content_lines * 24)
@@ -2586,22 +2607,34 @@ class MainWindow(QMainWindow):
             layout.addLayout(actions)
 
         if height is None:
-            height = self._feed_card_height(content, min_content_lines, max_content_lines)
+            height = self._feed_card_height(content, min_content_lines, max_content_lines, meta_text=meta_text)
         item.setSizeHint(QSize(0, height))
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
 
-    def _feed_card_height(self, content: str, min_lines: int = 1, max_lines: int | None = 2) -> int:
+    def _feed_card_height(
+        self,
+        content: str,
+        min_lines: int = 1,
+        max_lines: int | None = 2,
+        meta_text: str = "",
+        visual_chars_per_line: int = 32,
+    ) -> int:
+        def visual_line_count(value: str) -> int:
+            normalized_value = " ".join(value.strip().split())
+            if not normalized_value:
+                return 1
+            explicit = len([line for line in value.splitlines() if line.strip()])
+            width = sum(1 if ord(char) < 128 else 2 for char in normalized_value)
+            return max(explicit, max(1, (width + visual_chars_per_line - 1) // visual_chars_per_line))
+
         normalized = " ".join(content.strip().split())
         if not normalized:
             line_count = min_lines
-            return 56 + line_count * 24
-        explicit_lines = len([line for line in content.splitlines() if line.strip()])
-        visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
-        visual_lines = max(1, (visual_width + 31) // 32)
-        content_lines = max(explicit_lines, visual_lines)
+            return 42 + visual_line_count(meta_text) * 22 + line_count * 26
+        content_lines = visual_line_count(content)
         line_count = max(min_lines, content_lines if max_lines is None else min(max_lines, content_lines))
-        return 56 + line_count * 24
+        return 42 + visual_line_count(meta_text) * 22 + line_count * 26
 
     def _delete_daily_report(self, report: DailyReport) -> None:
         message = f"确定删除 {report.created_at.strftime('%m-%d %H:%M')} 的日报吗？"
@@ -2806,6 +2839,10 @@ class MainWindow(QMainWindow):
         self.rest_month_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header.addWidget(self.rest_calendar_mode_button)
         header.addWidget(self.daily_calendar_mode_button)
+        export_daily = QPushButton("导出近一周")
+        export_daily.setObjectName("smallButton")
+        export_daily.clicked.connect(self._export_recent_week_daily_reports)
+        header.addWidget(export_daily)
         header.addWidget(previous_month)
         header.addWidget(self.rest_month_label)
         header.addWidget(next_month)
@@ -3018,9 +3055,182 @@ class MainWindow(QMainWindow):
                 "日报",
                 str(item["content"]),
                 daily_report=report if isinstance(report, DailyReport) else None,
+                height=self._feed_card_height(
+                    str(item["content"]),
+                    min_lines=2,
+                    max_lines=None,
+                    meta_text=f"{meta}  日报",
+                    visual_chars_per_line=22,
+                ),
                 min_content_lines=1,
                 max_content_lines=None,
             )
+
+    def _export_recent_week_daily_reports(self) -> None:
+        end_day = date.today()
+        start_day = end_day - timedelta(days=6)
+        reports = self.db.daily_reports_between(start_day, end_day, mine_only=False)
+        if not reports:
+            QMessageBox.information(self, "没有日报", "最近一周本机还没有同步到任何项目日报。")
+            return
+        default_name = str(Path.home() / "Downloads" / f"全员日报-{start_day:%Y%m%d}-{end_day:%Y%m%d}.pdf")
+        target, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出最近一周全员日报",
+            default_name,
+            "PDF 文件 (*.pdf);;Word 文档 (*.docx)",
+        )
+        if not target:
+            return
+        target_path = Path(target)
+        if "Word" in selected_filter and target_path.suffix.lower() != ".docx":
+            target_path = target_path.with_suffix(".docx")
+        elif "Word" not in selected_filter and target_path.suffix.lower() not in {".pdf", ".docx"}:
+            target_path = target_path.with_suffix(".pdf")
+
+        try:
+            if target_path.suffix.lower() == ".docx":
+                self._write_daily_report_docx(target_path, start_day, end_day, reports)
+            else:
+                self._write_daily_report_pdf(target_path, start_day, end_day, reports)
+        except OSError as exc:
+            QMessageBox.warning(self, "导出失败", f"保存文件失败：{exc}")
+            return
+        QMessageBox.information(self, "导出完成", f"已导出：\n{target_path}")
+
+    def _daily_export_title(self, start_day: date, end_day: date) -> str:
+        return f"最近一周全员日报（{start_day:%Y-%m-%d} 至 {end_day:%Y-%m-%d}）"
+
+    def _daily_reports_grouped_by_day(self, reports: list[dict[str, object]]) -> dict[date, list[dict[str, object]]]:
+        grouped: dict[date, list[dict[str, object]]] = {}
+        for report in reports:
+            created_at = report.get("created_at")
+            if not isinstance(created_at, datetime):
+                continue
+            grouped.setdefault(created_at.date(), []).append(report)
+        return dict(sorted(grouped.items()))
+
+    def _write_daily_report_pdf(
+        self,
+        target: Path,
+        start_day: date,
+        end_day: date,
+        reports: list[dict[str, object]],
+    ) -> None:
+        title = self._daily_export_title(start_day, end_day)
+        parts = [
+            "<html><head><meta charset='utf-8'><style>",
+            "body { font-family: 'Songti SC', 'PingFang SC', sans-serif; font-size: 11pt; color: #23241f; }",
+            "h1 { font-size: 20pt; margin-bottom: 6px; }",
+            "h2 { font-size: 14pt; margin-top: 18px; color: #34543a; }",
+            ".meta { color: #596d5b; font-weight: 600; margin-top: 10px; }",
+            ".content { white-space: pre-wrap; margin: 4px 0 12px 0; }",
+            "</style></head><body>",
+            f"<h1>{escape(title)}</h1>",
+            f"<p>共 {len(reports)} 篇日报。本报告包含本机已同步的在线和非在线成员日报。</p>",
+        ]
+        for day, day_reports in self._daily_reports_grouped_by_day(reports).items():
+            parts.append(f"<h2>{day:%Y-%m-%d}（{len(day_reports)} 篇）</h2>")
+            for report in day_reports:
+                created_at = report.get("created_at")
+                time_text = created_at.strftime("%H:%M") if isinstance(created_at, datetime) else ""
+                meta = " · ".join(
+                    str(value)
+                    for value in (
+                        time_text,
+                        report.get("project_name", "未知项目"),
+                        report.get("member_name", ""),
+                        report.get("role", ""),
+                    )
+                    if str(value).strip()
+                )
+                parts.append(f"<div class='meta'>{escape(meta)}</div>")
+                parts.append(f"<div class='content'>{escape(str(report.get('content', '')))}</div>")
+        parts.append("</body></html>")
+
+        document = QTextDocument()
+        document.setHtml("".join(parts))
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(str(target))
+        document.print_(printer)
+
+    def _write_daily_report_docx(
+        self,
+        target: Path,
+        start_day: date,
+        end_day: date,
+        reports: list[dict[str, object]],
+    ) -> None:
+        paragraphs: list[tuple[str, str]] = [
+            ("Title", self._daily_export_title(start_day, end_day)),
+            ("Normal", f"共 {len(reports)} 篇日报。本报告包含本机已同步的在线和非在线成员日报。"),
+        ]
+        for day, day_reports in self._daily_reports_grouped_by_day(reports).items():
+            paragraphs.append(("Heading1", f"{day:%Y-%m-%d}（{len(day_reports)} 篇）"))
+            for report in day_reports:
+                created_at = report.get("created_at")
+                time_text = created_at.strftime("%H:%M") if isinstance(created_at, datetime) else ""
+                meta = " · ".join(
+                    str(value)
+                    for value in (
+                        time_text,
+                        report.get("project_name", "未知项目"),
+                        report.get("member_name", ""),
+                        report.get("role", ""),
+                    )
+                    if str(value).strip()
+                )
+                paragraphs.append(("Heading2", meta))
+                for line in str(report.get("content", "")).splitlines() or [""]:
+                    paragraphs.append(("Normal", line))
+
+        document_xml = self._docx_document_xml(paragraphs)
+        content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>"""
+        rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"""
+        document_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"""
+        styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:rPr><w:b/><w:sz w:val="36"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:rPr><w:b/><w:sz w:val="22"/></w:rPr></w:style>
+</w:styles>"""
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", content_types)
+            archive.writestr("_rels/.rels", rels)
+            archive.writestr("word/_rels/document.xml.rels", document_rels)
+            archive.writestr("word/styles.xml", styles)
+            archive.writestr("word/document.xml", document_xml)
+
+    def _docx_document_xml(self, paragraphs: list[tuple[str, str]]) -> str:
+        body_parts = []
+        for style, text in paragraphs:
+            style_xml = f'<w:pPr><w:pStyle w:val="{style}"/></w:pPr>' if style != "Normal" else ""
+            body_parts.append(
+                "<w:p>"
+                f"{style_xml}"
+                "<w:r><w:t xml:space=\"preserve\">"
+                f"{escape(text)}"
+                "</w:t></w:r></w:p>"
+            )
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            + "".join(body_parts)
+            + "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1134\" w:right=\"1134\" w:bottom=\"1134\" w:left=\"1134\"/></w:sectPr>"
+            "</w:body></w:document>"
+        )
 
     def _refresh_next_week(self, rest_by_day: dict[date, RestDay]) -> None:
         self._clear_layout(self.next_week_layout)
@@ -3332,8 +3542,6 @@ class MainWindow(QMainWindow):
         report = self.db.add_weekly_report(content, result.summary, result.mood)
         self.summary.setPlainText(result.summary)
         self.pet.set_mood(result.mood)
-        self.pet.move_to_bottom_right()
-        self.pet.show()
         self.editor.clear()
         self._prepend_report(report)
         self._refresh_home()
@@ -3423,7 +3631,7 @@ class MainWindow(QMainWindow):
 
     def _open_pet(self) -> None:
         self.pet.move_to_bottom_right()
-        self.pet.show()
+        self.pet.show_manually()
         dialog = PetDialog(self.db, self.pet)
         dialog.exec()
 

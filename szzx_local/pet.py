@@ -62,8 +62,10 @@ class DesktopPet(QWidget):
         self.mood = "calm"
         self.speech_text = ""
         self._drag_pos: QPoint | None = None
+        self._drag_moved = False
         self._tick = 0
         self._placed_once = False
+        self._auto_hide_after_speech = False
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
@@ -77,8 +79,9 @@ class DesktopPet(QWidget):
         self.mood = "sleepy" if mood == "tired" else mood if mood in PET_ACTIONS else "calm"
         self.update()
 
-    def speak(self, text: str, mood: str = "wave", duration_ms: int = 16000) -> None:
+    def speak(self, text: str, mood: str = "wave", duration_ms: int = 16000, auto_hide: bool = True) -> None:
         self.speech_text = text.strip()
+        self._auto_hide_after_speech = auto_hide
         self.set_mood(mood)
         self.show()
         if self.speech_text:
@@ -87,6 +90,14 @@ class DesktopPet(QWidget):
     def _clear_speech(self) -> None:
         self.speech_text = ""
         self.set_mood("calm")
+        if self._auto_hide_after_speech:
+            self._auto_hide_after_speech = False
+            self.hide()
+
+    def show_manually(self) -> None:
+        self._auto_hide_after_speech = False
+        self.speech_timer.stop()
+        self.show()
 
     def set_kind(self, kind: str) -> None:
         kind = LEGACY_PET_KINDS.get(kind, kind)
@@ -101,14 +112,27 @@ class DesktopPet(QWidget):
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._drag_moved = False
             self.set_mood("happy")
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
         if self._drag_pos is not None:
+            self._drag_moved = True
             self.move(event.globalPosition().toPoint() - self._drag_pos)
 
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and not self._drag_moved
+            and (self.speech_text or self._auto_hide_after_speech)
+        ):
+            self.speech_timer.stop()
+            self.speech_text = ""
+            self._auto_hide_after_speech = False
+            self.set_mood("calm")
+            self.hide()
         self._drag_pos = None
+        self._drag_moved = False
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         if not self._placed_once:

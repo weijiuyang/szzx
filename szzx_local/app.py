@@ -5,6 +5,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from .ai import LocalSummarizer
+from .autostart import set_autostart
 from .database import Database
 from .lan import LanDiscovery
 from .pet import DesktopPet
@@ -30,12 +31,14 @@ def main() -> int:
         db.close()
         return 0
 
+    if db.get_setting("autostart_enabled") != "false":
+        set_autostart(True)
+
     pet = DesktopPet()
     summarizer = LocalSummarizer()
     discovery = LanDiscovery(db.device_id(), db.display_name(), db=db)
     window = MainWindow(db, summarizer, pet, discovery)
     window.show()
-    pet.show()
 
     try:
         return app.exec()

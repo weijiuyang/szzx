@@ -8,7 +8,7 @@ import os
 import socket
 import sys
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +110,8 @@ class Database:
         if self.get_setting("display_name_locked") is None:
             locked = "true" if self.display_name_aliases() else "false"
             self.set_setting("display_name_locked", locked, save=False)
+        if self.get_setting("autostart_enabled") is None:
+            self.set_setting("autostart_enabled", "true", save=False)
         self._remove_legacy_demo_project()
         self._migrate_project_decks()
         self._migrate_project_ids_to_timestamps()
@@ -196,6 +198,9 @@ class Database:
         self.data.setdefault("settings", {})[key] = value
         if save:
             self._save(bump_sync=False)
+
+    def save_local_settings(self) -> None:
+        self._save(bump_sync=False)
 
     def verify_pin(self, pin: str) -> bool:
         stored = self.get_setting("pin_hash")
@@ -730,6 +735,15 @@ class Database:
                 }
             )
         reports.sort(key=lambda item: item["created_at"], reverse=True)
+        return reports
+
+    def daily_reports_between(self, start_day: date, end_day: date, mine_only: bool = True) -> list[dict[str, Any]]:
+        reports: list[dict[str, Any]] = []
+        current = start_day
+        while current <= end_day:
+            reports.extend(self.daily_reports_on_day(current, mine_only=mine_only))
+            current += timedelta(days=1)
+        reports.sort(key=lambda item: item["created_at"])
         return reports
 
     def today_project_logs(self, member_name: str | None = None) -> list[dict[str, Any]]:

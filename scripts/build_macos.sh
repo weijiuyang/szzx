@@ -51,6 +51,12 @@ for path in build dist; do
   fi
 done
 rm -rf build dist
+for path in build dist; do
+  if [ -e "$path" ]; then
+    find "$path" -mindepth 1 -maxdepth 1 -exec chflags -R nouchg,nohidden {} \; -exec rm -rf {} \; 2>/dev/null || true
+    rmdir "$path" 2>/dev/null || true
+  fi
+done
 .venv/bin/pyinstaller \
   --noconfirm \
   --windowed \

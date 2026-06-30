@@ -65,14 +65,19 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.65",
+  "version": "0.1.69",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "项目面板左侧项目卡去掉状态标签和列表选中框，只保留单层卡片展示项目名与完整负责人。",
+  "notes": "新增开机自动启动：默认开启，可在名字/PIN 设置里勾选或取消。",
   "history": [
     {
-      "version": "0.1.65",
-      "date": "2026-06-26",
-      "notes": "项目面板左侧项目卡去掉状态标签和列表选中框，只保留单层卡片展示项目名与完整负责人。"
+      "version": "0.1.69",
+      "date": "2026-06-30",
+      "notes": "新增开机自动启动：默认开启，可在名字/PIN 设置里勾选或取消。"
+    },
+    {
+      "version": "0.1.68",
+      "date": "2026-06-30",
+      "notes": "桌宠启动默认隐藏；提醒时临时出现，提醒结束或点击桌宠后自动隐藏。"
     }
   ]
 }
