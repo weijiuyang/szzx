@@ -1141,9 +1141,10 @@ class MainWindow(QMainWindow):
         self.project_list = QListWidget()
         self.project_list.setObjectName("projectList")
         self.project_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.project_list.setFixedHeight(260)
+        self.project_list.setFixedHeight(390)
         self.project_list.itemClicked.connect(self._select_project_item)
         left_layout.addWidget(self.project_list)
+        left_layout.addSpacing(10)
         left_layout.addWidget(_label("新建项目", "eyebrow"))
         self.project_name = QLineEdit()
         self.project_name.setPlaceholderText("项目名称")
@@ -1458,10 +1459,7 @@ class MainWindow(QMainWindow):
         self.open_deck_button = QPushButton("打开文档")
         self.open_deck_button.setObjectName("primaryButton")
         self.open_deck_button.clicked.connect(self._open_selected_deck_file)
-        self.download_deck_button = QPushButton("下载文档")
-        self.download_deck_button.clicked.connect(self._download_selected_deck)
         actions.addWidget(self.open_deck_button)
-        actions.addWidget(self.download_deck_button)
         actions.addStretch()
         detail_layout.addLayout(actions)
 
@@ -2569,11 +2567,7 @@ class MainWindow(QMainWindow):
             open_button = QPushButton("打开")
             open_button.setObjectName("smallButton")
             open_button.clicked.connect(lambda checked=False, selected=document: self._open_deck_file(selected))
-            download_button = QPushButton("下载")
-            download_button.setObjectName("smallButton")
-            download_button.clicked.connect(lambda checked=False, selected=document: self._download_deck(selected))
             actions.addWidget(open_button)
-            actions.addWidget(download_button)
             if progress_delete is not None:
                 delete_button = QPushButton("删除")
                 delete_button.setObjectName("smallButton")
@@ -2681,7 +2675,6 @@ class MainWindow(QMainWindow):
         )
         self.deck_detail_path.setPlainText(str(source))
         self.open_deck_button.setEnabled(source.exists())
-        self.download_deck_button.setEnabled(source.exists())
 
     def _show_project_overview(self) -> None:
         if hasattr(self, "project_content_stack"):
@@ -2704,32 +2697,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "文件不存在", "这个文档文件找不到，可能被移动或删除了。")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(source)))
-
-    def _download_selected_deck(self) -> None:
-        deck = self._selected_deck()
-        if deck is None:
-            return
-        self._download_deck(deck)
-
-    def _download_deck(self, deck: ProjectDocument) -> None:
-        source = Path(deck.file_path)
-        if not source.exists():
-            QMessageBox.warning(self, "文件不存在", "这个文档文件找不到，暂时不能下载。")
-            return
-        target, _ = QFileDialog.getSaveFileName(
-            self,
-            "下载文档",
-            str(Path.home() / "Downloads" / source.name),
-            "All Files (*)",
-        )
-        if not target:
-            return
-        try:
-            shutil.copy2(source, target)
-        except OSError as exc:
-            QMessageBox.warning(self, "下载失败", f"保存文件失败：{exc}")
-            return
-        QMessageBox.information(self, "下载完成", f"文档已保存到：\n{target}")
 
     def _delete_project_document(self, document: ProjectDocument) -> None:
         if not self.db.is_current_user_name(document.uploader):
@@ -3516,11 +3483,7 @@ class MainWindow(QMainWindow):
             open_button = QPushButton("打开")
             open_button.setObjectName("smallButton")
             open_button.clicked.connect(lambda checked=False, selected=document: self._open_deck_file(selected))
-            download_button = QPushButton("下载")
-            download_button.setObjectName("smallButton")
-            download_button.clicked.connect(lambda checked=False, selected=document: self._download_deck(selected))
             actions.addWidget(open_button)
-            actions.addWidget(download_button)
             if self.db.is_current_user_name(document.uploader):
                 delete_button = QPushButton("删除")
                 delete_button.setObjectName("smallButton")
