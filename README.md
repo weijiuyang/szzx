@@ -65,10 +65,15 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.71",
+  "version": "0.1.72",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "文档卡片取消下载按钮，只保留打开和删除操作。",
+  "notes": "上传文档支持 zip、rar、7z 等压缩包，并自动归类为压缩包。",
   "history": [
+    {
+      "version": "0.1.72",
+      "date": "2026-07-02",
+      "notes": "上传文档支持 zip、rar、7z 等压缩包，并自动归类为压缩包。"
+    },
     {
       "version": "0.1.71",
       "date": "2026-07-02",

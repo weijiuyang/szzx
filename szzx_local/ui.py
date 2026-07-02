@@ -317,8 +317,15 @@ DOCUMENT_TYPES = [
     "调研/可行性报告",
     "竞品调研报告",
     "会议纪要",
+    "压缩包",
     "其他",
 ]
+ARCHIVE_SUFFIXES = {".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz"}
+DOCUMENT_OPEN_FILTER = (
+    "文档和压缩包 "
+    "(*.ppt *.pptx *.doc *.docx *.pdf *.xls *.xlsx *.png *.jpg *.jpeg *.fig "
+    "*.zip *.rar *.7z *.tar *.gz *.tgz *.bz2 *.xz *.txt *.md);;All Files (*)"
+)
 PROJECT_HERO_HEIGHT = 300
 SUPER_ADMIN_NAMES = {"尉久洋"}
 
@@ -2038,11 +2045,13 @@ class MainWindow(QMainWindow):
             self,
             "选择项目文档",
             "",
-            "Documents (*.ppt *.pptx *.doc *.docx *.pdf *.xls *.xlsx *.png *.jpg *.jpeg *.fig *.zip *.txt *.md);;All Files (*)",
+            DOCUMENT_OPEN_FILTER,
         )
         if not file_path:
             return
         source = Path(file_path)
+        if source.suffix.lower() in ARCHIVE_SUFFIXES and doc_type == "项目汇报PPT":
+            doc_type = "压缩包"
         stored = self._copy_document_into_library(project_id, source)
         if stored is None:
             return
