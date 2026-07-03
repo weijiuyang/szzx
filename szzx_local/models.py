@@ -20,6 +20,7 @@ class ProjectMember:
     project_id: int
     name: str
     role: str
+    dingtalk_id: str
     created_at: datetime
 
 

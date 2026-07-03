@@ -228,6 +228,15 @@ class Database:
     def display_name(self) -> str:
         return self.get_setting("display_name") or self._default_display_name()
 
+    def dingtalk_id(self) -> str:
+        return self.get_setting("dingtalk_id") or ""
+
+    def set_dingtalk_id(self, dingtalk_id: str, save: bool = True) -> None:
+        self.set_setting("dingtalk_id", dingtalk_id.strip(), save=False)
+        self._claim_display_name(self.display_name(), save=False)
+        if save:
+            self._save()
+
     def display_name_locked(self) -> bool:
         return self.get_setting("display_name_locked") == "true"
 
@@ -369,6 +378,7 @@ class Database:
                 "normalized_name": normalized,
                 "device_id": device_id,
                 "mac_address": mac_address,
+                "dingtalk_id": self.dingtalk_id(),
                 "claimed_at": datetime.now().isoformat(timespec="seconds"),
             }
         )
@@ -631,13 +641,14 @@ class Database:
             created_at=_parse_time(str(row["created_at"])),
         )
 
-    def add_project_member(self, project_id: int, name: str, role: str) -> ProjectMember:
+    def add_project_member(self, project_id: int, name: str, role: str, dingtalk_id: str = "") -> ProjectMember:
         created_at = datetime.now()
         row = self._with_operator({
             "id": self._next_id("project_members"),
             "project_id": project_id,
             "name": name.strip(),
             "role": role.strip(),
+            "dingtalk_id": dingtalk_id.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
         })
         self.data["project_members"].append(row)
@@ -659,12 +670,44 @@ class Database:
             return True
         return False
 
+    def update_project_member_dingtalk_id(self, member_id: int, dingtalk_id: str) -> bool:
+        for row in self.data["project_members"]:
+            if int(row["id"]) != member_id:
+                continue
+            row["dingtalk_id"] = dingtalk_id.strip()
+            self._save()
+            return True
+        return False
+
+    def dingtalk_id_for_name(self, name: str) -> str:
+        target = self._normalize_display_name(name)
+        if not target:
+            return ""
+        for row in reversed(self.data.get("name_claims", [])):
+            if not isinstance(row, dict):
+                continue
+            if self._normalize_display_name(str(row.get("name", ""))) != target:
+                continue
+            dingtalk_id = str(row.get("dingtalk_id", "")).strip()
+            if dingtalk_id:
+                return dingtalk_id
+        for row in reversed(self.data.get("project_members", [])):
+            if not isinstance(row, dict):
+                continue
+            if self._normalize_display_name(str(row.get("name", ""))) != target:
+                continue
+            dingtalk_id = str(row.get("dingtalk_id", "")).strip()
+            if dingtalk_id:
+                return dingtalk_id
+        return ""
+
     def _member_from_row(self, row: dict[str, Any]) -> ProjectMember:
         return ProjectMember(
             id=int(row["id"]),
             project_id=int(row["project_id"]),
             name=str(row["name"]),
             role=str(row["role"]),
+            dingtalk_id=str(row.get("dingtalk_id", "")),
             created_at=_parse_time(str(row["created_at"])),
         )
 

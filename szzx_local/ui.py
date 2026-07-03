@@ -6,6 +6,7 @@ import sys
 import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
@@ -119,6 +120,37 @@ QPushButton#dangerButton:hover {
 QPushButton#smallButton {
     padding: 7px 12px;
     min-width: 58px;
+}
+QPushButton#nameLink {
+    border: none;
+    background: transparent;
+    padding: 0;
+    text-align: left;
+    color: #20231f;
+    font-size: 15px;
+    font-weight: 700;
+}
+QPushButton#nameLink:hover {
+    color: #42624d;
+    background: transparent;
+    text-decoration: underline;
+}
+QPushButton#chatButton {
+    border: 1px solid #cfded3;
+    border-radius: 12px;
+    padding: 1px 6px;
+    min-width: 24px;
+    max-width: 30px;
+    min-height: 22px;
+    max-height: 24px;
+    background: #e5eee8;
+    color: #42624d;
+    font-size: 11px;
+    font-weight: 700;
+}
+QPushButton#chatButton:hover {
+    background: #d8e7de;
+    border-color: #b9d0bf;
 }
 QPushButton#calendarDay {
     min-width: 76px;
@@ -338,6 +370,10 @@ def _label(text: str, object_name: str | None = None) -> QLabel:
     return label
 
 
+def _dingtalk_chat_url(dingtalk_id: str) -> str:
+    return f"dingtalk://dingtalkclient/action/sendmsg?dingtalk_id={quote(dingtalk_id.strip())}"
+
+
 def _panel() -> QWidget:
     widget = QWidget()
     widget.setObjectName("panel")
@@ -429,6 +465,11 @@ class SettingsDialog(QDialog):
         self.new_pin.setPlaceholderText("本地密码，留空则不修改")
 
         form.addRow("本地密码", self.new_pin)
+        self.dingtalk_id = QLineEdit()
+        self.dingtalk_id.setMaxLength(80)
+        self.dingtalk_id.setText(self.db.dingtalk_id())
+        self.dingtalk_id.setPlaceholderText("自己的钉钉号，用于点击姓名发起聊天")
+        form.addRow("钉钉号", self.dingtalk_id)
         layout.addLayout(form)
         self.autostart = QCheckBox("开机自动启动")
         self.autostart.setChecked(self.db.get_setting("autostart_enabled") != "false")
@@ -475,6 +516,7 @@ class SettingsDialog(QDialog):
             return
         if pin:
             self.db.change_pin(pin)
+        self.db.set_dingtalk_id(self.dingtalk_id.text().strip(), save=False)
         self.db.set_setting("autostart_enabled", "true" if self.autostart.isChecked() else "false", save=False)
         try:
             set_autostart(self.autostart.isChecked())
@@ -1689,7 +1731,13 @@ class MainWindow(QMainWindow):
         title_row.addWidget(_label(project.status, "compactRoleBadge"))
         layout.addLayout(title_row)
         layout.addWidget(_label(f"{self._project_role_for_me(project)} · 参与 {self._project_joined_days(project)} 天", "muted"))
-        layout.addWidget(_label(f"负责人 {project.owner}", "eyebrow"))
+        owner_row = QHBoxLayout()
+        owner_row.setContentsMargins(0, 0, 0, 0)
+        owner_row.setSpacing(6)
+        owner_row.addWidget(_label("负责人", "eyebrow"))
+        owner_row.addWidget(self._name_with_chat(project.owner))
+        owner_row.addStretch()
+        layout.addLayout(owner_row)
         return card
 
     def _open_project_from_my_panel(self, project_id: int) -> None:
@@ -1699,6 +1747,43 @@ class MainWindow(QMainWindow):
         self._select_project_mode(0)
         self._load_projects()
         self._show_project_overview()
+
+    def _open_dingtalk_chat(self, name: str, dingtalk_id: str = "") -> None:
+        target_id = dingtalk_id.strip() or self.db.dingtalk_id_for_name(name)
+        if not target_id:
+            QMessageBox.information(self, "没有钉钉号", f"还没有配置「{name}」的钉钉号。")
+            return
+        QDesktopServices.openUrl(QUrl(_dingtalk_chat_url(target_id)))
+
+    def _open_person_home(self, name: str) -> None:
+        logs = self.db.project_logs_for_member(name)
+        dialog = ProjectLogHistoryDialog(name, logs, self)
+        dialog.exec()
+
+    def _name_link(self, name: str) -> QPushButton:
+        button = QPushButton(name)
+        button.setObjectName("nameLink")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip("查看系统内项目日志")
+        button.clicked.connect(lambda checked=False, label=name: self._open_person_home(label))
+        return button
+
+    def _name_with_chat(self, name: str, dingtalk_id: str = "") -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self._name_link(name))
+        target_id = dingtalk_id.strip() or self.db.dingtalk_id_for_name(name)
+        if target_id:
+            chat = QPushButton("聊")
+            chat.setObjectName("chatButton")
+            chat.setCursor(Qt.CursorShape.PointingHandCursor)
+            chat.setToolTip("打开钉钉聊天")
+            chat.clicked.connect(lambda checked=False, label=name, ding_id=target_id: self._open_dingtalk_chat(label, ding_id))
+            layout.addWidget(chat)
+        layout.addStretch()
+        return row
 
     def _my_task_bucket_panel(
         self,
@@ -2249,18 +2334,21 @@ class MainWindow(QMainWindow):
                 "",
                 "日报",
                 empty_text,
-                min_content_lines=2,
+                min_content_lines=1,
                 max_content_lines=None,
+                visual_chars_per_line=46,
             )
         for report in visible_daily_reports[:5]:
             self._add_feed_card(
                 self.developer_feed,
                 report.created_at.strftime("%m-%d %H:%M"),
-                f"日报 · {report.member_name} / {report.role}",
+                f"日报 · {report.role}",
                 report.content,
                 daily_report=report,
-                min_content_lines=2,
+                min_content_lines=1,
                 max_content_lines=None,
+                visual_chars_per_line=46,
+                person_name=report.member_name,
             )
         self._refresh_my_panel()
 
@@ -2321,7 +2409,14 @@ class MainWindow(QMainWindow):
             if self.db.is_current_user_name(member.name):
                 return member
         if self.db.is_current_user_name(project.owner):
-            return ProjectMember(0, project.id, self.db.display_name(), "产品经理", project.created_at)
+            return ProjectMember(
+                0,
+                project.id,
+                self.db.display_name(),
+                "产品经理",
+                self.db.dingtalk_id_for_name(project.owner),
+                project.created_at,
+            )
         return None
 
     def _can_manage_project(self, project: Project, member: ProjectMember | None) -> bool:
@@ -2409,7 +2504,7 @@ class MainWindow(QMainWindow):
 
         text_box = QVBoxLayout()
         text_box.setSpacing(4)
-        text_box.addWidget(_label(member.name, "memberName"))
+        text_box.addWidget(self._name_with_chat(member.name))
         text_box.addWidget(_label(member.role, "muted"))
         layout.addLayout(text_box, 1)
 
@@ -2484,7 +2579,7 @@ class MainWindow(QMainWindow):
 
         text_box = QVBoxLayout()
         text_box.setSpacing(2)
-        name = _label(member.name, "memberName")
+        name = self._name_with_chat(member.name)
         role = _label(member.role, "compactRoleBadge")
         role.setFixedWidth(82)
         text_box.addWidget(name)
@@ -2549,6 +2644,9 @@ class MainWindow(QMainWindow):
         height: int | None = None,
         min_content_lines: int = 1,
         max_content_lines: int | None = 2,
+        visual_chars_per_line: int = 32,
+        person_name: str = "",
+        person_dingtalk_id: str = "",
     ) -> None:
         item = QListWidgetItem()
         item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -2563,10 +2661,20 @@ class MainWindow(QMainWindow):
         body.setSpacing(5)
         meta_text = f"{time_text}  {kind}".strip()
         meta = _label(meta_text, "eyebrow")
+        meta.setWordWrap(False)
         text = _label(content)
         if max_content_lines is not None:
             text.setMaximumHeight(max_content_lines * 24)
-        body.addWidget(meta)
+        if person_name:
+            meta_row = QHBoxLayout()
+            meta_row.setContentsMargins(0, 0, 0, 0)
+            meta_row.setSpacing(8)
+            meta_row.addWidget(meta)
+            meta_row.addWidget(self._name_with_chat(person_name, person_dingtalk_id))
+            meta_row.addStretch()
+            body.addLayout(meta_row)
+        else:
+            body.addWidget(meta)
         body.addWidget(text)
         layout.addLayout(body, 1)
 
@@ -2610,7 +2718,15 @@ class MainWindow(QMainWindow):
             layout.addLayout(actions)
 
         if height is None:
-            height = self._feed_card_height(content, min_content_lines, max_content_lines, meta_text=meta_text)
+            height = self._feed_card_height(
+                content,
+                min_content_lines,
+                max_content_lines,
+                meta_text=meta_text,
+                visual_chars_per_line=visual_chars_per_line,
+            )
+            if person_name:
+                height += 36
         item.setSizeHint(QSize(0, height))
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
@@ -3024,7 +3140,7 @@ class MainWindow(QMainWindow):
             return
         for item in reports:
             report = item["report"]
-            meta = f"{item['created_at'].strftime('%H:%M')}  {item['project_name']} · {item['member_name']} / {item['role']}"
+            meta = f"{item['created_at'].strftime('%H:%M')}  {item['project_name']} · {item['role']}"
             self._add_feed_card(
                 self.daily_calendar_list,
                 meta,
@@ -3037,9 +3153,10 @@ class MainWindow(QMainWindow):
                     max_lines=None,
                     meta_text=f"{meta}  日报",
                     visual_chars_per_line=22,
-                ),
+                ) + 36,
                 min_content_lines=1,
                 max_content_lines=None,
+                person_name=str(item["member_name"]),
             )
 
     def _export_recent_week_daily_reports(self) -> None:
