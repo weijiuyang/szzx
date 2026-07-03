@@ -367,20 +367,14 @@ class LanDiscovery(QObject):
         for peer in list(self.peers.values()):
             self._pull_peer_snapshot_if_newer(peer)
 
-    def pull_all_peer_snapshots(self) -> tuple[int, int]:
-        changed_count = 0
-        failed_count = 0
+    def request_peer_snapshot_refresh(self) -> int:
+        started_count = 0
         for peer in list(self.peers.values()):
-            try:
-                changed = self._pull_peer_snapshot(peer, force=False)
-            except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-                failed_count += 1
+            if self.db is not None and peer.sync and not self.db.remote_sync_is_newer(peer.sync):
                 continue
-            if changed:
-                changed_count += 1
-        if changed_count:
-            self.data_synced.emit()
-        return changed_count, failed_count
+            if self._start_snapshot_pull(peer, force=False, bypass_throttle=True):
+                started_count += 1
+        return started_count
 
     def _pull_peer_snapshot_if_newer(self, peer: LanPeer) -> None:
         if self.db is None:
@@ -389,12 +383,12 @@ class LanDiscovery(QObject):
             return
         self._start_snapshot_pull(peer, force=False)
 
-    def _start_snapshot_pull(self, peer: LanPeer, force: bool = False) -> bool:
+    def _start_snapshot_pull(self, peer: LanPeer, force: bool = False, bypass_throttle: bool = False) -> bool:
         if peer.device_id in self._pulling_peer_ids:
             return False
         now = time.monotonic()
         last_started = self._last_pull_started.get(peer.device_id, 0)
-        if not force and now - last_started < 6:
+        if not bypass_throttle and not force and now - last_started < 6:
             return False
         self._pulling_peer_ids.add(peer.device_id)
         self._last_pull_started[peer.device_id] = now

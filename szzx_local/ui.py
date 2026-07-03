@@ -46,7 +46,16 @@ from .autostart import autostart_registered, is_supported as autostart_supported
 from .changelog import changelog_text, current_release_notes
 from .database import APP_DIR, Database
 from .lan import LanDiscovery, LanPeer
-from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, RestDay, WeeklyReport
+from .models import (
+    DailyReport,
+    Project,
+    ProjectDocument,
+    ProjectMember,
+    ProjectTodo,
+    ProjectWeeklyReport,
+    RestDay,
+    WeeklyReport,
+)
 from .pet import DesktopPet, PET_ACTIONS, PET_KINDS
 from .updater import check_for_update, configured_update_url, version_tuple
 from .version import APP_VERSION
@@ -234,6 +243,18 @@ QListWidget#projectList::item {
 QListWidget#projectList::item:selected {
     background: transparent;
 }
+QListWidget#personProjectList {
+    padding: 6px;
+}
+QListWidget#personProjectList::item {
+    padding: 0;
+    margin: 0;
+    border-radius: 0;
+    background: transparent;
+}
+QListWidget#personProjectList::item:selected {
+    background: transparent;
+}
 QSplitter::handle {
     background: transparent;
     width: 18px;
@@ -380,6 +401,13 @@ def _label(text: str, object_name: str | None = None) -> QLabel:
     return label
 
 
+def _nowrap_label(text: str, object_name: str | None = None) -> QLabel:
+    label = _label(text, object_name)
+    label.setWordWrap(False)
+    label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+    return label
+
+
 def _dingtalk_chat_url(dingtalk_id: str) -> str:
     return f"dingtalk://dingtalkclient/action/sendmsg?dingtalk_id={quote(dingtalk_id.strip())}"
 
@@ -450,7 +478,7 @@ class PinDialog(QDialog):
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pin_hint = _label("PIN 是本机本地密码，默认 1234。", "muted")
         pin_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        setup_hint = _label("进入后请在左下角「名字/PIN」修改名字和 PIN。", "muted")
+        setup_hint = _label("进入后请在左下角「名字/PIN」修改名字、PIN、钉钉号", "muted")
         setup_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.pin_input = QLineEdit()
@@ -701,8 +729,18 @@ class ProjectLogHistoryDialog(QDialog):
 
         layout.addWidget(_label("参与项目", "eyebrow"))
         self.project_list = QListWidget()
-        self.project_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.project_list.setFixedHeight(190 if projects else 86)
+        self.project_list.setObjectName("personProjectList")
+        self.project_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.project_list.setFlow(QListWidget.Flow.LeftToRight)
+        self.project_list.setWrapping(False)
+        self.project_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.project_list.setMovement(QListWidget.Movement.Static)
+        self.project_list.setGridSize(QSize(184, 124))
+        self.project_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.project_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.project_list.setSpacing(10)
+        self.project_list.setFixedHeight(138 if projects else 74)
+        self.project_list.itemClicked.connect(self._open_project_item)
         layout.addWidget(self.project_list)
         if projects:
             for project in projects:
@@ -728,34 +766,51 @@ class ProjectLogHistoryDialog(QDialog):
 
     def _add_project_card(self, project: dict[str, object]) -> None:
         item = QListWidgetItem()
-        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        project_id = int(project.get("project_id", 0) or 0)
+        item.setData(Qt.ItemDataRole.UserRole, project_id)
         card = QWidget()
         card.setObjectName("projectListCard")
+        card.setFixedSize(170, 112)
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.mousePressEvent = lambda event, selected=project_id: self._open_project_id(selected)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(7)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(5)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(8)
         name = _label(str(project.get("project_name", "未知项目")), "memberName")
+        name.setMaximumHeight(42)
         top.addWidget(name, 1)
-        status = str(project.get("status", "")).strip()
-        if status:
-            top.addWidget(_label(status, "compactRoleBadge"))
         layout.addLayout(top)
 
         role = str(project.get("role", "")).strip() or "未配置角色"
         owner = str(project.get("owner", "")).strip() or "未知负责人"
         days = str(project.get("joined_days", ""))
-        layout.addWidget(_label(f"{role} · 参与 {days} 天 · 负责人 {owner}", "muted"))
-        description = str(project.get("description", "")).strip()
-        if description:
-            layout.addWidget(_label(description, "muted"))
+        layout.addWidget(_label(role, "compactRoleBadge"), 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(_label(f"参与 {days} 天", "muted"))
+        layout.addWidget(_label(f"负责人 {owner}", "muted"))
+        layout.addStretch()
 
-        item.setSizeHint(QSize(0, 110 if description else 86))
+        item.setSizeHint(QSize(184, 124))
         self.project_list.addItem(item)
         self.project_list.setItemWidget(item, card)
+
+    def _open_project_item(self, item: QListWidgetItem) -> None:
+        project_id = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(project_id, int):
+            self._open_project_id(project_id)
+
+    def _open_project_id(self, project_id: int) -> None:
+        if not project_id:
+            return
+        parent = self.parent()
+        opener = getattr(parent, "_open_project_from_person_home", None)
+        if callable(opener):
+            self.accept()
+            opener(project_id)
 
     def _add_log_card(self, log: dict[str, object]) -> None:
         item = QListWidgetItem()
@@ -792,6 +847,168 @@ class ProjectLogHistoryDialog(QDialog):
         visual_lines = max(1, (visual_width // 72) + 1)
         lines = max(1, explicit_lines, visual_lines)
         return 66 + lines * 24
+
+
+class ProjectMemberDailyDialog(QDialog):
+    def __init__(
+        self,
+        project: Project,
+        member: ProjectMember,
+        reports: list[DailyReport],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"{member.name} 的项目日报")
+        self.resize(860, 640)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        layout.addWidget(_label(f"{member.name} 的项目日报", "sectionTitle"))
+        layout.addWidget(_label(f"{project.name} · {member.role} · 共 {len(reports)} 篇日报", "muted"))
+
+        self.report_list = QListWidget()
+        self.report_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self.report_list, 1)
+
+        if not reports:
+            item = QListWidgetItem("这个成员在当前项目还没有日报。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.report_list.addItem(item)
+            return
+
+        for report in reports:
+            self._add_report_card(report)
+
+    def _add_report_card(self, report: DailyReport) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        layout.addWidget(_label(report.created_at.strftime("%Y-%m-%d %H:%M"), "eyebrow"))
+        layout.addWidget(_label(report.content.strip() or "空日报"))
+
+        item.setSizeHint(QSize(0, self._card_height(report.content)))
+        self.report_list.addItem(item)
+        self.report_list.setItemWidget(item, card)
+
+    def _card_height(self, content: str) -> int:
+        normalized = " ".join(content.strip().split())
+        explicit_lines = len([line for line in content.splitlines() if line.strip()])
+        visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
+        visual_lines = max(1, (visual_width + 72 - 1) // 72)
+        lines = max(1, explicit_lines, visual_lines)
+        return 58 + lines * 24
+
+
+class ProjectMetricDialog(QDialog):
+    def __init__(
+        self,
+        project: Project,
+        title: str,
+        rows: list[object],
+        parent: QWidget | None = None,
+        open_document=None,
+    ) -> None:
+        super().__init__(parent)
+        self.open_document = open_document
+        self.setWindowTitle(f"{project.name} · {title}")
+        self.resize(820, 640)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        layout.addWidget(_label(f"{project.name} · {title}", "sectionTitle"))
+        layout.addWidget(_label(f"共 {len(rows)} 条", "muted"))
+
+        self.list_widget = QListWidget()
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self.list_widget, 1)
+
+        if not rows:
+            item = QListWidgetItem(f"当前项目还没有{title}。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.list_widget.addItem(item)
+            return
+
+        for row in rows:
+            self._add_row(row)
+
+    def _add_row(self, row: object) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+
+        body = QVBoxLayout()
+        body.setSpacing(7)
+        meta, content = self._row_text(row)
+        body.addWidget(_label(meta, "eyebrow"))
+        body.addWidget(_label(content))
+        layout.addLayout(body, 1)
+
+        if isinstance(row, ProjectDocument) and self.open_document is not None:
+            open_button = QPushButton("打开")
+            open_button.setObjectName("smallButton")
+            open_button.clicked.connect(lambda checked=False, selected=row: self.open_document(selected))
+            layout.addWidget(open_button)
+
+        item.setSizeHint(QSize(0, self._row_height(content)))
+        self.list_widget.addItem(item)
+        self.list_widget.setItemWidget(item, card)
+
+    def _row_text(self, row: object) -> tuple[str, str]:
+        if isinstance(row, ProjectMember):
+            return (
+                row.created_at.strftime("%Y-%m-%d %H:%M"),
+                f"{row.name} · {row.role}",
+            )
+        if isinstance(row, ProjectTodo):
+            status = "已完成" if row.status == "done" else "待完成"
+            scope = {"personal": "个人代办", "assigned": "分配任务", "project": "项目代办"}.get(row.scope, "代办")
+            actors = ""
+            if row.scope == "assigned":
+                actors = f" · {row.assigned_by or row.creator} -> {row.assignee}"
+            elif row.completed_by:
+                actors = f" · 完成人 {row.completed_by}"
+            return (
+                f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {scope} · {status}{actors}",
+                row.title,
+            )
+        if isinstance(row, DailyReport):
+            return (
+                f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {row.member_name} · {row.role}",
+                row.content,
+            )
+        if isinstance(row, ProjectWeeklyReport):
+            return (
+                f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {row.author}",
+                row.content,
+            )
+        if isinstance(row, ProjectDocument):
+            visibility = "团队" if row.visibility == "team" else "本人"
+            return (
+                f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {row.doc_type} · {visibility} · {row.uploader}",
+                row.title,
+            )
+        return ("", str(row))
+
+    def _row_height(self, content: str) -> int:
+        normalized = " ".join(content.strip().split())
+        explicit_lines = len([line for line in content.splitlines() if line.strip()])
+        visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
+        visual_lines = max(1, (visual_width + 80 - 1) // 80)
+        lines = max(1, explicit_lines, visual_lines)
+        return 60 + lines * 24
 
 
 class NextWeekRosterDialog(QDialog):
@@ -1002,6 +1219,7 @@ class MainWindow(QMainWindow):
         self._notified_update_version: str | None = None
         self._last_daily_reminder_date: date | None = None
         self._last_lan_update_reminder_at: datetime | None = None
+        self._last_dingtalk_id_reminder_date: date | None = None
         self.lan_view_mode = "peers"
         self.todo_view_mode = "personal"
         self.current_lan_peers: list[LanPeer] = []
@@ -1050,6 +1268,7 @@ class MainWindow(QMainWindow):
         self._start_update_timer()
         self._start_daily_report_reminder()
         self._start_lan_update_reminder()
+        self._start_dingtalk_id_reminder()
 
     def _sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -1106,6 +1325,25 @@ class MainWindow(QMainWindow):
         self.daily_reminder_timer.timeout.connect(self._check_daily_report_reminder)
         self.daily_reminder_timer.start()
         QTimer.singleShot(5 * 1000, self._check_daily_report_reminder)
+
+    def _start_dingtalk_id_reminder(self) -> None:
+        self.dingtalk_id_reminder_timer = QTimer(self)
+        self.dingtalk_id_reminder_timer.setInterval(30 * 60 * 1000)
+        self.dingtalk_id_reminder_timer.timeout.connect(self._check_dingtalk_id_reminder)
+        self.dingtalk_id_reminder_timer.start()
+        QTimer.singleShot(8 * 1000, self._check_dingtalk_id_reminder)
+
+    def _check_dingtalk_id_reminder(self) -> None:
+        if self.db.dingtalk_id().strip():
+            return
+        today = date.today()
+        last_value = self.db.get_setting("last_dingtalk_id_reminder_date")
+        if last_value == today.isoformat() or self._last_dingtalk_id_reminder_date == today:
+            return
+        self._last_dingtalk_id_reminder_date = today
+        self.db.set_setting("last_dingtalk_id_reminder_date", today.isoformat())
+        self.pet.move_to_bottom_right()
+        self.pet.speak("还没有设置钉钉号。去左下角「名字/PIN」里填写钉钉号，同事点聊天图标才能直接找你。", mood="wave")
 
     def _check_daily_report_reminder(self) -> None:
         now = datetime.now()
@@ -1616,6 +1854,7 @@ class MainWindow(QMainWindow):
 
     def _metric_card(self, title: str, value: str) -> QWidget:
         card = _soft_panel()
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(2)
@@ -1625,6 +1864,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title_label)
         self._metric_labels[title] = value_label
         card.setProperty("metricTitle", title)
+        card.mousePressEvent = lambda event, selected=title: self._open_project_metric(selected)
         return card
 
     def _set_metric(self, card: QWidget, value: int) -> None:
@@ -1632,6 +1872,32 @@ class MainWindow(QMainWindow):
         label = self._metric_labels.get(str(title))
         if label is not None:
             label.setText(str(value))
+
+    def _open_project_metric(self, title: str) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        rows: list[object]
+        if title == "成员":
+            rows = self.db.list_project_members(project.id)
+        elif title == "代办":
+            rows = self.db.list_project_todos(project.id)
+        elif title == "日报":
+            rows = self.db.list_daily_reports(project.id, limit=1000)
+        elif title == "周报":
+            rows = self.db.list_project_weekly_reports(project.id, limit=1000)
+        elif title == "文档":
+            rows = self.db.list_project_documents(project.id, limit=1000)
+        else:
+            return
+        dialog = ProjectMetricDialog(
+            project,
+            title,
+            rows,
+            self,
+            open_document=self._open_deck_file if title == "文档" else None,
+        )
+        dialog.exec()
 
     def _load_projects(self) -> None:
         if not hasattr(self, "project_list"):
@@ -1694,13 +1960,11 @@ class MainWindow(QMainWindow):
         message = "已刷新本机项目。"
         if self.discovery is not None:
             self.discovery.announce_burst()
-            changed_count, failed_count = self.discovery.pull_all_peer_snapshots()
-            if changed_count:
-                message = f"已从 {changed_count} 位同事同步新数据。"
-            elif failed_count:
-                message = f"刷新完成，但有 {failed_count} 位同事连接失败。"
+            started_count = self.discovery.request_peer_snapshot_refresh()
+            if started_count:
+                message = f"已开始后台同步 {started_count} 位同事，界面不会卡住。"
             else:
-                message = "刷新完成，没有发现比本机更新的数据。"
+                message = "已刷新，没有发现比本机更新的同事数据。"
         self._refresh_after_lan_sync()
         if self.discovery is not None:
             self._refresh_peers(self.discovery.sorted_peers())
@@ -1849,6 +2113,14 @@ class MainWindow(QMainWindow):
         self._load_projects()
         self._show_project_overview()
 
+    def _open_project_from_person_home(self, project_id: int) -> None:
+        self.current_project_id = project_id
+        self.project_scope_value = "all"
+        self._select_page(1)
+        self._select_project_mode(0)
+        self._load_projects()
+        self._show_project_overview()
+
     def _open_dingtalk_chat(self, name: str, dingtalk_id: str = "") -> None:
         target_id = dingtalk_id.strip() or self.db.dingtalk_id_for_name(name)
         if not target_id:
@@ -1861,6 +2133,14 @@ class MainWindow(QMainWindow):
         logs = self.db.project_logs_for_member(name)
         projects = self.db.projects_for_member(name)
         dialog = ProjectLogHistoryDialog(name, logs, projects, self)
+        dialog.exec()
+
+    def _open_project_member_daily_reports(self, member: ProjectMember) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        reports = self.db.list_member_daily_reports(project.id, member.name)
+        dialog = ProjectMemberDailyDialog(project, member, reports, self)
         dialog.exec()
 
     def _name_link(self, name: str) -> QPushButton:
@@ -1948,12 +2228,19 @@ class MainWindow(QMainWindow):
         meta_row = QHBoxLayout()
         meta_row.setContentsMargins(0, 0, 0, 0)
         meta_row.setSpacing(5)
+        assigned_days = self._days_since(todo.created_at)
         if self.db.is_current_user_name(todo.assignee):
-            meta_row.addWidget(_label("分配给我", "eyebrow"))
+            meta_row.addWidget(_nowrap_label(
+                f"分配给我 · {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {assigned_days} 天",
+                "eyebrow",
+            ))
         else:
-            meta_row.addWidget(_label("我分配给", "eyebrow"))
+            meta_row.addWidget(_nowrap_label("我分配给", "eyebrow"))
             meta_row.addWidget(self._name_with_chat(todo.assignee))
-        meta_row.addWidget(_label(f"· {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {self._days_since(todo.created_at)} 天", "eyebrow"))
+            meta_row.addWidget(_nowrap_label(
+                f"· {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {assigned_days} 天",
+                "eyebrow",
+            ))
         meta_row.addStretch()
         body.addLayout(meta_row)
         body.addWidget(_label(todo.title))
@@ -2697,7 +2984,7 @@ class MainWindow(QMainWindow):
     def _add_member_card(self, member: ProjectMember) -> None:
         card = QWidget()
         card.setObjectName("compactMemberCard")
-        card.setFixedHeight(64)
+        card.setFixedHeight(66)
         layout = QHBoxLayout(card)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(10)
@@ -2713,8 +3000,14 @@ class MainWindow(QMainWindow):
         text_box.addWidget(name)
         role_row = QHBoxLayout()
         role_row.setContentsMargins(0, 0, 0, 0)
-        role_row.setSpacing(0)
+        role_row.setSpacing(8)
         role_row.addWidget(role)
+        daily_button = QPushButton("日报")
+        daily_button.setObjectName("smallButton")
+        daily_button.setFixedHeight(26)
+        daily_button.setFixedWidth(58)
+        daily_button.clicked.connect(lambda checked=False, selected=member: self._open_project_member_daily_reports(selected))
+        role_row.addWidget(daily_button)
         role_row.addStretch()
         text_box.addLayout(role_row)
 
@@ -3892,13 +4185,11 @@ class MainWindow(QMainWindow):
             self.lan_subtitle.setText("局域网发现没有启动。")
             return
         self.discovery.announce_burst()
-        changed_count, failed_count = self.discovery.pull_all_peer_snapshots()
+        started_count = self.discovery.request_peer_snapshot_refresh()
         self._refresh_after_lan_sync()
         self._refresh_peers(self.discovery.sorted_peers())
-        if changed_count:
-            self.lan_subtitle.setText(f"已从 {changed_count} 位同事同步新数据。")
-        elif failed_count:
-            self.lan_subtitle.setText(f"刷新完成，但有 {failed_count} 位同事连接失败。")
+        if started_count:
+            self.lan_subtitle.setText(f"已开始后台同步 {started_count} 位同事，完成后会自动刷新。")
         else:
             self.lan_subtitle.setText("刷新完成，没有发现比本机更新的数据。")
 
@@ -4049,7 +4340,7 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         title_box = QVBoxLayout()
         title_box.setSpacing(4)
-        title_box.addWidget(_label(name, "memberName"))
+        title_box.addWidget(self._name_with_chat(name))
         title_box.addWidget(_label(meta_text, "muted"))
         header.addLayout(title_box, 1)
         status = "已写" if logs else ("未写" if supports_logs else "未共享")
@@ -4129,7 +4420,7 @@ class MainWindow(QMainWindow):
 
         body = QVBoxLayout()
         body.setSpacing(5)
-        body.addWidget(_label(peer.name, "memberName"))
+        body.addWidget(self._name_with_chat(peer.name))
         body.addWidget(_label(self._peer_list_text(peer, seen), "muted"))
         layout.addLayout(body, 1)
 

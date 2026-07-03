@@ -772,6 +772,17 @@ class Database:
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._daily_from_row(row) for row in rows[:limit]]
 
+    def list_member_daily_reports(self, project_id: int, member_name: str) -> list[DailyReport]:
+        target = self._normalize_display_name(member_name)
+        rows = [
+            row
+            for row in self.data["daily_reports"]
+            if int(row["project_id"]) == project_id
+            and self._normalize_display_name(str(row.get("member_name", ""))) == target
+        ]
+        rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        return [self._daily_from_row(row) for row in rows]
+
     def daily_report_counts_by_day(self, mine_only: bool = True) -> dict[date, int]:
         counts: dict[date, int] = {}
         for row in self.data["daily_reports"]:

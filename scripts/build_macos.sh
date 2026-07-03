@@ -57,15 +57,22 @@ for path in build dist; do
     rmdir "$path" 2>/dev/null || true
   fi
 done
+rm -rf .packaging-assets
+mkdir -p .packaging-assets
+rsync -a \
+  --exclude '.DS_Store' \
+  --exclude '*.mp4' \
+  szzx_local/assets/ .packaging-assets/assets/
 .venv/bin/pyinstaller \
   --noconfirm \
   --windowed \
   --name SZZXLocalDesk \
   --osx-bundle-identifier com.szzx.localdesk \
   --target-architecture "$MACOS_TARGET_ARCH" \
-  --add-data "szzx_local/assets:szzx_local/assets" \
+  --add-data ".packaging-assets/assets:szzx_local/assets" \
   --clean \
   run.py
+rm -rf .packaging-assets
 
 if SZZX_LOCAL_DATA_DIR="$ROOT_DIR/.smoke-data" \
   QT_QPA_PLATFORM=offscreen \
