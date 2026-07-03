@@ -6,6 +6,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 import zlib
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,6 +45,8 @@ class LanPeer:
 class LanDiscovery(QObject):
     peers_changed = Signal(list)
     data_synced = Signal()
+    _snapshot_fetched = Signal(object, object, bool)
+    _snapshot_failed = Signal(object)
 
     def __init__(self, device_id: str, display_name: str, port: int = LAN_PORT, db: Any | None = None) -> None:
         super().__init__()
@@ -55,6 +58,8 @@ class LanDiscovery(QObject):
         self.peers: dict[str, LanPeer] = {}
         self.server_socket: socket.socket | None = None
         self.update_package_path = self._find_update_package()
+        self._pulling_peer_ids: set[str] = set()
+        self._last_pull_started: dict[str, float] = {}
 
         self.listen_socket = QUdpSocket(self)
         self.send_socket = QUdpSocket(self)
@@ -77,6 +82,8 @@ class LanDiscovery(QObject):
 
         self.sweep_timer = QTimer(self)
         self.sweep_timer.timeout.connect(self._sweep)
+        self._snapshot_fetched.connect(self._apply_fetched_snapshot)
+        self._snapshot_failed.connect(self._finish_snapshot_pull)
 
     def start(self) -> None:
         self._start_snapshot_server()
@@ -380,11 +387,46 @@ class LanDiscovery(QObject):
             return
         if not peer.sync or not self.db.remote_sync_is_newer(peer.sync):
             return
-        changed = False
+        self._start_snapshot_pull(peer, force=False)
+
+    def _start_snapshot_pull(self, peer: LanPeer, force: bool = False) -> bool:
+        if peer.device_id in self._pulling_peer_ids:
+            return False
+        now = time.monotonic()
+        last_started = self._last_pull_started.get(peer.device_id, 0)
+        if not force and now - last_started < 6:
+            return False
+        self._pulling_peer_ids.add(peer.device_id)
+        self._last_pull_started[peer.device_id] = now
+        thread = threading.Thread(target=self._fetch_snapshot_worker, args=(peer, force), daemon=True)
+        thread.start()
+        return True
+
+    def _fetch_snapshot_worker(self, peer: LanPeer, force: bool) -> None:
         try:
-            changed = self._pull_peer_snapshot(peer, force=False)
+            snapshot = self._fetch_snapshot(peer)
         except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self._snapshot_failed.emit(peer.device_id)
             return
+        self._snapshot_fetched.emit(peer, snapshot, force)
+
+    def _finish_snapshot_pull(self, device_id: object) -> None:
+        self._pulling_peer_ids.discard(str(device_id))
+
+    def _apply_fetched_snapshot(self, peer: object, snapshot: object, force: bool) -> None:
+        if isinstance(peer, LanPeer):
+            self._finish_snapshot_pull(peer.device_id)
+        if self.db is None or not isinstance(snapshot, dict):
+            return
+        if not force and isinstance(peer, LanPeer):
+            local_peer = self.peers.get(peer.device_id)
+            if local_peer is not None and not self.db.remote_sync_is_newer(local_peer.sync):
+                return
+        changed = False
+        if self.db.apply_shared_snapshot(snapshot, force=force):
+            changed = True
+        elif not force and self.db.merge_missing_shared_snapshot(snapshot):
+            changed = True
         if changed:
             self.data_synced.emit()
 

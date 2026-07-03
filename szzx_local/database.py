@@ -49,8 +49,18 @@ SHARED_TABLES = (
     "rest_days",
     "name_claims",
     "deleted_projects",
+    "deleted_records",
     "counters",
 )
+RECORD_TOMBSTONE_TABLES = {
+    "project_members",
+    "daily_reports",
+    "project_weekly_reports",
+    "project_decks",
+    "project_documents",
+    "project_todos",
+    "rest_days",
+}
 
 
 def _parse_time(value: str) -> datetime:
@@ -90,6 +100,7 @@ class Database:
             "rest_days": [],
             "name_claims": [],
             "deleted_projects": [],
+            "deleted_records": [],
             "counters": {},
             "sync": {},
         }
@@ -622,6 +633,36 @@ class Database:
                 return
         tombstones.append(tombstone)
 
+    def _remember_deleted_record(self, table: str, row: dict[str, Any]) -> None:
+        if table not in RECORD_TOMBSTONE_TABLES:
+            return
+        source = self._row_source_key(row)
+        if source is None:
+            source = (self.device_id(), str(row.get("id", "")))
+        source_device, source_id = source
+        tombstones = self.data.setdefault("deleted_records", [])
+        tombstone = {
+            "table": table,
+            "source_device_id": source_device,
+            "source_id": source_id,
+            "record_id": str(row.get("id", "")),
+            "project_id": str(row.get("project_id", "")),
+            "title": str(row.get("title") or row.get("content") or row.get("name") or ""),
+            "deleted_by": self.display_name(),
+            "deleted_by_device_id": self.device_id(),
+            "deleted_at": datetime.now().isoformat(timespec="microseconds"),
+        }
+        key = self._deleted_record_key(tombstone)
+        if key is None:
+            return
+        for index, existing in enumerate(tombstones):
+            if not isinstance(existing, dict):
+                continue
+            if self._deleted_record_key(existing) == key:
+                tombstones[index] = tombstone
+                return
+        tombstones.append(tombstone)
+
     def update_project_description(self, project_id: int, description: str) -> Project | None:
         for row in self.data["projects"]:
             if int(row["id"]) != project_id:
@@ -665,6 +706,7 @@ class Database:
         for index, row in enumerate(rows):
             if int(row["id"]) != member_id:
                 continue
+            self._remember_deleted_record("project_members", row)
             del rows[index]
             self._save()
             return True
@@ -829,6 +871,69 @@ class Database:
         logs.sort(key=lambda item: str(item["created_at"]), reverse=True)
         return logs if limit is None else logs[:limit]
 
+    def projects_for_member(self, member_name: str) -> list[dict[str, Any]]:
+        target = self._normalize_display_name(member_name)
+        if not target:
+            return []
+        projects_by_id = {
+            int(row["id"]): row
+            for row in self.data["projects"]
+            if isinstance(row, dict)
+        }
+        entries: dict[int, dict[str, Any]] = {}
+        today = date.today()
+
+        for project_id, row in projects_by_id.items():
+            owner = str(row.get("owner", "")).strip()
+            if self._normalize_display_name(owner) != target:
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                created_at = datetime.now()
+            entries[project_id] = {
+                "project_id": project_id,
+                "project_name": str(row.get("name", "未知项目")),
+                "role": "产品经理",
+                "owner": owner,
+                "status": str(row.get("status", "")),
+                "description": str(row.get("description", "")),
+                "joined_at": created_at.isoformat(timespec="seconds"),
+                "joined_days": max(1, (today - created_at.date()).days + 1),
+            }
+
+        for member in self.data.get("project_members", []):
+            if not isinstance(member, dict):
+                continue
+            name = str(member.get("name", "")).strip()
+            if self._normalize_display_name(name) != target:
+                continue
+            try:
+                project_id = int(member.get("project_id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            project = projects_by_id.get(project_id)
+            if project is None:
+                continue
+            try:
+                joined_at = _parse_time(str(member.get("created_at", project.get("created_at", ""))))
+            except ValueError:
+                joined_at = datetime.now()
+            entries[project_id] = {
+                "project_id": project_id,
+                "project_name": str(project.get("name", "未知项目")),
+                "role": str(member.get("role", "")),
+                "owner": str(project.get("owner", "")),
+                "status": str(project.get("status", "")),
+                "description": str(project.get("description", "")),
+                "joined_at": joined_at.isoformat(timespec="seconds"),
+                "joined_days": max(1, (today - joined_at.date()).days + 1),
+            }
+
+        projects = list(entries.values())
+        projects.sort(key=lambda item: str(item.get("joined_at", "")), reverse=True)
+        return projects
+
     def delete_daily_report(self, report_id: int, mine_only: bool = True) -> bool:
         rows = self.data["daily_reports"]
         for index, row in enumerate(rows):
@@ -836,6 +941,7 @@ class Database:
                 continue
             if mine_only and not self.is_current_user_name(str(row.get("member_name", ""))):
                 return False
+            self._remember_deleted_record("daily_reports", row)
             del rows[index]
             self._save()
             return True
@@ -911,6 +1017,7 @@ class Database:
         for index, row in enumerate(rows):
             if int(row["id"]) != todo_id:
                 continue
+            self._remember_deleted_record("project_todos", row)
             del rows[index]
             self._save()
             return True
@@ -983,6 +1090,7 @@ class Database:
         for index, row in enumerate(rows):
             if int(row["id"]) != report_id:
                 continue
+            self._remember_deleted_record("project_weekly_reports", row)
             del rows[index]
             self._save()
             return True
@@ -1074,6 +1182,7 @@ class Database:
                 expected_uploader = self._normalize_display_name(uploader)
                 if row_uploader != expected_uploader:
                     return False
+            self._remember_deleted_record("project_documents", row)
             del rows[index]
             self._save()
             return True
@@ -1164,8 +1273,10 @@ class Database:
             return False
         for table in SHARED_TABLES:
             if table not in tables:
-                if table in ("name_claims", "project_todos", "deleted_projects"):
-                    tables[table] = list(self.data.get(table, [])) if table == "deleted_projects" else []
+                if table in ("name_claims", "project_todos"):
+                    tables[table] = []
+                elif table in ("deleted_projects", "deleted_records"):
+                    tables[table] = list(self.data.get(table, []))
                 else:
                     return False
         local_has_missing_rows = self._snapshot_missing_local_shared_rows(tables)
@@ -1174,19 +1285,27 @@ class Database:
         changed = False
         if self._merge_deleted_projects(tables.get("deleted_projects")):
             changed = True
+        if self._merge_deleted_records(tables.get("deleted_records")):
+            changed = True
         if self._apply_deleted_projects():
+            changed = True
+        if self._apply_deleted_records():
             changed = True
         project_id_map, projects_changed = self._merge_remote_projects(tables.get("projects"))
         changed = changed or projects_changed
         for table in SHARED_TABLES:
-            if table in {"projects", "deleted_projects", "counters"}:
+            if table in {"projects", "deleted_projects", "deleted_records", "counters"}:
                 continue
             if self._merge_remote_table(table, tables.get(table), project_id_map):
                 changed = True
         if self._apply_deleted_projects():
             changed = True
+        if self._apply_deleted_records():
+            changed = True
         if isinstance(files, dict) and changed:
             self._restore_document_files(self.data, files)
+        if self._repair_project_todo_completion_duplicates():
+            changed = True
         self._sync_counters_to_rows()
         self.data["sync"] = {
             "revision": int(sync.get("revision", 0)),
@@ -1205,16 +1324,24 @@ class Database:
         changed = False
         if self._merge_deleted_projects(tables.get("deleted_projects")):
             changed = True
+        if self._merge_deleted_records(tables.get("deleted_records")):
+            changed = True
         if self._apply_deleted_projects():
+            changed = True
+        if self._apply_deleted_records():
             changed = True
         project_id_map, projects_changed = self._merge_remote_projects(tables.get("projects"))
         changed = changed or projects_changed
         for table in SHARED_TABLES:
-            if table in {"projects", "deleted_projects", "counters"}:
+            if table in {"projects", "deleted_projects", "deleted_records", "counters"}:
                 continue
             if self._merge_remote_table(table, tables.get(table), project_id_map):
                 changed = True
         if self._apply_deleted_projects():
+            changed = True
+        if self._apply_deleted_records():
+            changed = True
+        if self._repair_project_todo_completion_duplicates():
             changed = True
         if not changed:
             return False
@@ -1285,12 +1412,10 @@ class Database:
             return False
         existing_sources = self._source_index(table)
         existing_ids = self._id_index(table)
+        deleted_sources = self._deleted_record_keys_for_table(table)
         changed = False
         for row in remote_value:
             if not isinstance(row, dict):
-                continue
-            source = self._row_source_key(row)
-            if source and source in existing_sources:
                 continue
             next_row = dict(row)
             if "project_id" in next_row:
@@ -1301,6 +1426,13 @@ class Database:
                 if remote_project_id not in project_id_map:
                     continue
                 next_row["project_id"] = project_id_map[remote_project_id]
+            source = self._row_source_key(row)
+            if source and source in deleted_sources:
+                continue
+            if source and source in existing_sources:
+                if self._merge_existing_shared_row(table, existing_sources[source], next_row):
+                    changed = True
+                continue
             key = self._shared_row_key(table, next_row)
             if table == "name_claims":
                 existing = next(
@@ -1334,10 +1466,65 @@ class Database:
             if existing is not None and self._rows_match(existing, next_row):
                 self._remember_row_source(existing, row)
                 continue
+            if existing is not None and self._merge_existing_shared_row(table, existing, next_row):
+                self._remember_row_source(existing, row)
+                changed = True
+                continue
             self._remember_row_source(next_row, row)
             if existing is not None:
                 next_row["id"] = self._next_id(table)
             local_value.append(next_row)
+            changed = True
+        return changed
+
+    def _merge_existing_shared_row(self, table: str, existing: dict[str, Any], remote: dict[str, Any]) -> bool:
+        if table != "project_todos":
+            return False
+        remote_status = str(remote.get("status", "todo"))
+        existing_status = str(existing.get("status", "todo"))
+        remote_completed_at = str(remote.get("completed_at", ""))
+        existing_completed_at = str(existing.get("completed_at", ""))
+        if remote_status != "done":
+            return False
+        if existing_status == "done" and remote_completed_at <= existing_completed_at:
+            return False
+        for key in ("status", "completed_by", "completed_at"):
+            existing[key] = str(remote.get(key, ""))
+        return True
+
+    def _repair_project_todo_completion_duplicates(self) -> bool:
+        rows = self.data.get("project_todos")
+        if not isinstance(rows, list):
+            return False
+        completed_by_source: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("status", "todo")) != "done":
+                continue
+            source = self._row_source_key(row)
+            if source is None:
+                continue
+            current = completed_by_source.get(source)
+            if current is None or str(row.get("completed_at", "")) > str(current.get("completed_at", "")):
+                completed_by_source[source] = row
+
+        changed = False
+        rows_to_remove: set[int] = set()
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("status", "todo")) == "done":
+                continue
+            source = self._row_source_key(row)
+            if source is None:
+                continue
+            completed = completed_by_source.get(source)
+            if completed is None:
+                continue
+            for key in ("status", "completed_by", "completed_at"):
+                row[key] = str(completed.get(key, ""))
+            rows_to_remove.add(id(completed))
+            changed = True
+
+        if rows_to_remove:
+            rows[:] = [row for row in rows if not isinstance(row, dict) or id(row) not in rows_to_remove]
             changed = True
         return changed
 
@@ -1369,7 +1556,46 @@ class Database:
             changed = True
         return changed
 
+    def _merge_deleted_records(self, remote_value: Any) -> bool:
+        if not isinstance(remote_value, list):
+            return False
+        tombstones = self.data.setdefault("deleted_records", [])
+        existing = {
+            key: row
+            for row in tombstones
+            if isinstance(row, dict) and (key := self._deleted_record_key(row)) is not None
+        }
+        changed = False
+        for row in remote_value:
+            if not isinstance(row, dict):
+                continue
+            key = self._deleted_record_key(row)
+            if key is None:
+                continue
+            current = existing.get(key)
+            if current is not None:
+                if str(row.get("deleted_at", "")) > str(current.get("deleted_at", "")):
+                    current.update(dict(row))
+                    changed = True
+                continue
+            next_row = dict(row)
+            tombstones.append(next_row)
+            existing[key] = next_row
+            changed = True
+        return changed
+
     def _snapshot_missing_local_shared_rows(self, tables: dict[str, Any]) -> bool:
+        deleted_by_table: dict[str, set[tuple[str, str]]] = {}
+        remote_deleted_records = tables.get("deleted_records")
+        if isinstance(remote_deleted_records, list):
+            for row in remote_deleted_records:
+                if not isinstance(row, dict):
+                    continue
+                key = self._deleted_record_key(row)
+                if key is None:
+                    continue
+                table, source_device, source_id = key
+                deleted_by_table.setdefault(table, set()).add((source_device, source_id))
         for table in SHARED_TABLES:
             if table == "counters" or isinstance(self._empty_data()[table], dict):
                 continue
@@ -1389,6 +1615,8 @@ class Database:
                 if not isinstance(row, dict):
                     continue
                 source = self._row_source_key(row)
+                if source is not None and source in deleted_by_table.get(table, set()):
+                    continue
                 if source is not None and (table, "source", source[0], source[1]) in remote_keys:
                     continue
                 if self._shared_row_key(table, row) in remote_keys:
@@ -1415,6 +1643,29 @@ class Database:
             changed = True
         return changed
 
+    def _apply_deleted_records(self) -> bool:
+        changed = False
+        for table in RECORD_TOMBSTONE_TABLES:
+            deleted_sources = self._deleted_record_keys_for_table(table)
+            if not deleted_sources:
+                continue
+            rows = self.data.get(table)
+            if not isinstance(rows, list):
+                continue
+            next_rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    next_rows.append(row)
+                    continue
+                source = self._row_source_key(row)
+                if source is not None and source in deleted_sources:
+                    changed = True
+                    continue
+                next_rows.append(row)
+            if len(next_rows) != len(rows):
+                rows[:] = next_rows
+        return changed
+
     def _deleted_project_keys(self) -> set[tuple[str, str]]:
         keys: set[tuple[str, str]] = set()
         for row in self.data.get("deleted_projects", []):
@@ -1431,6 +1682,29 @@ class Database:
         if not source_device or not source_id:
             return None
         return source_device, source_id
+
+    def _deleted_record_keys_for_table(self, table: str) -> set[tuple[str, str]]:
+        keys: set[tuple[str, str]] = set()
+        for row in self.data.get("deleted_records", []):
+            if not isinstance(row, dict):
+                continue
+            key = self._deleted_record_key(row)
+            if key is None:
+                continue
+            record_table, source_device, source_id = key
+            if record_table == table:
+                keys.add((source_device, source_id))
+        return keys
+
+    def _deleted_record_key(self, row: dict[str, Any]) -> tuple[str, str, str] | None:
+        table = str(row.get("table", "")).strip()
+        if table not in RECORD_TOMBSTONE_TABLES:
+            return None
+        source_device = str(row.get("source_device_id") or row.get("deleted_by_device_id") or "").strip()
+        source_id = str(row.get("source_id") or row.get("record_id") or "").strip()
+        if not source_device or not source_id:
+            return None
+        return table, source_device, source_id
 
     def _id_index(self, table: str) -> dict[int, dict[str, Any]]:
         rows = self.data.get(table)
@@ -1506,6 +1780,10 @@ class Database:
             key = self._deleted_project_key(row)
             if key is not None:
                 return (table, key[0], key[1])
+        if table == "deleted_records":
+            key = self._deleted_record_key(row)
+            if key is not None:
+                return (table, key[0], key[1], key[2])
         if "id" in row:
             return (table, str(row.get("id", "")))
         return (table, json.dumps(row, ensure_ascii=False, sort_keys=True))
