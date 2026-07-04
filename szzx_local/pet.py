@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QMovie, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 
@@ -31,11 +31,19 @@ PET_ACTIONS = {
 }
 
 
-PET_ASSET_FILES = {
-    "penguin": "qie.png",
-    "bunny": "tuzi.png",
-    "kitten": "mao.png",
-    "crayfish": "longxia.png",
+PET_ASSET_DIRS = {
+    "penguin": "企鹅",
+    "bunny": "兔子",
+    "kitten": "小猫",
+    "crayfish": "龙虾",
+}
+
+PET_ACTION_GIFS = {
+    "calm": ("待机.gif",),
+    "happy": ("开心.gif",),
+    "sleepy": ("困困.gif",),
+    "wave": ("挥手.gif", "招手.gif"),
+    "jump": ("跳跳.gif", "跳跳 .gif"),
 }
 
 
@@ -46,8 +54,6 @@ def _asset_path(*parts: str) -> Path:
 
 
 class DesktopPet(QWidget):
-    _pixmaps: dict[str, QPixmap] = {}
-
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("数智中心桌宠")
@@ -66,6 +72,8 @@ class DesktopPet(QWidget):
         self._tick = 0
         self._placed_once = False
         self._auto_hide_after_speech = False
+        self._movie: QMovie | None = None
+        self._movie_key: tuple[str, str] | None = None
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
@@ -77,6 +85,7 @@ class DesktopPet(QWidget):
 
     def set_mood(self, mood: str) -> None:
         self.mood = "sleepy" if mood == "tired" else mood if mood in PET_ACTIONS else "calm"
+        self._load_movie()
         self.update()
 
     def speak(self, text: str, mood: str = "wave", duration_ms: int = 16000, auto_hide: bool = True) -> None:
@@ -103,6 +112,7 @@ class DesktopPet(QWidget):
         kind = LEGACY_PET_KINDS.get(kind, kind)
         self.kind = kind if kind in PET_KINDS else "penguin"
         self.setWindowTitle(f"{PET_KINDS[self.kind]} - 数智中心桌宠")
+        self._load_movie()
         self.update()
 
     def _animate(self) -> None:
@@ -133,6 +143,14 @@ class DesktopPet(QWidget):
             self.hide()
         self._drag_pos = None
         self._drag_moved = False
+
+    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.speech_timer.stop()
+            self.speech_text = ""
+            self._auto_hide_after_speech = False
+            self.set_mood("calm")
+            self.hide()
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         if not self._placed_once:
@@ -168,39 +186,9 @@ class DesktopPet(QWidget):
         if self.speech_text:
             self._draw_speech_bubble(painter)
 
-        jump = 0
-        breathe = math.sin(self._tick / 7) * 2.5
-        tilt = math.sin(self._tick / 10) * 1.4
-        squash = 1.0
-        if self.mood == "happy":
-            jump = int(abs(math.sin(self._tick / 4)) * 10)
-            tilt = math.sin(self._tick / 4) * 5
-        elif self.mood == "jump":
-            jump = int(abs(math.sin(self._tick / 5)) * 34)
-            squash = 0.93 + abs(math.sin(self._tick / 5)) * 0.12
-        elif self.mood == "wave":
-            tilt = math.sin(self._tick / 3) * 7
-        elif self.mood == "sleepy":
-            breathe = math.sin(self._tick / 14) * 1.2
-            tilt = math.sin(self._tick / 18) * 1.0
-
-        self._draw_shadow(painter, jump)
-        target = QRectF(29, 25 + breathe - jump, 182, 182)
-
-        painter.save()
-        painter.translate(target.center())
-        painter.rotate(tilt)
-        painter.scale(1.0, squash)
-        painter.translate(-target.center())
+        self._draw_shadow(painter, 0)
+        target = QRectF(24, 28, 192, 192)
         painter.drawPixmap(target, pet, QRectF(pet.rect()))
-        painter.restore()
-
-        if self.mood == "happy":
-            self._draw_hearts(painter)
-        elif self.mood == "wave":
-            self._draw_wave_sparkles(painter)
-        elif self.mood == "sleepy":
-            self._draw_sleep_mark(painter)
 
     def _draw_shadow(self, painter: QPainter, jump: int) -> None:
         width = 116 - jump
@@ -228,10 +216,53 @@ class DesktopPet(QWidget):
         )
 
     def _pet_pixmap(self) -> QPixmap:
-        if self.kind not in DesktopPet._pixmaps:
-            asset_file = PET_ASSET_FILES.get(self.kind, PET_ASSET_FILES["penguin"])
-            DesktopPet._pixmaps[self.kind] = QPixmap(str(_asset_path("pets", asset_file)))
-        return DesktopPet._pixmaps[self.kind]
+        self._load_movie()
+        if self._movie is None:
+            return QPixmap()
+        pixmap = self._movie.currentPixmap()
+        if pixmap.isNull():
+            self._movie.jumpToFrame(0)
+            pixmap = self._movie.currentPixmap()
+        return pixmap
+
+    def _load_movie(self) -> None:
+        key = (self.kind, self.mood)
+        if self._movie_key == key and self._movie is not None:
+            return
+        if self._movie is not None:
+            self._movie.stop()
+            self._movie.deleteLater()
+            self._movie = None
+        path = self._pet_gif_path(self.kind, self.mood)
+        if path is None:
+            self._movie_key = key
+            return
+        movie = QMovie(str(path))
+        if not movie.isValid():
+            self._movie_key = key
+            return
+        movie.setCacheMode(QMovie.CacheMode.CacheAll)
+        movie.frameChanged.connect(lambda _frame: self.update())
+        movie.start()
+        self._movie = movie
+        self._movie_key = key
+
+    def _pet_gif_path(self, kind: str, mood: str) -> Path | None:
+        folder = _asset_path("cartoon", PET_ASSET_DIRS.get(kind, PET_ASSET_DIRS["penguin"]))
+        candidates = PET_ACTION_GIFS.get(mood, PET_ACTION_GIFS["calm"])
+        for filename in candidates:
+            path = folder / filename
+            if path.exists():
+                return path
+        wanted = {Path(filename).stem.replace(" ", "") for filename in candidates}
+        for path in folder.glob("*.gif"):
+            if path.stem.replace(" ", "") in wanted:
+                return path
+        calm = folder / "待机.gif"
+        if calm.exists():
+            return calm
+        gifs = sorted(folder.glob("*.gif"))
+        return gifs[0] if gifs else None
 
     def _draw_hearts(self, painter: QPainter) -> None:
         painter.setPen(Qt.PenStyle.NoPen)

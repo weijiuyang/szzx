@@ -8,7 +8,7 @@ import os
 import socket
 import sys
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +47,7 @@ SHARED_TABLES = (
     "project_documents",
     "project_todos",
     "rest_days",
+    "activity_events",
     "name_claims",
     "deleted_projects",
     "deleted_records",
@@ -65,6 +66,12 @@ RECORD_TOMBSTONE_TABLES = {
 
 def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value)
+
+
+def _previous_week_range(today: date | None = None) -> tuple[date, date]:
+    current = today or date.today()
+    start = current - timedelta(days=current.weekday() + 7)
+    return start, start + timedelta(days=6)
 
 
 class Database:
@@ -98,6 +105,7 @@ class Database:
             "project_documents": [],
             "project_todos": [],
             "rest_days": [],
+            "activity_events": [],
             "name_claims": [],
             "deleted_projects": [],
             "deleted_records": [],
@@ -753,7 +761,14 @@ class Database:
             created_at=_parse_time(str(row["created_at"])),
         )
 
-    def add_daily_report(self, project_id: int, member_name: str, role: str, content: str) -> DailyReport:
+    def add_daily_report(
+        self,
+        project_id: int,
+        member_name: str,
+        role: str,
+        content: str,
+        todo_id: int | None = None,
+    ) -> DailyReport:
         created_at = datetime.now()
         row = self._with_operator({
             "id": self._next_id("daily_reports"),
@@ -761,6 +776,7 @@ class Database:
             "member_name": member_name.strip(),
             "role": role.strip(),
             "content": content.strip(),
+            "todo_id": todo_id or "",
             "created_at": created_at.isoformat(timespec="seconds"),
         })
         self.data["daily_reports"].append(row)
@@ -782,6 +798,15 @@ class Database:
         ]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._daily_from_row(row) for row in rows]
+
+    def list_daily_reports_for_todo(self, todo_id: int, limit: int = 10) -> list[DailyReport]:
+        rows = [
+            row
+            for row in self.data["daily_reports"]
+            if str(row.get("todo_id", "")).strip() == str(todo_id)
+        ]
+        rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        return [self._daily_from_row(row) for row in rows[:limit]]
 
     def daily_report_counts_by_day(self, mine_only: bool = True) -> dict[date, int]:
         counts: dict[date, int] = {}
@@ -841,6 +866,532 @@ class Database:
             current += timedelta(days=1)
         reports.sort(key=lambda item: item["created_at"])
         return reports
+
+    def starry_night_badge(self, days: int = 7) -> dict[str, Any] | None:
+        start_day, end_day = _previous_week_range()
+        latest_by_day: dict[date, tuple[datetime, str, str]] = {}
+
+        def remember(day: date, created_at: datetime, name: str, kind: str) -> None:
+            if day < start_day or day > end_day or not name.strip():
+                return
+            current = latest_by_day.get(day)
+            if current is None or created_at > current[0]:
+                latest_by_day[day] = (created_at, name.strip(), kind)
+
+        for row in self.data.get("daily_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at.date(), created_at, str(row.get("member_name", "")), "日报")
+
+        for row in self.data.get("project_weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at.date(), created_at, str(row.get("author", "")), "项目周报")
+
+        for row in self.data.get("weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at.date(), created_at, str(row.get("operator", "")), "个人周报")
+
+        if not latest_by_day:
+            return None
+
+        counts: dict[str, int] = {}
+        last_win: dict[str, tuple[date, datetime, str]] = {}
+        for day, (created_at, name, kind) in latest_by_day.items():
+            counts[name] = counts.get(name, 0) + 1
+            previous = last_win.get(name)
+            if previous is None or created_at > previous[1]:
+                last_win[name] = (day, created_at, kind)
+
+        winner = max(counts, key=lambda name: (counts[name], last_win[name][1], name))
+        win_day, win_time, win_kind = last_win[winner]
+        return {
+            "name": winner,
+            "count": counts[winner],
+            "days": len(latest_by_day),
+            "last_day": win_day,
+            "last_time": win_time,
+            "last_kind": win_kind,
+        }
+
+    def record_activity(self, kind: str, actor: str | None = None) -> None:
+        created_at = datetime.now()
+        row = self._with_operator({
+            "id": self._next_timestamp_id("activity_events", created_at),
+            "kind": kind.strip() or "操作",
+            "actor": (actor or self.display_name()).strip(),
+            "created_at": created_at.isoformat(timespec="seconds"),
+        })
+        self.data["activity_events"].append(row)
+        self._save()
+
+    def dawn_badge(self, days: int = 7) -> dict[str, Any] | None:
+        start_day, end_day = _previous_week_range()
+        morning_start = time(7, 0)
+        morning_end = time(8, 30)
+        earliest_by_day: dict[date, tuple[datetime, str, str]] = {}
+
+        def remember(created_at: datetime, name: str, kind: str) -> None:
+            day = created_at.date()
+            if day < start_day or day > end_day or not name.strip():
+                return
+            if not (morning_start <= created_at.time() <= morning_end):
+                return
+            current = earliest_by_day.get(day)
+            if current is None or created_at < current[0]:
+                earliest_by_day[day] = (created_at, name.strip(), kind)
+
+        for row in self.data.get("activity_events", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at, str(row.get("actor") or row.get("operator", "")), str(row.get("kind", "操作")))
+
+        for row in self.data.get("daily_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at, str(row.get("member_name", "")), "日报")
+
+        for row in self.data.get("project_weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at, str(row.get("author", "")), "项目周报")
+
+        for row in self.data.get("weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at, str(row.get("operator", "")), "个人周报")
+
+        for row in self.data.get("project_todos", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at, str(row.get("creator", "")), "代办")
+            completed_at = str(row.get("completed_at", "")).strip()
+            if completed_at:
+                try:
+                    completed_time = _parse_time(completed_at)
+                except ValueError:
+                    continue
+                remember(completed_time, str(row.get("completed_by", "")), "完成代办")
+
+        if not earliest_by_day:
+            return None
+
+        counts: dict[str, int] = {}
+        last_win: dict[str, tuple[date, datetime, str]] = {}
+        for day, (created_at, name, kind) in earliest_by_day.items():
+            counts[name] = counts.get(name, 0) + 1
+            previous = last_win.get(name)
+            if previous is None or created_at > previous[1]:
+                last_win[name] = (day, created_at, kind)
+
+        winner = max(counts, key=lambda name: (counts[name], last_win[name][1], name))
+        win_day, win_time, win_kind = last_win[winner]
+        return {
+            "name": winner,
+            "count": counts[winner],
+            "days": len(earliest_by_day),
+            "last_day": win_day,
+            "last_time": win_time,
+            "last_kind": win_kind,
+        }
+
+    def log_badge(self, days: int = 7) -> dict[str, Any] | None:
+        start_day, end_day = _previous_week_range()
+        expected_days = (end_day - start_day).days + 1
+        stats: dict[str, dict[str, Any]] = {}
+
+        def word_count(content: str) -> int:
+            return len("".join(content.split()))
+
+        def remember(created_at: datetime, name: str, content: str, kind: str) -> None:
+            day = created_at.date()
+            name = name.strip()
+            if day < start_day or day > end_day or not name:
+                return
+            stat = stats.setdefault(
+                name,
+                {
+                    "days": set(),
+                    "count": 0,
+                    "words": 0,
+                    "last_time": created_at,
+                    "last_kind": kind,
+                },
+            )
+            stat["days"].add(day)
+            stat["count"] += 1
+            stat["words"] += word_count(content)
+            if created_at > stat["last_time"]:
+                stat["last_time"] = created_at
+                stat["last_kind"] = kind
+
+        for row in self.data.get("daily_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at, str(row.get("member_name", "")), str(row.get("content", "")), "日报")
+
+        for row in self.data.get("project_weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at, str(row.get("author", "")), str(row.get("content", "")), "项目周报")
+
+        for row in self.data.get("weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            remember(created_at, str(row.get("operator", "")), str(row.get("content", "")), "个人周报")
+
+        if not stats:
+            return None
+
+        winner = max(
+            stats,
+            key=lambda name: (
+                len(stats[name]["days"]) == expected_days,
+                stats[name]["count"],
+                stats[name]["words"],
+                stats[name]["last_time"],
+                name,
+            ),
+        )
+        winner_stat = stats[winner]
+        return {
+            "name": winner,
+            "days": len(winner_stat["days"]),
+            "count": int(winner_stat["count"]),
+            "words": int(winner_stat["words"]),
+            "last_time": winner_stat["last_time"],
+            "last_kind": str(winner_stat["last_kind"]),
+        }
+
+    def todo_badge(self, days: int = 7) -> dict[str, Any] | None:
+        start_day, end_day = _previous_week_range()
+        stats: dict[str, dict[str, Any]] = {}
+
+        for row in self.data.get("project_todos", []):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("completed_by", "")).strip()
+            completed_at = str(row.get("completed_at", "")).strip()
+            if not name or not completed_at:
+                continue
+            try:
+                completed_time = _parse_time(completed_at)
+            except ValueError:
+                continue
+            day = completed_time.date()
+            if day < start_day or day > end_day:
+                continue
+            stat = stats.setdefault(name, {"count": 0, "last_time": completed_time})
+            stat["count"] += 1
+            if completed_time > stat["last_time"]:
+                stat["last_time"] = completed_time
+
+        if not stats:
+            return None
+
+        winner = max(stats, key=lambda name: (stats[name]["count"], stats[name]["last_time"], name))
+        winner_stat = stats[winner]
+        return {
+            "name": winner,
+            "count": int(winner_stat["count"]),
+            "last_time": winner_stat["last_time"],
+        }
+
+    def badge_detail_report(self, badge_key: str) -> dict[str, Any]:
+        start_day, end_day = _previous_week_range()
+        if badge_key == "starry":
+            return self._starry_badge_detail(start_day, end_day)
+        if badge_key == "dawn":
+            return self._dawn_badge_detail(start_day, end_day)
+        if badge_key == "log":
+            return self._log_badge_detail(start_day, end_day)
+        if badge_key == "todo":
+            return self._todo_badge_detail(start_day, end_day)
+        return {"ranking": [], "details": [], "start_day": start_day, "end_day": end_day}
+
+    def _badge_log_entries(self, start_day: date, end_day: date) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+
+        def add(row: dict[str, Any], created_at: datetime, name: str, kind: str, content: str) -> None:
+            if start_day <= created_at.date() <= end_day and name.strip():
+                entries.append(
+                    {
+                        "day": created_at.date(),
+                        "time": created_at,
+                        "name": name.strip(),
+                        "kind": kind,
+                        "content": content.strip(),
+                        "words": len("".join(content.split())),
+                        "source_id": str(row.get("id", "")),
+                    }
+                )
+
+        for row in self.data.get("daily_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            add(row, created_at, str(row.get("member_name", "")), "日报", str(row.get("content", "")))
+
+        for row in self.data.get("project_weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            add(row, created_at, str(row.get("author", "")), "项目周报", str(row.get("content", "")))
+
+        for row in self.data.get("weekly_reports", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            add(row, created_at, str(row.get("operator", "")), "个人周报", str(row.get("content", "")))
+
+        entries.sort(key=lambda item: item["time"])
+        return entries
+
+    def _starry_badge_detail(self, start_day: date, end_day: date) -> dict[str, Any]:
+        entries = self._badge_log_entries(start_day, end_day)
+        latest_by_day: dict[date, dict[str, Any]] = {}
+        for entry in entries:
+            current = latest_by_day.get(entry["day"])
+            if current is None or entry["time"] > current["time"]:
+                latest_by_day[entry["day"]] = entry
+        stats: dict[str, dict[str, Any]] = {}
+        for entry in latest_by_day.values():
+            stat = stats.setdefault(entry["name"], {"count": 0, "last_time": entry["time"]})
+            stat["count"] += 1
+            if entry["time"] > stat["last_time"]:
+                stat["last_time"] = entry["time"]
+        ranking = [
+            {
+                "姓名": name,
+                "命中天数": stat["count"],
+                "最近命中": stat["last_time"].strftime("%Y-%m-%d %H:%M"),
+            }
+            for name, stat in sorted(stats.items(), key=lambda item: (item[1]["count"], item[1]["last_time"], item[0]), reverse=True)
+        ]
+        details = [
+            {
+                "日期": entry["day"].isoformat(),
+                "时间": entry["time"].strftime("%H:%M"),
+                "姓名": entry["name"],
+                "类型": entry["kind"],
+                "当日最晚": "是" if latest_by_day.get(entry["day"]) is entry else "",
+                "内容": entry["content"],
+            }
+            for entry in entries
+        ]
+        return {"ranking": ranking, "details": details, "start_day": start_day, "end_day": end_day}
+
+    def _dawn_badge_detail(self, start_day: date, end_day: date) -> dict[str, Any]:
+        morning_start = time(7, 0)
+        morning_end = time(8, 30)
+        entries: list[dict[str, Any]] = []
+
+        def add(created_at: datetime, name: str, kind: str, content: str = "") -> None:
+            if (
+                start_day <= created_at.date() <= end_day
+                and morning_start <= created_at.time() <= morning_end
+                and name.strip()
+            ):
+                entries.append(
+                    {
+                        "day": created_at.date(),
+                        "time": created_at,
+                        "name": name.strip(),
+                        "kind": kind,
+                        "content": content.strip(),
+                    }
+                )
+
+        for row in self.data.get("activity_events", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                add(_parse_time(str(row.get("created_at", ""))), str(row.get("actor") or row.get("operator", "")), str(row.get("kind", "操作")))
+            except ValueError:
+                continue
+        for entry in self._badge_log_entries(start_day, end_day):
+            add(entry["time"], entry["name"], entry["kind"], entry["content"])
+        for row in self.data.get("project_todos", []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                add(_parse_time(str(row.get("created_at", ""))), str(row.get("creator", "")), "创建代办", str(row.get("title", "")))
+            except ValueError:
+                pass
+            completed_at = str(row.get("completed_at", "")).strip()
+            if completed_at:
+                try:
+                    add(_parse_time(completed_at), str(row.get("completed_by", "")), "完成代办", str(row.get("title", "")))
+                except ValueError:
+                    pass
+
+        entries.sort(key=lambda item: item["time"])
+        earliest_by_day: dict[date, dict[str, Any]] = {}
+        for entry in entries:
+            earliest_by_day.setdefault(entry["day"], entry)
+        stats: dict[str, dict[str, Any]] = {}
+        for entry in earliest_by_day.values():
+            stat = stats.setdefault(entry["name"], {"count": 0, "last_time": entry["time"]})
+            stat["count"] += 1
+            if entry["time"] > stat["last_time"]:
+                stat["last_time"] = entry["time"]
+        ranking = [
+            {
+                "姓名": name,
+                "命中天数": stat["count"],
+                "最近命中": stat["last_time"].strftime("%Y-%m-%d %H:%M"),
+            }
+            for name, stat in sorted(stats.items(), key=lambda item: (item[1]["count"], item[1]["last_time"], item[0]), reverse=True)
+        ]
+        details = [
+            {
+                "日期": entry["day"].isoformat(),
+                "时间": entry["time"].strftime("%H:%M"),
+                "姓名": entry["name"],
+                "类型": entry["kind"],
+                "当日最早": "是" if earliest_by_day.get(entry["day"]) is entry else "",
+                "内容": entry["content"],
+            }
+            for entry in entries
+        ]
+        return {"ranking": ranking, "details": details, "start_day": start_day, "end_day": end_day}
+
+    def _log_badge_detail(self, start_day: date, end_day: date) -> dict[str, Any]:
+        entries = self._badge_log_entries(start_day, end_day)
+        stats: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            stat = stats.setdefault(entry["name"], {"days": set(), "count": 0, "words": 0, "last_time": entry["time"]})
+            stat["days"].add(entry["day"])
+            stat["count"] += 1
+            stat["words"] += entry["words"]
+            if entry["time"] > stat["last_time"]:
+                stat["last_time"] = entry["time"]
+        ranking = [
+            {
+                "姓名": name,
+                "记录天数": len(stat["days"]),
+                "日志条数": stat["count"],
+                "总字数": stat["words"],
+                "最近记录": stat["last_time"].strftime("%Y-%m-%d %H:%M"),
+            }
+            for name, stat in sorted(stats.items(), key=lambda item: (len(item[1]["days"]) == 7, item[1]["count"], item[1]["words"], item[1]["last_time"], item[0]), reverse=True)
+        ]
+        details = [
+            {
+                "日期": entry["day"].isoformat(),
+                "时间": entry["time"].strftime("%H:%M"),
+                "姓名": entry["name"],
+                "类型": entry["kind"],
+                "字数": entry["words"],
+                "内容": entry["content"],
+            }
+            for entry in entries
+        ]
+        return {"ranking": ranking, "details": details, "start_day": start_day, "end_day": end_day}
+
+    def _todo_badge_detail(self, start_day: date, end_day: date) -> dict[str, Any]:
+        entries: list[dict[str, Any]] = []
+        for row in self.data.get("project_todos", []):
+            if not isinstance(row, dict):
+                continue
+            completed_at = str(row.get("completed_at", "")).strip()
+            name = str(row.get("completed_by", "")).strip()
+            if not completed_at or not name:
+                continue
+            try:
+                completed_time = _parse_time(completed_at)
+            except ValueError:
+                continue
+            if start_day <= completed_time.date() <= end_day:
+                entries.append(
+                    {
+                        "day": completed_time.date(),
+                        "time": completed_time,
+                        "name": name,
+                        "title": str(row.get("title", "")),
+                        "scope": str(row.get("scope", "")),
+                    }
+                )
+        entries.sort(key=lambda item: item["time"])
+        stats: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            stat = stats.setdefault(entry["name"], {"count": 0, "last_time": entry["time"]})
+            stat["count"] += 1
+            if entry["time"] > stat["last_time"]:
+                stat["last_time"] = entry["time"]
+        ranking = [
+            {
+                "姓名": name,
+                "完成数量": stat["count"],
+                "最近完成": stat["last_time"].strftime("%Y-%m-%d %H:%M"),
+            }
+            for name, stat in sorted(stats.items(), key=lambda item: (item[1]["count"], item[1]["last_time"], item[0]), reverse=True)
+        ]
+        details = [
+            {
+                "日期": entry["day"].isoformat(),
+                "时间": entry["time"].strftime("%H:%M"),
+                "姓名": entry["name"],
+                "类型": entry["scope"],
+                "内容": entry["title"],
+            }
+            for entry in entries
+        ]
+        return {"ranking": ranking, "details": details, "start_day": start_day, "end_day": end_day}
 
     def today_project_logs(self, member_name: str | None = None) -> list[dict[str, Any]]:
         today = date.today()
@@ -959,6 +1510,11 @@ class Database:
         return False
 
     def _daily_from_row(self, row: dict[str, Any]) -> DailyReport:
+        raw_todo_id = row.get("todo_id", "")
+        try:
+            todo_id = int(raw_todo_id) if str(raw_todo_id).strip() else None
+        except (TypeError, ValueError):
+            todo_id = None
         return DailyReport(
             id=int(row["id"]),
             project_id=int(row["project_id"]),
@@ -966,6 +1522,7 @@ class Database:
             role=str(row["role"]),
             content=str(row["content"]),
             created_at=_parse_time(str(row["created_at"])),
+            todo_id=todo_id,
         )
 
     def add_project_todo(
@@ -976,6 +1533,7 @@ class Database:
         scope: str = "personal",
         assignee: str = "",
         assigned_by: str = "",
+        due_at: datetime | None = None,
     ) -> ProjectTodo:
         created_at = datetime.now()
         todo_scope = scope if scope in {"personal", "project", "assigned"} else "personal"
@@ -991,6 +1549,8 @@ class Database:
             "completed_by": "",
             "created_at": created_at.isoformat(timespec="seconds"),
             "completed_at": "",
+            "due_at": due_at.isoformat(timespec="seconds") if due_at is not None else "",
+            "started_at": "",
         })
         self.data["project_todos"].append(row)
         self._save()
@@ -1023,6 +1583,12 @@ class Database:
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
         return [self._todo_from_row(row) for row in rows]
 
+    def get_project_todo(self, todo_id: int) -> ProjectTodo | None:
+        for row in self.data["project_todos"]:
+            if int(row["id"]) == todo_id:
+                return self._todo_from_row(row)
+        return None
+
     def delete_project_todo(self, todo_id: int) -> bool:
         rows = self.data["project_todos"]
         for index, row in enumerate(rows):
@@ -1034,12 +1600,29 @@ class Database:
             return True
         return False
 
+    def start_project_todo(self, todo_id: int, member_name: str) -> ProjectTodo | None:
+        for row in self.data["project_todos"]:
+            if int(row["id"]) != todo_id:
+                continue
+            if str(row.get("status", "todo")) == "done":
+                return None
+            if str(row.get("scope", "personal")) != "assigned":
+                return None
+            if self._normalize_display_name(str(row.get("assignee", ""))) != self._normalize_display_name(member_name):
+                return None
+            if str(row.get("started_at", "")).strip():
+                return self._todo_from_row(row)
+            row["started_at"] = datetime.now().isoformat(timespec="seconds")
+            self._save()
+            return self._todo_from_row(row)
+        return None
+
     def complete_project_todo(
         self,
         todo_id: int,
         member_name: str,
         role: str,
-        progress_prefix: str = "完成待办",
+        progress_prefix: str = "完成代办",
     ) -> DailyReport | ProjectTodo | None:
         for row in self.data["project_todos"]:
             if int(row["id"]) != todo_id:
@@ -1058,12 +1641,23 @@ class Database:
                 member_name,
                 role,
                 f"{progress_prefix}：{str(row.get('title', '')).strip()}",
+                todo_id=todo_id,
             )
             return report
         return None
 
     def _todo_from_row(self, row: dict[str, Any]) -> ProjectTodo:
         completed_at = str(row.get("completed_at", "")).strip()
+        due_at = str(row.get("due_at", "")).strip()
+        started_at = str(row.get("started_at", "")).strip()
+        try:
+            parsed_due_at = _parse_time(due_at) if due_at else None
+        except ValueError:
+            parsed_due_at = None
+        try:
+            parsed_started_at = _parse_time(started_at) if started_at else None
+        except ValueError:
+            parsed_started_at = None
         return ProjectTodo(
             id=int(row["id"]),
             project_id=int(row["project_id"]),
@@ -1076,6 +1670,8 @@ class Database:
             completed_by=str(row.get("completed_by", "")),
             created_at=_parse_time(str(row["created_at"])),
             completed_at=_parse_time(completed_at) if completed_at else None,
+            due_at=parsed_due_at,
+            started_at=parsed_started_at,
         )
 
     def add_project_weekly_report(self, project_id: int, author: str, content: str) -> ProjectWeeklyReport:
@@ -1491,14 +2087,20 @@ class Database:
     def _merge_existing_shared_row(self, table: str, existing: dict[str, Any], remote: dict[str, Any]) -> bool:
         if table != "project_todos":
             return False
+        changed = False
+        remote_started_at = str(remote.get("started_at", ""))
+        existing_started_at = str(existing.get("started_at", ""))
+        if remote_started_at and remote_started_at > existing_started_at:
+            existing["started_at"] = remote_started_at
+            changed = True
         remote_status = str(remote.get("status", "todo"))
         existing_status = str(existing.get("status", "todo"))
         remote_completed_at = str(remote.get("completed_at", ""))
         existing_completed_at = str(existing.get("completed_at", ""))
         if remote_status != "done":
-            return False
+            return changed
         if existing_status == "done" and remote_completed_at <= existing_completed_at:
-            return False
+            return changed
         for key in ("status", "completed_by", "completed_at"):
             existing[key] = str(remote.get(key, ""))
         return True

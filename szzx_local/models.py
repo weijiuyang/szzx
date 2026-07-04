@@ -32,6 +32,7 @@ class DailyReport:
     role: str
     content: str
     created_at: datetime
+    todo_id: int | None
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,8 @@ class ProjectTodo:
     completed_by: str
     created_at: datetime
     completed_at: datetime | None
+    due_at: datetime | None
+    started_at: datetime | None
 
 
 ProjectDeck = ProjectDocument

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 import shutil
 import subprocess
 import sys
@@ -11,7 +12,7 @@ from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QIcon, QKeySequence, QShortcut, QTextDocument
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QKeySequence, QPixmap, QShortcut, QTextDocument
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -361,6 +362,19 @@ QWidget#darkPanel QLabel {
 QWidget#darkPanel QLabel#muted {
     color: #bfc5ba;
 }
+QWidget#badgeCard {
+    background: transparent;
+    border: 0;
+}
+QLabel#badgeIcon {
+    font-size: 38px;
+    color: #596d5b;
+}
+QLabel#badgeWinner, QLabel#badgeRule {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1d1e1b;
+}
 """
 
 
@@ -666,20 +680,24 @@ class PetDialog(QDialog):
 
     def _select_pet(self, kind: str) -> None:
         self.db.set_pet_kind(kind)
+        self.db.record_activity("更换桌宠")
         self.pet.set_kind(kind)
         for button_kind, button in self.pet_buttons.items():
             button.setChecked(button_kind == kind)
         self._show_pet_bottom_right()
 
     def _play_action(self, action: str) -> None:
+        self.db.record_activity("桌宠互动")
         self.pet.set_mood(action)
         self._show_pet_bottom_right()
 
     def _show_pet_bottom_right(self) -> None:
+        self.db.record_activity("显示桌宠")
         self.pet.move_to_bottom_right()
         self.pet.show_manually()
 
     def _hide_pet(self) -> None:
+        self.db.record_activity("隐藏桌宠")
         self.pet.hide()
 
 
@@ -706,6 +724,178 @@ class VersionDialog(QDialog):
         history.setPlainText(changelog_text())
         layout.addWidget(history_title)
         layout.addWidget(history)
+
+
+class BadgeDialog(QDialog):
+    def __init__(self, title: str, image_path: Path, rule: str, detail: str = "", report: dict[str, object] | None = None) -> None:
+        super().__init__()
+        self.title = title
+        self.report = report
+        self.setWindowTitle(title)
+        self.setFixedWidth(620)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 26, 28, 28)
+        layout.setSpacing(16)
+
+        heading = _label(title, "sectionTitle")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(heading)
+
+        image = QLabel()
+        image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image.setFixedSize(560, 560)
+        pixmap = QPixmap(str(image_path))
+        if pixmap.isNull():
+            image.setText("徽章图片未找到")
+        else:
+            image.setPixmap(
+                pixmap.scaled(
+                    560,
+                    560,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        layout.addWidget(image, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        rule_label = _label(rule, "badgeRule")
+        rule_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(rule_label)
+        if detail:
+            detail_label = _label(detail, "muted")
+            detail_label.setWordWrap(True)
+            detail_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            layout.addWidget(detail_label)
+        if report is not None:
+            export_button = QPushButton("下载排名细节")
+            export_button.setObjectName("primaryButton")
+            export_button.clicked.connect(self._export_report)
+            layout.addWidget(export_button)
+
+    def _export_report(self) -> None:
+        if self.report is None:
+            return
+        start_day = self.report.get("start_day")
+        end_day = self.report.get("end_day")
+        if isinstance(start_day, date) and isinstance(end_day, date):
+            suffix = f"{start_day:%Y%m%d}-{end_day:%Y%m%d}"
+        else:
+            suffix = datetime.now().strftime("%Y%m%d")
+        default_name = str(Path.home() / "Downloads" / f"{self.title}-排名细节-{suffix}.xlsx")
+        target, _ = QFileDialog.getSaveFileName(self, "下载排名细节", default_name, "Excel 工作簿 (*.xlsx)")
+        if not target:
+            return
+        target_path = Path(target)
+        if target_path.suffix.lower() != ".xlsx":
+            target_path = target_path.with_suffix(".xlsx")
+        try:
+            self._write_report_xlsx(target_path)
+        except OSError as exc:
+            QMessageBox.warning(self, "导出失败", f"保存 Excel 失败：{exc}")
+            return
+        QMessageBox.information(self, "导出完成", f"已导出：\n{target_path}")
+
+    def _write_report_xlsx(self, path: Path) -> None:
+        if self.report is None:
+            return
+        sheets = [
+            ("排名", self._rows_from_dicts(self.report.get("ranking"))),
+            ("明细", self._rows_from_dicts(self.report.get("details"))),
+        ]
+        sheet_xml = []
+        workbook_sheets = []
+        rels = []
+        content_overrides = []
+        for sheet_index, (sheet_name, rows) in enumerate(sheets, start=1):
+            sheet_xml.append((sheet_index, self._worksheet_xml(rows)))
+            workbook_sheets.append(f'<sheet name="{escape(sheet_name)}" sheetId="{sheet_index}" r:id="rId{sheet_index}"/>')
+            rels.append(f'<Relationship Id="rId{sheet_index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{sheet_index}.xml"/>')
+            content_overrides.append(f'<Override PartName="/xl/worksheets/sheet{sheet_index}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>')
+        workbook = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            f'<sheets>{"".join(workbook_sheets)}</sheets></workbook>'
+        )
+        styles = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<fonts count="2"><font><sz val="11"/></font><font><b/><sz val="11"/></font></fonts>'
+            '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+            '<borders count="1"><border/></borders>'
+            '<cellXfs count="2"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="0" borderId="0" applyFont="1"/></cellXfs>'
+            '</styleSheet>'
+        )
+        content_types = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            f'{"".join(content_overrides)}</Types>'
+        )
+        root_rels = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>'
+        )
+        workbook_rels = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'{"".join(rels)}'
+            f'<Relationship Id="rId{len(sheets) + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+            '</Relationships>'
+        )
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", content_types)
+            archive.writestr("_rels/.rels", root_rels)
+            archive.writestr("xl/workbook.xml", workbook)
+            archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+            archive.writestr("xl/styles.xml", styles)
+            for sheet_index, xml in sheet_xml:
+                archive.writestr(f"xl/worksheets/sheet{sheet_index}.xml", xml)
+
+    def _rows_from_dicts(self, value: object) -> list[list[str]]:
+        if not isinstance(value, list) or not value:
+            return [["暂无数据"]]
+        keys: list[str] = []
+        for row in value:
+            if isinstance(row, dict):
+                for key in row:
+                    if key not in keys:
+                        keys.append(str(key))
+        rows = [keys]
+        for row in value:
+            if isinstance(row, dict):
+                rows.append([str(row.get(key, "")) for key in keys])
+        return rows
+
+    def _worksheet_xml(self, rows: list[list[str]]) -> str:
+        sheet_rows = []
+        for row_index, row in enumerate(rows, start=1):
+            cells = []
+            for column_index, value in enumerate(row, start=1):
+                cell_ref = f"{self._excel_column(column_index)}{row_index}"
+                style = ' s="1"' if row_index == 1 else ""
+                cells.append(f'<c r="{cell_ref}"{style} t="inlineStr"><is><t>{escape(value)}</t></is></c>')
+            sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<cols><col min="1" max="10" width="22" customWidth="1"/></cols>'
+            f'<sheetData>{"".join(sheet_rows)}</sheetData></worksheet>'
+        )
+
+    def _excel_column(self, index: int) -> str:
+        value = ""
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            value = chr(65 + remainder) + value
+        return value
 
 
 class ProjectLogHistoryDialog(QDialog):
@@ -916,6 +1106,7 @@ class ProjectMetricDialog(QDialog):
         open_document=None,
     ) -> None:
         super().__init__(parent)
+        self.project = project
         self.open_document = open_document
         self.setWindowTitle(f"{project.name} · {title}")
         self.resize(820, 640)
@@ -945,6 +1136,10 @@ class ProjectMetricDialog(QDialog):
         item.setFlags(Qt.ItemFlag.NoItemFlags)
         card = QWidget()
         card.setObjectName("feedCard")
+        if isinstance(row, ProjectTodo):
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            card.setToolTip("查看代办详情")
+            card.mousePressEvent = lambda event, selected=row: self._open_todo_detail(selected)  # type: ignore[method-assign]
         layout = QHBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(12)
@@ -952,7 +1147,12 @@ class ProjectMetricDialog(QDialog):
         body = QVBoxLayout()
         body.setSpacing(7)
         meta, content = self._row_text(row)
-        body.addWidget(_label(meta, "eyebrow"))
+        if isinstance(row, ProjectTodo):
+            meta_lines = [line for line in meta.splitlines() if line.strip()]
+            for meta_line in meta_lines:
+                body.addWidget(_label(meta_line, "eyebrow"))
+        else:
+            body.addWidget(_label(meta, "eyebrow"))
         body.addWidget(_label(content))
         layout.addLayout(body, 1)
 
@@ -962,7 +1162,7 @@ class ProjectMetricDialog(QDialog):
             open_button.clicked.connect(lambda checked=False, selected=row: self.open_document(selected))
             layout.addWidget(open_button)
 
-        item.setSizeHint(QSize(0, self._row_height(content)))
+        item.setSizeHint(QSize(0, self._row_height(content, meta if isinstance(row, ProjectTodo) else "")))
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, card)
 
@@ -974,19 +1174,29 @@ class ProjectMetricDialog(QDialog):
             )
         if isinstance(row, ProjectTodo):
             status = "已完成" if row.status == "done" else "待完成"
-            scope = {"personal": "个人代办", "assigned": "分配任务", "project": "项目代办"}.get(row.scope, "代办")
-            actors = ""
+            scope = {"personal": "个人代办", "assigned": "分配代办", "project": "项目代办"}.get(row.scope, "代办")
+            lines = [
+                f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {scope} · {status}",
+            ]
             if row.scope == "assigned":
-                actors = f" · {row.assigned_by or row.creator} -> {row.assignee}"
+                lines.append(f"分配：{row.assigned_by or row.creator or '未记录'} -> {row.assignee or '未记录'}")
             elif row.completed_by:
-                actors = f" · 完成人 {row.completed_by}"
+                lines.append(f"完成人：{row.completed_by}")
+            due = self._todo_due_text(row)
+            if due:
+                lines.append(due)
+            started = self._todo_started_text(row)
+            if started:
+                lines.append(started)
             return (
-                f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {scope} · {status}{actors}",
+                "\n".join(lines),
                 row.title,
             )
         if isinstance(row, DailyReport):
+            linked_todo = self._daily_report_todo_text(row)
+            suffix = f" · {linked_todo}" if linked_todo else ""
             return (
-                f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {row.member_name} · {row.role}",
+                f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {row.member_name} · {row.role}{suffix}",
                 row.content,
             )
         if isinstance(row, ProjectWeeklyReport):
@@ -1002,13 +1212,143 @@ class ProjectMetricDialog(QDialog):
             )
         return ("", str(row))
 
-    def _row_height(self, content: str) -> int:
+    def _row_height(self, content: str, meta: str = "") -> int:
         normalized = " ".join(content.strip().split())
         explicit_lines = len([line for line in content.splitlines() if line.strip()])
         visual_width = sum(1 if ord(char) < 128 else 2 for char in normalized)
         visual_lines = max(1, (visual_width + 80 - 1) // 80)
-        lines = max(1, explicit_lines, visual_lines)
-        return 60 + lines * 24
+        content_lines = max(1, explicit_lines, visual_lines)
+        meta_lines = len([line for line in meta.splitlines() if line.strip()])
+        return 52 + (content_lines + meta_lines) * 24
+
+    def _open_todo_detail(self, todo: ProjectTodo) -> None:
+        db = getattr(self.parent(), "db", None)
+        reports = db.list_daily_reports_for_todo(todo.id, limit=1000) if db is not None else []
+        TodoDetailDialog(todo, self.project.name, reports, self).exec()
+
+    def _days_since(self, value: datetime) -> int:
+        return max(1, (date.today() - value.date()).days + 1)
+
+    def _todo_due_text(self, todo: ProjectTodo) -> str:
+        if todo.due_at is None:
+            return ""
+        now = datetime.now()
+        prefix = f"截止 {todo.due_at.strftime('%m-%d %H:%M')}"
+        if todo.status == "done":
+            return prefix
+        delta = todo.due_at - now
+        if delta.total_seconds() < 0:
+            overdue_days = max(1, (now.date() - todo.due_at.date()).days + 1)
+            return f"{prefix} · 已逾期 {overdue_days} 天"
+        remaining_days = max(1, delta.days + (1 if delta.seconds else 0))
+        return f"{prefix} · 剩 {remaining_days} 天"
+
+    def _todo_started_text(self, todo: ProjectTodo) -> str:
+        if todo.started_at is None:
+            return ""
+        return f"开始 {todo.started_at.strftime('%m-%d %H:%M')} · 已开始 {self._days_since(todo.started_at)} 天"
+
+    def _daily_report_todo_text(self, report: DailyReport) -> str:
+        if report.todo_id is None:
+            return ""
+        if report.content.strip().startswith(("完成待办：", "完成代办：")):
+            return ""
+        return f"关联代办 #{report.todo_id}"
+
+
+class TodoDetailDialog(QDialog):
+    def __init__(
+        self,
+        todo: ProjectTodo,
+        project_name: str,
+        reports: list[DailyReport],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("代办详情")
+        self.setFixedWidth(620)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        layout.addWidget(_label(todo.title, "sectionTitle"))
+        layout.addWidget(_label(project_name, "muted"))
+
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        detail.setMinimumHeight(420)
+        detail.setPlainText(self._detail_text(todo, project_name, reports))
+        layout.addWidget(detail)
+
+    def _detail_text(self, todo: ProjectTodo, project_name: str, reports: list[DailyReport]) -> str:
+        lines = [
+            "基本信息",
+            f"项目：{project_name}",
+            f"分配人：{todo.assigned_by or todo.creator or '未记录'}",
+            f"接收人：{todo.assignee or '未记录'}",
+            f"状态：{'已完成' if todo.status == 'done' else '进行中'}",
+            f"创建时间：{todo.created_at.strftime('%Y-%m-%d %H:%M')}",
+        ]
+        if todo.due_at is not None:
+            lines.append(f"截止时间：{todo.due_at.strftime('%Y-%m-%d %H:%M')}")
+        lines.append(
+            f"开始时间：{todo.started_at.strftime('%Y-%m-%d %H:%M')}"
+            if todo.started_at is not None
+            else "开始时间：未记录"
+        )
+        if todo.completed_at is not None:
+            lines.append(f"完成时间：{todo.completed_at.strftime('%Y-%m-%d %H:%M')}")
+        if todo.completed_by:
+            lines.append(f"完成人：{todo.completed_by}")
+
+        lines.extend(["", "关联日报"])
+        if not reports:
+            lines.append("暂无关联日报。")
+        for report in reports:
+            lines.extend(
+                [
+                    "",
+                    f"{report.created_at.strftime('%Y-%m-%d %H:%M')} · {report.member_name} · {report.role}",
+                    report.content,
+                ]
+            )
+        return "\n".join(lines)
+
+
+class TodoDailyReportDialog(QDialog):
+    def __init__(self, todo: ProjectTodo, project_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("记录代办日报")
+        self.setFixedWidth(560)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        layout.addWidget(_label("记录代办日报", "sectionTitle"))
+        layout.addWidget(_label(f"{project_name} · {todo.title}", "muted"))
+
+        self.editor = QTextEdit()
+        self.editor.setMinimumHeight(180)
+        self.editor.setPlaceholderText("记录这条代办今天的进展、问题或下一步。")
+        layout.addWidget(self.editor)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("保存")
+        save.setObjectName("primaryButton")
+        save.clicked.connect(self.accept)
+        actions.addWidget(cancel)
+        actions.addWidget(save)
+        layout.addLayout(actions)
+
+    def content(self) -> str:
+        return self.editor.toPlainText().strip()
 
 
 class NextWeekRosterDialog(QDialog):
@@ -1249,11 +1589,15 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._rest_calendar_tab())
         self.stack.addWidget(self._lan_tab())
         self.stack.addWidget(self._home_tab())
+        self.stack.addWidget(self._badge_wall_tab())
         self.stack.addWidget(self._docs_tab())
+        self.stack.addWidget(self._feature_guide_tab())
         shell_layout.addWidget(self.stack, 1)
 
         self.setCentralWidget(shell)
         self._select_page(0)
+        self.db.record_activity("打开程序")
+        self._refresh_badge_wall()
 
         if self.discovery is not None:
             self.discovery.peers_changed.connect(self._refresh_peers)
@@ -1285,7 +1629,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(subtitle)
         layout.addSpacing(28)
 
-        for index, text in enumerate(("我的面板", "项目面板", "个人周报", "日历", "局域网", "成长履历", "文档库")):
+        for index, text in enumerate(("我的面板", "项目面板", "个人周报", "日历", "局域网", "成长履历", "徽章墙", "文档库", "功能介绍")):
             button = QPushButton(text)
             button.setObjectName("navButton")
             button.setCheckable(True)
@@ -1304,6 +1648,147 @@ class MainWindow(QMainWindow):
         layout.addWidget(version)
         layout.addWidget(settings)
         return sidebar
+
+    def _badge_wall_tab(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(42, 38, 42, 38)
+        outer.setSpacing(24)
+
+        header = QVBoxLayout()
+        header.setSpacing(4)
+        header.addWidget(_label("徽章墙", "sectionTitle"))
+        header.addWidget(_label("把团队里的小习惯和高光时刻收集起来。", "muted"))
+        outer.addLayout(header)
+
+        self.badge_grid = QGridLayout()
+        self.badge_grid.setHorizontalSpacing(22)
+        self.badge_grid.setVerticalSpacing(18)
+        outer.addLayout(self.badge_grid)
+        outer.addStretch()
+
+        self._add_badge_card(
+            0,
+            0,
+            "星夜徽章",
+            "moon.png",
+            "starry_badge_holder",
+            "上周工作最晚",
+            "统计上一个完整自然周内的日报、项目周报和个人周报。每天取最晚提交的人记 1 次，次数最多者获得；次数相同取最近一次最晚提交更晚的人。",
+            "starry",
+        )
+        self._add_badge_card(
+            0,
+            1,
+            "启明徽章",
+            "sun.png",
+            "dawn_badge_holder",
+            "上周最早来",
+            "统计上一个完整自然周内 07:00 到 08:30 的记录和操作。每天取最早产生动作的人记 1 次，次数最多者获得；次数相同取最近一次更晚的人。",
+            "dawn",
+        )
+        self._add_badge_card(
+            0,
+            2,
+            "千里徽章",
+            "log.png",
+            "log_badge_holder",
+            "上周日志记录最多",
+            "统计上一个完整自然周内的日报、项目周报和个人周报。优先看是否 7 天每天都有记录；多人满足时比日志条数；条数相同再比正文总字数。",
+            "log",
+        )
+        self._add_badge_card(
+            1,
+            0,
+            "先锋徽章",
+            "todo.png",
+            "todo_badge_holder",
+            "上周完成代办最多",
+            "统计上一个完整自然周内完成的项目代办。按完成数量排序，数量相同取最近完成时间更晚的人。",
+            "todo",
+        )
+        self._refresh_badge_wall()
+        return page
+
+    def _add_badge_card(
+        self,
+        row: int,
+        column: int,
+        title: str,
+        image_name: str,
+        holder_name: str,
+        rule: str,
+        detail: str,
+        badge_key: str,
+    ) -> None:
+        card = QWidget()
+        card.setObjectName("badgeCard")
+        card.setFixedSize(260, 318)
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        icon = QLabel()
+        icon.setObjectName("badgeIcon")
+        self._set_badge_pixmap(icon, _asset_path("badges", image_name), 210)
+        icon.setFixedHeight(216)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(icon)
+
+        holder = _label("暂无获得者", "badgeWinner")
+        holder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        holder.setFixedHeight(30)
+        setattr(self, holder_name, holder)
+        layout.addWidget(holder)
+        layout.addStretch()
+
+        image_path = _asset_path("badges", image_name)
+        card.mousePressEvent = lambda event, badge_title=title, path=image_path, badge_rule=rule, badge_detail=detail, key=badge_key: self._open_badge_dialog(
+            badge_title,
+            path,
+            badge_rule,
+            badge_detail,
+            key,
+        )
+        self.badge_grid.addWidget(card, row, column)
+
+    def _set_badge_pixmap(self, label: QLabel, path: Path, logical_size: int) -> None:
+        source = QPixmap(str(path))
+        if source.isNull():
+            label.setText("徽")
+            return
+        device_ratio = max(1.0, self.devicePixelRatioF())
+        physical_size = int(logical_size * device_ratio)
+        scaled = source.scaled(
+            physical_size,
+            physical_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        scaled.setDevicePixelRatio(device_ratio)
+        label.setFixedSize(logical_size, logical_size)
+        label.setPixmap(scaled)
+
+    def _refresh_badge_wall(self) -> None:
+        if hasattr(self, "starry_badge_holder"):
+            starry_badge = self.db.starry_night_badge()
+            self.starry_badge_holder.setText(str(starry_badge["name"]) if starry_badge else "暂无获得者")
+        if hasattr(self, "dawn_badge_holder"):
+            dawn_badge = self.db.dawn_badge()
+            self.dawn_badge_holder.setText(str(dawn_badge["name"]) if dawn_badge else "暂无获得者")
+        if hasattr(self, "log_badge_holder"):
+            log_badge = self.db.log_badge()
+            self.log_badge_holder.setText(str(log_badge["name"]) if log_badge else "暂无获得者")
+        if hasattr(self, "todo_badge_holder"):
+            todo_badge = self.db.todo_badge()
+            self.todo_badge_holder.setText(str(todo_badge["name"]) if todo_badge else "暂无获得者")
+
+    def _open_badge_dialog(self, title: str, image_path: Path, rule: str, detail: str, badge_key: str) -> None:
+        can_view_detail = any(self.db.is_current_user_name(name) for name in SUPER_ADMIN_NAMES)
+        visible_detail = detail if can_view_detail else ""
+        report = self.db.badge_detail_report(badge_key) if can_view_detail else None
+        BadgeDialog(title, image_path, rule, visible_detail, report).exec()
 
     def _select_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -1432,7 +1917,7 @@ class MainWindow(QMainWindow):
         header = QVBoxLayout()
         header.setSpacing(4)
         header.addWidget(_label("我的面板", "sectionTitle"))
-        header.addWidget(_label("集中查看参与项目、分配任务和完成提醒。", "muted"))
+        header.addWidget(_label("集中查看参与项目、分配代办和完成提醒。", "muted"))
         outer.addLayout(header)
 
         projects_panel = _panel()
@@ -1637,7 +2122,7 @@ class MainWindow(QMainWindow):
         config_project_layout.setSpacing(12)
         config_project_layout.addWidget(_label("项目简介", "eyebrow"))
         self.config_project_description = QTextEdit()
-        self.config_project_description.setPlaceholderText("项目目标、范围、当前进展或待办。")
+        self.config_project_description.setPlaceholderText("项目目标、范围、当前进展或代办。")
         self.config_project_description.setFixedHeight(130)
         self.save_project_description_button = QPushButton("保存项目简介")
         self.save_project_description_button.setObjectName("primaryButton")
@@ -1710,7 +2195,7 @@ class MainWindow(QMainWindow):
         self.personal_todo_button = QPushButton("个人代办")
         self.personal_todo_button.setCheckable(True)
         self.personal_todo_button.clicked.connect(lambda checked=False: self._set_todo_view("personal"))
-        self.assigned_todo_button = QPushButton("分配任务")
+        self.assigned_todo_button = QPushButton("分配代办")
         self.assigned_todo_button.setCheckable(True)
         self.assigned_todo_button.clicked.connect(lambda checked=False: self._set_todo_view("assigned"))
         self.project_todo_button = QPushButton("项目代办")
@@ -1726,10 +2211,27 @@ class MainWindow(QMainWindow):
         self.assigned_todo_assignee = QComboBox()
         self.assigned_todo_assignee.setVisible(False)
         todo_layout.addWidget(self.assigned_todo_assignee)
+        self.assigned_todo_deadline_days: int | None = None
+        self.assigned_todo_deadline_buttons: dict[int, QPushButton] = {}
+        self.assigned_todo_deadline_row = QWidget()
+        deadline_layout = QHBoxLayout(self.assigned_todo_deadline_row)
+        deadline_layout.setContentsMargins(0, 0, 0, 0)
+        deadline_layout.setSpacing(8)
+        deadline_layout.addWidget(_label("期限", "eyebrow"))
+        for label, days in (("1天", 1), ("2天", 2), ("1周", 7), ("2周", 14)):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setObjectName("smallButton")
+            button.clicked.connect(lambda checked=False, value=days: self._toggle_assigned_deadline(value))
+            self.assigned_todo_deadline_buttons[days] = button
+            deadline_layout.addWidget(button)
+        deadline_layout.addStretch()
+        self.assigned_todo_deadline_row.setVisible(False)
+        todo_layout.addWidget(self.assigned_todo_deadline_row)
         todo_input_row = QHBoxLayout()
         todo_input_row.setSpacing(8)
         self.project_todo_input = QLineEdit()
-        self.project_todo_input.setPlaceholderText("新增一个 todo")
+        self.project_todo_input.setPlaceholderText("新增一个代办")
         self.add_todo_button = QPushButton("添加")
         self.add_todo_button.clicked.connect(self._add_project_todo)
         todo_input_row.addWidget(self.project_todo_input, 1)
@@ -1748,6 +2250,8 @@ class MainWindow(QMainWindow):
         daily_layout.setSpacing(10)
         daily_layout.addWidget(_label("日报", "eyebrow"))
         self.daily_member_label = _label("当前身份：自己", "muted")
+        self.daily_todo_link = QComboBox()
+        self.daily_todo_link.addItem("不关联代办", 0)
         self.daily_editor = QTextEdit()
         self.daily_editor.setFixedHeight(118)
         self.daily_editor.setPlaceholderText("今天完成了什么、遇到什么阻塞、明天准备做什么。")
@@ -1755,6 +2259,7 @@ class MainWindow(QMainWindow):
         self.save_daily_button.setObjectName("primaryButton")
         self.save_daily_button.clicked.connect(self._save_daily_report)
         daily_layout.addWidget(self.daily_member_label)
+        daily_layout.addWidget(self.daily_todo_link)
         daily_layout.addWidget(self.daily_editor)
         daily_layout.addWidget(self.save_daily_button)
 
@@ -2018,17 +2523,17 @@ class MainWindow(QMainWindow):
         assigned_by_me = [todo for todo in active_tasks if self.db.is_current_user_name(todo.assigned_by)]
         self._clear_layout(self.my_tasks_layout)
         if not active_tasks:
-            self.my_tasks_layout.addWidget(self._empty_my_card("当前没有分配任务。"))
+            self.my_tasks_layout.addWidget(self._empty_my_card("当前没有分配代办。"))
         elif assigned_to_me and assigned_by_me:
             task_row = QWidget()
             task_row_layout = QHBoxLayout(task_row)
             task_row_layout.setContentsMargins(0, 0, 0, 0)
             task_row_layout.setSpacing(12)
-            task_row_layout.addWidget(self._my_task_bucket_panel("我的任务", assigned_to_me, projects_by_id), 1)
+            task_row_layout.addWidget(self._my_task_bucket_panel("我的代办", assigned_to_me, projects_by_id), 1)
             task_row_layout.addWidget(self._my_task_bucket_panel("由我分配", assigned_by_me, projects_by_id), 1)
             self.my_tasks_layout.addWidget(task_row)
         elif assigned_to_me:
-            self.my_tasks_layout.addWidget(self._my_task_bucket_panel("我的任务", assigned_to_me, projects_by_id))
+            self.my_tasks_layout.addWidget(self._my_task_bucket_panel("我的代办", assigned_to_me, projects_by_id))
         else:
             self.my_tasks_layout.addWidget(self._my_task_bucket_panel("由我分配", assigned_by_me, projects_by_id))
         self.my_tasks_layout.addStretch()
@@ -2048,6 +2553,7 @@ class MainWindow(QMainWindow):
             project = projects_by_id.get(todo.project_id)
             self.my_messages_layout.addWidget(self._my_message_card(todo, project.name if project is not None else "未知项目"))
         self.my_messages_layout.addStretch()
+        self._check_todo_pet_notifications(all_assigned, projects_by_id)
 
     def _group_todos_by_project(self, todos: list[ProjectTodo]) -> dict[int, list[ProjectTodo]]:
         grouped: dict[int, list[ProjectTodo]] = {}
@@ -2057,8 +2563,137 @@ class MainWindow(QMainWindow):
             rows.sort(key=lambda todo: todo.created_at, reverse=True)
         return grouped
 
+    def _seen_notification_ids(self, key: str) -> set[int]:
+        raw = self.db.get_setting(key) or "[]"
+        try:
+            values = json.loads(raw)
+        except json.JSONDecodeError:
+            return set()
+        if not isinstance(values, list):
+            return set()
+        seen: set[int] = set()
+        for value in values:
+            try:
+                seen.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        return seen
+
+    def _store_notification_ids(self, key: str, values: set[int]) -> None:
+        trimmed = sorted(values)[-300:]
+        self.db.set_setting(key, json.dumps(trimmed), save=True)
+
+    def _check_todo_pet_notifications(self, todos: list[ProjectTodo], projects_by_id: dict[int, Project]) -> None:
+        assigned_seen = self._seen_notification_ids("notified_assigned_todo_ids")
+        completed_seen = self._seen_notification_ids("notified_completed_todo_ids")
+        report_seen = self._seen_notification_ids("notified_todo_report_ids")
+
+        new_assigned = [
+            todo
+            for todo in todos
+            if todo.scope == "assigned"
+            and todo.status != "done"
+            and self.db.is_current_user_name(todo.assignee)
+            and todo.id not in assigned_seen
+        ]
+        new_completed = [
+            todo
+            for todo in todos
+            if todo.scope == "assigned"
+            and todo.status == "done"
+            and todo.completed_at is not None
+            and self.db.is_current_user_name(todo.assigned_by)
+            and todo.id not in completed_seen
+        ]
+
+        todo_by_id = {todo.id: todo for todo in todos if todo.scope == "assigned"}
+        new_reports: list[tuple[DailyReport, ProjectTodo]] = []
+        for report in self.db.daily_reports_between(date.today() - timedelta(days=30), date.today(), mine_only=False):
+            raw_report = report.get("report")
+            if not isinstance(raw_report, DailyReport) or raw_report.todo_id is None:
+                continue
+            todo = todo_by_id.get(raw_report.todo_id) or self.db.get_project_todo(raw_report.todo_id)
+            if todo is None or not self.db.is_current_user_name(todo.assigned_by):
+                continue
+            if raw_report.id in report_seen:
+                continue
+            if raw_report.content.strip().startswith(("完成待办：", "完成代办：")):
+                continue
+            new_reports.append((raw_report, todo))
+
+        if new_assigned:
+            todo = max(new_assigned, key=lambda item: item.created_at)
+            project = projects_by_id.get(todo.project_id)
+            self.pet.move_to_bottom_right()
+            self.pet.speak(f"你收到新的分配代办：{todo.title}。{project.name if project else ''}", mood="wave")
+            assigned_seen.update(item.id for item in new_assigned)
+            self._store_notification_ids("notified_assigned_todo_ids", assigned_seen)
+            return
+
+        if new_completed:
+            todo = max(new_completed, key=lambda item: item.completed_at or item.created_at)
+            self.pet.move_to_bottom_right()
+            self.pet.speak(f"{todo.completed_by or todo.assignee} 完成了你分配的代办：{todo.title}", mood="happy")
+            completed_seen.update(item.id for item in new_completed)
+            self._store_notification_ids("notified_completed_todo_ids", completed_seen)
+            return
+
+        if new_reports:
+            report, todo = max(new_reports, key=lambda item: item[0].created_at)
+            self.pet.move_to_bottom_right()
+            self.pet.speak(f"{report.member_name} 给代办「{todo.title}」新增了一条记录。", mood="wave")
+            report_seen.update(report.id for report, _todo in new_reports)
+            self._store_notification_ids("notified_todo_report_ids", report_seen)
+
     def _days_since(self, value: datetime) -> int:
         return max(1, (date.today() - value.date()).days + 1)
+
+    def _todo_due_text(self, todo: ProjectTodo) -> str:
+        if todo.due_at is None:
+            return ""
+        now = datetime.now()
+        prefix = f"截止 {todo.due_at.strftime('%m-%d %H:%M')}"
+        if todo.status == "done":
+            return prefix
+        delta = todo.due_at - now
+        if delta.total_seconds() < 0:
+            overdue_days = max(1, (now.date() - todo.due_at.date()).days + 1)
+            return f"{prefix} · 已逾期 {overdue_days} 天"
+        remaining_days = max(1, delta.days + (1 if delta.seconds else 0))
+        return f"{prefix} · 剩 {remaining_days} 天"
+
+    def _todo_started_text(self, todo: ProjectTodo) -> str:
+        if todo.started_at is None:
+            return ""
+        return f"开始 {todo.started_at.strftime('%m-%d %H:%M')} · 已开始 {self._days_since(todo.started_at)} 天"
+
+    def _daily_report_todo_text(self, report: DailyReport) -> str:
+        if report.todo_id is None:
+            return ""
+        if report.content.strip().startswith(("完成待办：", "完成代办：")):
+            return ""
+        todo = self.db.get_project_todo(report.todo_id)
+        if todo is None:
+            return "关联的代办已删除"
+        title = todo.title.strip()
+        if len(title) > 36:
+            title = f"{title[:36]}..."
+        return title
+
+    def _todo_progress_text(self, todo: ProjectTodo) -> str:
+        reports = [
+            report
+            for report in self.db.list_daily_reports_for_todo(todo.id, limit=1000)
+            if not report.content.strip().startswith(("完成待办：", "完成代办："))
+        ]
+        if not reports:
+            return ""
+        latest = reports[0]
+        content = " ".join(latest.content.split())
+        if len(content) > 22:
+            content = f"{content[:22]}..."
+        count = len(reports)
+        return f"进展 {count} 条 · 最近 {latest.created_at.strftime('%m-%d %H:%M')} · {content}"
 
     def _project_joined_days(self, project: Project) -> int:
         joined_at = project.created_at
@@ -2197,6 +2832,7 @@ class MainWindow(QMainWindow):
             project = projects_by_id.get(project_id)
             project_name = project.name if project is not None else "未知项目"
             layout.addWidget(self._my_task_project_card(project_name, project_todos))
+        layout.addStretch()
         return panel
 
     def _my_task_project_card(self, project_name: str, todos: list[ProjectTodo]) -> QWidget:
@@ -2209,7 +2845,7 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         header.addWidget(_label(project_name, "memberName"))
         header.addStretch()
-        header.addWidget(_label(f"{len(todos)} 个任务", "eyebrow"))
+        header.addWidget(_label(f"{len(todos)} 个代办", "eyebrow"))
         layout.addLayout(header)
 
         for todo in todos:
@@ -2219,6 +2855,9 @@ class MainWindow(QMainWindow):
     def _my_task_card(self, todo: ProjectTodo) -> QWidget:
         card = QWidget()
         card.setObjectName("compactMemberCard")
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setToolTip("查看代办详情")
+        card.mousePressEvent = lambda event, selected=todo: self._open_todo_detail(selected)  # type: ignore[method-assign]
         layout = QHBoxLayout(card)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(10)
@@ -2241,13 +2880,32 @@ class MainWindow(QMainWindow):
                 f"· {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {assigned_days} 天",
                 "eyebrow",
             ))
+        due_text = self._todo_due_text(todo)
+        started_text = self._todo_started_text(todo)
         meta_row.addStretch()
         body.addLayout(meta_row)
+        if due_text:
+            body.addWidget(_label(due_text, "eyebrow"))
+        if started_text:
+            body.addWidget(_label(started_text, "eyebrow"))
         body.addWidget(_label(todo.title))
+        progress_text = self._todo_progress_text(todo)
+        if progress_text:
+            body.addWidget(_label(progress_text, "muted"))
         layout.addLayout(body, 1)
 
         project = self.db.get_project(todo.project_id)
         if project is not None and self.db.is_current_user_name(todo.assignee):
+            if todo.scope == "assigned" and todo.started_at is None:
+                start_button = QPushButton("开始")
+                start_button.setObjectName("smallButton")
+                start_button.clicked.connect(lambda checked=False, selected=todo: self._start_project_todo(selected))
+                layout.addWidget(start_button)
+            elif todo.scope == "assigned":
+                record_button = QPushButton("记录")
+                record_button.setObjectName("smallButton")
+                record_button.clicked.connect(lambda checked=False, selected=todo: self._record_todo_daily_report(selected))
+                layout.addWidget(record_button)
             done_button = QPushButton("完成")
             done_button.setObjectName("smallButton")
             done_button.clicked.connect(lambda checked=False, p=project, selected=todo: self._complete_todo_for_project(p, selected))
@@ -2263,6 +2921,9 @@ class MainWindow(QMainWindow):
     def _my_message_card(self, todo: ProjectTodo, project_name: str) -> QWidget:
         card = QWidget()
         card.setObjectName("feedCard")
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setToolTip("查看代办详情")
+        card.mousePressEvent = lambda event, selected=todo: self._open_todo_detail(selected)  # type: ignore[method-assign]
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)
@@ -2273,7 +2934,7 @@ class MainWindow(QMainWindow):
         meta = _label(f"{completed_at} · {project_name} ·", "eyebrow")
         meta.setWordWrap(False)
         meta.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        message = _label("完成了你分配的任务", "eyebrow")
+        message = _label("完成了你分配的代办", "eyebrow")
         message.setWordWrap(False)
         message.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         meta_row.addWidget(meta)
@@ -2283,6 +2944,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(meta_row)
         layout.addWidget(_label(todo.title, "muted"))
         return card
+
+    def _open_todo_detail(self, todo: ProjectTodo) -> None:
+        latest = self.db.get_project_todo(todo.id) or todo
+        project = self.db.get_project(latest.project_id)
+        project_name = project.name if project is not None else "未知项目"
+        reports = self.db.list_daily_reports_for_todo(latest.id, limit=1000)
+        TodoDetailDialog(latest, project_name, reports, self).exec()
 
     def _select_project_item(self, item: QListWidgetItem) -> None:
         project_id = item.data(Qt.ItemDataRole.UserRole)
@@ -2340,6 +3008,20 @@ class MainWindow(QMainWindow):
             for button in (self.personal_todo_button, self.assigned_todo_button, self.project_todo_button):
                 button.style().unpolish(button)
                 button.style().polish(button)
+
+    def _toggle_assigned_deadline(self, days: int) -> None:
+        self.assigned_todo_deadline_days = None if self.assigned_todo_deadline_days == days else days
+        self._refresh_assigned_deadline_buttons()
+
+    def _refresh_assigned_deadline_buttons(self) -> None:
+        if not hasattr(self, "assigned_todo_deadline_buttons"):
+            return
+        for days, button in self.assigned_todo_deadline_buttons.items():
+            selected = self.assigned_todo_deadline_days == days
+            button.setChecked(selected)
+            button.setObjectName("primaryButton" if selected else "smallButton")
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _current_project(self) -> Project | None:
         if self.current_project_id is None:
@@ -2431,9 +3113,13 @@ class MainWindow(QMainWindow):
         if not content:
             QMessageBox.information(self, "日报为空", "先写一点日报内容。")
             return
-        self.db.add_daily_report(project.id, current_member.name, current_member.role, content)
+        linked_todo_id = int(self.daily_todo_link.currentData() or 0) if hasattr(self, "daily_todo_link") else 0
+        self.db.add_daily_report(project.id, current_member.name, current_member.role, content, todo_id=linked_todo_id or None)
         self.daily_editor.clear()
+        if hasattr(self, "daily_todo_link"):
+            self.daily_todo_link.setCurrentIndex(0)
         self._refresh_project_workspace()
+        self._refresh_badge_wall()
         self._nudge_after_late_record()
         self._announce_presence()
 
@@ -2444,8 +3130,9 @@ class MainWindow(QMainWindow):
         members = self.db.list_project_members(project.id)
         current_member = self._current_project_member(project, members)
         is_manager = self._can_manage_project(project, current_member)
-        if self.todo_view_mode == "assigned" and not is_manager:
-            QMessageBox.information(self, "不能分配", "只有项目负责人或最高权限用户可以分配任务。")
+        can_assign_todos = self._can_assign_todo(project, current_member)
+        if self.todo_view_mode == "assigned" and not can_assign_todos:
+            QMessageBox.information(self, "不能分配", "只有产品经理、测试或最高权限用户可以分配代办。")
             return
         if self.todo_view_mode == "project" and not is_manager:
             QMessageBox.information(self, "不能添加", "只有项目负责人或最高权限用户可以添加项目代办。")
@@ -2455,14 +3142,17 @@ class MainWindow(QMainWindow):
             return
         title = self.project_todo_input.text().strip()
         if not title:
-            QMessageBox.information(self, "代办为空", "先写一个 todo。")
+            QMessageBox.information(self, "代办为空", "先写一个代办。")
             return
         assignee = ""
+        due_at = None
         if self.todo_view_mode == "assigned":
             assignee = str(self.assigned_todo_assignee.currentData() or self.assigned_todo_assignee.currentText()).strip()
             if not assignee:
                 QMessageBox.information(self, "没有接收人", "先选择要分配给谁。")
                 return
+            if self.assigned_todo_deadline_days is not None:
+                due_at = datetime.now() + timedelta(days=self.assigned_todo_deadline_days)
         self.db.add_project_todo(
             project.id,
             title,
@@ -2470,8 +3160,11 @@ class MainWindow(QMainWindow):
             scope=self.todo_view_mode,
             assignee=assignee,
             assigned_by=self.db.display_name() if self.todo_view_mode == "assigned" else "",
+            due_at=due_at,
         )
         self.project_todo_input.clear()
+        self.assigned_todo_deadline_days = None
+        self._refresh_assigned_deadline_buttons()
         self._refresh_project_workspace()
         self._refresh_my_panel()
 
@@ -2492,7 +3185,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "不能完成", "只有项目负责人或最高权限用户可以完成项目代办。")
             return
         if todo.scope == "assigned" and not self.db.is_current_user_name(todo.assignee):
-            QMessageBox.information(self, "不能完成", "只有任务接收人可以完成这条分配任务。")
+            QMessageBox.information(self, "不能完成", "只有代办接收人可以完成这条分配代办。")
             return
         report = self.db.complete_project_todo(todo.id, current_member.name, current_member.role)
         if report is None:
@@ -2501,20 +3194,21 @@ class MainWindow(QMainWindow):
             self._nudge_after_late_record()
         self._refresh_project_workspace()
         self._refresh_my_panel()
+        self._refresh_badge_wall()
         self._announce_presence()
 
     def _delete_assigned_todo_from_my_panel(self, todo: ProjectTodo) -> None:
         if not self.db.is_current_user_name(todo.assigned_by):
-            QMessageBox.information(self, "不能删除", "只能删除自己分配出去的任务。")
+            QMessageBox.information(self, "不能删除", "只能删除自己分配出去的代办。")
             return
         if todo.status == "done":
-            QMessageBox.information(self, "不能删除", "已完成的分配任务会作为提醒保留。")
+            QMessageBox.information(self, "不能删除", "已完成的分配代办会作为提醒保留。")
             return
-        message = f"确定删除分配给「{todo.assignee}」的任务吗？"
-        if QMessageBox.question(self, "删除分配任务", message) != QMessageBox.StandardButton.Yes:
+        message = f"确定删除分配给「{todo.assignee}」的代办吗？"
+        if QMessageBox.question(self, "删除分配代办", message) != QMessageBox.StandardButton.Yes:
             return
         if not self.db.delete_project_todo(todo.id):
-            QMessageBox.warning(self, "删除失败", "这条任务已经不存在。")
+            QMessageBox.warning(self, "删除失败", "这条代办已经不存在。")
         self._refresh_project_workspace()
         self._refresh_my_panel()
         self._announce_presence()
@@ -2530,6 +3224,7 @@ class MainWindow(QMainWindow):
         self.db.add_project_weekly_report(project.id, self.db.display_name(), content)
         self.project_weekly_editor.clear()
         self._refresh_project_workspace()
+        self._refresh_badge_wall()
         self._nudge_after_late_record()
 
     def _upload_project_deck(self) -> None:
@@ -2608,6 +3303,7 @@ class MainWindow(QMainWindow):
         self._clear_layout(self.member_cards_layout)
         current_member = self._current_project_member(project, members)
         is_manager = self._can_manage_project(project, current_member)
+        can_assign_todos = self._can_assign_todo(project, current_member)
         if hasattr(self, "project_config_button"):
             self.project_config_button.setEnabled(is_manager)
         if not is_manager and self.project_side_stack.currentIndex() == 1:
@@ -2619,7 +3315,8 @@ class MainWindow(QMainWindow):
         self.assigned_todo_button.setEnabled(current_member is not None or is_manager)
         self.project_todo_button.setEnabled(True)
         can_add_todos = (
-            is_manager
+            (self.todo_view_mode == "assigned" and can_assign_todos)
+            or is_manager
             or (self.todo_view_mode == "personal" and current_member is not None)
         )
         self.todo_panel.setVisible(current_member is not None or is_manager or self.todo_view_mode == "project")
@@ -2627,18 +3324,22 @@ class MainWindow(QMainWindow):
         self.daily_form.setVisible(can_write_daily)
         placeholder_by_mode = {
             "personal": "新增一个个人代办",
-            "assigned": "写下要分配的任务",
+            "assigned": "写下要分配的代办",
             "project": "新增一个项目代办",
         }
-        self.project_todo_input.setPlaceholderText(placeholder_by_mode.get(self.todo_view_mode, "新增一个 todo"))
-        self._refresh_assigned_todo_assignees(members, is_manager)
-        self.assigned_todo_assignee.setVisible(self.todo_view_mode == "assigned" and is_manager)
+        self.project_todo_input.setPlaceholderText(placeholder_by_mode.get(self.todo_view_mode, "新增一个代办"))
+        self._refresh_assigned_todo_assignees(members, can_assign_todos)
+        self.assigned_todo_assignee.setVisible(self.todo_view_mode == "assigned" and can_assign_todos)
+        self.assigned_todo_deadline_row.setVisible(self.todo_view_mode == "assigned" and can_assign_todos)
+        self.assigned_todo_deadline_row.setEnabled(self.todo_view_mode == "assigned" and can_assign_todos)
+        self._refresh_assigned_deadline_buttons()
         self.project_todo_input.setVisible(can_add_todos)
         self.add_todo_button.setVisible(can_add_todos)
         self.project_todo_input.setEnabled(can_add_todos)
         self.add_todo_button.setEnabled(can_add_todos)
         self.daily_editor.setEnabled(can_write_daily)
         self.save_daily_button.setEnabled(can_write_daily)
+        self._refresh_daily_todo_links(project, current_member, is_manager, can_write_daily)
         self.daily_member_label.setText(
             f"当前身份：{current_member.name} · {current_member.role}" if current_member is not None else "当前身份：非项目成员"
         )
@@ -2664,9 +3365,9 @@ class MainWindow(QMainWindow):
         if not todos:
             empty_todo_text = {
                 "personal": "当前没有待完成个人代办。",
-                "assigned": "当前没有待完成分配任务。",
+                "assigned": "当前没有待完成分配代办。",
                 "project": "当前没有待完成项目代办。",
-            }.get(self.todo_view_mode, "当前没有待完成 todo。")
+            }.get(self.todo_view_mode, "当前没有待完成代办。")
             self._add_todo_card(None, empty_todo_text, False)
         for todo in todos:
             self._add_todo_card(todo, todo.title, self._can_complete_todo(todo, current_member, is_manager))
@@ -2754,11 +3455,13 @@ class MainWindow(QMainWindow):
                 visual_chars_per_line=46,
             )
         for report in visible_daily_reports[:5]:
+            linked_todo = self._daily_report_todo_text(report)
+            content = f"{report.content}\n关联代办：{linked_todo}" if linked_todo else report.content
             self._add_feed_card(
                 self.developer_feed,
                 report.created_at.strftime("%m-%d %H:%M"),
                 f"日报 · {report.role}",
-                report.content,
+                content,
                 daily_report=report,
                 min_content_lines=1,
                 max_content_lines=None,
@@ -2785,6 +3488,10 @@ class MainWindow(QMainWindow):
         self.daily_member_label.setText("当前身份：自己")
         self.daily_editor.clear()
         self.daily_editor.setEnabled(False)
+        if hasattr(self, "daily_todo_link"):
+            self.daily_todo_link.clear()
+            self.daily_todo_link.addItem("不关联代办", 0)
+            self.daily_todo_link.setEnabled(False)
         self.save_daily_button.setEnabled(False)
         self.todo_panel.setVisible(False)
         self.daily_form.setVisible(False)
@@ -2794,9 +3501,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "assigned_todo_assignee"):
             self.assigned_todo_assignee.clear()
             self.assigned_todo_assignee.setVisible(False)
+        if hasattr(self, "assigned_todo_deadline_row"):
+            self.assigned_todo_deadline_row.setVisible(False)
         self.todo_count_label.setText("0 个待完成")
         self.todo_board.clear()
-        self._add_todo_card(None, "选择项目后，这里会显示 todo。", False)
+        self._add_todo_card(None, "选择项目后，这里会显示代办。", False)
         self.product_feed.clear()
         self.developer_feed.clear()
         empty_text = "当前没有你参与的项目。" if getattr(self, "project_scope_value", "mine") == "mine" else "还没有项目。"
@@ -2839,13 +3548,21 @@ class MainWindow(QMainWindow):
             return True
         return self.db.is_current_user_name(project.owner)
 
-    def _refresh_assigned_todo_assignees(self, members: list[ProjectMember], is_manager: bool) -> None:
+    def _can_assign_todo(self, project: Project, member: ProjectMember | None) -> bool:
+        if self._can_manage_project(project, member):
+            return True
+        if member is None:
+            return False
+        role = member.role.strip()
+        return "产品" in role or "测试" in role
+
+    def _refresh_assigned_todo_assignees(self, members: list[ProjectMember], can_assign: bool) -> None:
         if not hasattr(self, "assigned_todo_assignee"):
             return
         current = self.assigned_todo_assignee.currentData()
         self.assigned_todo_assignee.blockSignals(True)
         self.assigned_todo_assignee.clear()
-        if is_manager:
+        if can_assign:
             for member in members:
                 self.assigned_todo_assignee.addItem(f"{member.name} · {member.role}", member.name)
         if current is not None:
@@ -2854,6 +3571,45 @@ class MainWindow(QMainWindow):
                     self.assigned_todo_assignee.setCurrentIndex(index)
                     break
         self.assigned_todo_assignee.blockSignals(False)
+
+    def _refresh_daily_todo_links(
+        self,
+        project: Project,
+        current_member: ProjectMember | None,
+        is_manager: bool,
+        can_write_daily: bool,
+    ) -> None:
+        if not hasattr(self, "daily_todo_link"):
+            return
+        current = int(self.daily_todo_link.currentData() or 0)
+        self.daily_todo_link.blockSignals(True)
+        self.daily_todo_link.clear()
+        self.daily_todo_link.addItem("不关联代办", 0)
+        if can_write_daily:
+            todos = self.db.list_project_todos(project.id)
+            for todo in todos:
+                if not self._can_link_daily_todo(todo, current_member, is_manager):
+                    continue
+                label = self._daily_todo_option_label(todo)
+                self.daily_todo_link.addItem(label, todo.id)
+        if current:
+            for index in range(self.daily_todo_link.count()):
+                if self.daily_todo_link.itemData(index) == current:
+                    self.daily_todo_link.setCurrentIndex(index)
+                    break
+        self.daily_todo_link.setEnabled(can_write_daily and self.daily_todo_link.count() > 1)
+        self.daily_todo_link.blockSignals(False)
+
+    def _can_link_daily_todo(self, todo: ProjectTodo, current_member: ProjectMember | None, is_manager: bool) -> bool:
+        if current_member is None or todo.status == "done":
+            return False
+        return todo.scope == "assigned" and self.db.is_current_user_name(todo.assignee)
+
+    def _daily_todo_option_label(self, todo: ProjectTodo) -> str:
+        title = todo.title.strip()
+        if len(title) > 22:
+            title = f"{title[:22]}..."
+        return f"关联代办：{todo.assigned_by or todo.creator} · {title}"
 
     def _todos_for_current_view(self, project_id: int, is_manager: bool) -> list[ProjectTodo]:
         todos = self.db.list_project_todos(project_id, scope=self.todo_view_mode)
@@ -2979,6 +3735,7 @@ class MainWindow(QMainWindow):
             return
         self._refresh_project_workspace()
         self._refresh_document_library()
+        self._refresh_badge_wall()
         self._announce_presence()
 
     def _add_member_card(self, member: ProjectMember) -> None:
@@ -3025,6 +3782,10 @@ class MainWindow(QMainWindow):
 
         card = QWidget()
         card.setObjectName("feedCard")
+        if todo is not None:
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            card.setToolTip("查看代办详情")
+            card.mousePressEvent = lambda event, selected=todo: self._open_todo_detail(selected)  # type: ignore[method-assign]
         layout = QHBoxLayout(card)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(10)
@@ -3052,6 +3813,12 @@ class MainWindow(QMainWindow):
             meta_row.addWidget(self._name_with_chat(todo.assignee))
             meta_row.addStretch()
             body.addLayout(meta_row)
+            due_text = self._todo_due_text(todo)
+            if due_text:
+                body.addWidget(_label(due_text, "eyebrow"))
+            started_text = self._todo_started_text(todo)
+            if started_text:
+                body.addWidget(_label(started_text, "eyebrow"))
         elif actor_name:
             meta_row = QHBoxLayout()
             meta_row.setContentsMargins(0, 0, 0, 0)
@@ -3063,18 +3830,80 @@ class MainWindow(QMainWindow):
         else:
             body.addWidget(_label(meta_text, "eyebrow"))
         body.addWidget(_label(title))
+        if todo is not None:
+            progress_text = self._todo_progress_text(todo)
+            if progress_text:
+                body.addWidget(_label(progress_text, "muted"))
         layout.addLayout(body, 1)
 
         if todo is not None:
+            if todo.scope == "assigned" and self.db.is_current_user_name(todo.assignee) and todo.started_at is None:
+                start_button = QPushButton("开始")
+                start_button.setObjectName("smallButton")
+                start_button.clicked.connect(lambda checked=False, selected=todo: self._start_project_todo(selected))
+                layout.addWidget(start_button)
+            elif todo.scope == "assigned" and self.db.is_current_user_name(todo.assignee):
+                record_button = QPushButton("记录")
+                record_button.setObjectName("smallButton")
+                record_button.clicked.connect(lambda checked=False, selected=todo: self._record_todo_daily_report(selected))
+                layout.addWidget(record_button)
             done_button = QPushButton("完成")
             done_button.setObjectName("smallButton")
             done_button.setEnabled(can_complete)
             done_button.clicked.connect(lambda checked=False, selected=todo: self._complete_project_todo(selected))
             layout.addWidget(done_button)
 
-        item.setSizeHint(QSize(0, 72))
+        extra_lines = 0
+        if todo is not None:
+            if self._todo_due_text(todo):
+                extra_lines += 1
+            if self._todo_started_text(todo):
+                extra_lines += 1
+            if self._todo_progress_text(todo):
+                extra_lines += 1
+        item.setSizeHint(QSize(0, 72 + extra_lines * 24))
         self.todo_board.addItem(item)
         self.todo_board.setItemWidget(item, card)
+
+    def _start_project_todo(self, todo: ProjectTodo) -> None:
+        if not self.db.is_current_user_name(todo.assignee):
+            QMessageBox.information(self, "不能开始", "只有代办接收人可以开始这条分配代办。")
+            return
+        updated = self.db.start_project_todo(todo.id, self.db.display_name())
+        if updated is None:
+            QMessageBox.information(self, "不能开始", "这个代办已经完成、不是分配代办，或已经不存在。")
+            return
+        self._refresh_project_workspace()
+        self._refresh_my_panel()
+        self._announce_presence()
+
+    def _record_todo_daily_report(self, todo: ProjectTodo) -> None:
+        latest = self.db.get_project_todo(todo.id) or todo
+        project = self.db.get_project(latest.project_id)
+        if project is None:
+            QMessageBox.information(self, "项目不存在", "这条代办对应的项目已经不存在。")
+            return
+        if not self.db.is_current_user_name(latest.assignee):
+            QMessageBox.information(self, "不能记录", "只有代办接收人可以记录这条代办的日报。")
+            return
+        current_member = self._current_project_member(project, self.db.list_project_members(project.id))
+        if current_member is None:
+            QMessageBox.information(self, "不能记录", "只有项目成员可以写日报。")
+            return
+        dialog = TodoDailyReportDialog(latest, project.name, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        content = dialog.content()
+        if not content:
+            QMessageBox.information(self, "日报为空", "先写一点代办进展。")
+            return
+        self.db.add_daily_report(project.id, current_member.name, current_member.role, content, todo_id=latest.id)
+        self._refresh_project_workspace()
+        self._refresh_my_panel()
+        self._refresh_rest_calendar()
+        self._refresh_badge_wall()
+        self._nudge_after_late_record()
+        self._announce_presence()
 
     def _add_feed_card(
         self,
@@ -3121,6 +3950,7 @@ class MainWindow(QMainWindow):
             body.addWidget(meta)
         body.addWidget(text)
         layout.addLayout(body, 1)
+        linked_todo = self.db.get_project_todo(daily_report.todo_id) if daily_report is not None and daily_report.todo_id is not None else None
 
         if document is not None:
             actions = QHBoxLayout()
@@ -3152,14 +3982,20 @@ class MainWindow(QMainWindow):
             )
             actions.addWidget(delete_button)
             layout.addLayout(actions)
-        elif daily_report is not None and self.db.is_current_user_name(daily_report.member_name):
+        elif daily_report is not None and (linked_todo is not None or self.db.is_current_user_name(daily_report.member_name)):
             actions = QHBoxLayout()
             actions.setSpacing(8)
-            delete_button = QPushButton("删除")
-            delete_button.setObjectName("smallButton")
-            delete_button.clicked.connect(lambda checked=False, selected=daily_report: self._delete_daily_report(selected))
-            actions.addWidget(delete_button)
+            if self.db.is_current_user_name(daily_report.member_name):
+                delete_button = QPushButton("删除")
+                delete_button.setObjectName("smallButton")
+                delete_button.clicked.connect(lambda checked=False, selected=daily_report: self._delete_daily_report(selected))
+                actions.addWidget(delete_button)
             layout.addLayout(actions)
+
+        if linked_todo is not None:
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            card.setToolTip("查看代办详情")
+            card.mousePressEvent = lambda event, selected=linked_todo: self._open_todo_detail(selected)  # type: ignore[method-assign]
 
         if height is None:
             height = self._feed_card_height(
@@ -3206,12 +4042,15 @@ class MainWindow(QMainWindow):
             return
         self._refresh_project_workspace()
         self._refresh_rest_calendar()
+        self._refresh_badge_wall()
         self._announce_presence()
 
     def _daily_feed_text(self, report: DailyReport) -> str:
+        linked_todo = self._daily_report_todo_text(report)
+        todo_line = f"\n关联代办：{linked_todo}" if linked_todo else ""
         return (
             f"{report.created_at.strftime('%m-%d %H:%M')}  日报 · {report.member_name} / {report.role}\n"
-            f"{report.content}"
+            f"{report.content}{todo_line}"
         )
 
     def _open_feed_item(self, item: QListWidgetItem) -> None:
@@ -3583,14 +4422,19 @@ class MainWindow(QMainWindow):
         for item in reports:
             report = item["report"]
             meta = f"{item['created_at'].strftime('%H:%M')}  {item['project_name']} · {item['role']}"
+            content = str(item["content"])
+            if isinstance(report, DailyReport):
+                linked_todo = self._daily_report_todo_text(report)
+                if linked_todo:
+                    content = f"{content}\n关联代办：{linked_todo}"
             self._add_feed_card(
                 self.daily_calendar_list,
                 meta,
                 "日报",
-                str(item["content"]),
+                content,
                 daily_report=report if isinstance(report, DailyReport) else None,
                 height=self._feed_card_height(
-                    str(item["content"]),
+                    content,
                     min_lines=2,
                     max_lines=None,
                     meta_text=f"{meta}  日报",
@@ -3899,6 +4743,104 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.home_text)
         return page
 
+    def _feature_guide_tab(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(42, 38, 42, 38)
+        outer.setSpacing(22)
+
+        header = QVBoxLayout()
+        header.setSpacing(4)
+        header.addWidget(_label("功能介绍", "sectionTitle"))
+        header.addWidget(_label("各模块用途、常用操作和版本记录入口都集中在这里。", "muted"))
+        outer.addLayout(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll_content = QWidget()
+        grid = QGridLayout(scroll_content)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(16)
+
+        items = [
+            (
+                "我的面板",
+                "每天先看这里。",
+                "查看个人待办、项目动态和近期提醒，快速确认今天要处理的事。",
+            ),
+            (
+                "项目面板",
+                "项目协作主入口。",
+                "创建和维护项目，管理成员、待办、日报、周报、项目进展和项目文档；顶部统计卡可点击查看明细。",
+            ),
+            (
+                "个人周报",
+                "沉淀个人工作记录。",
+                "填写每周工作内容，系统生成摘要和状态，并同步沉淀到成长履历。",
+            ),
+            (
+                "日历",
+                "看节奏和安排。",
+                "查看日期、休息日和记录情况，辅助安排项目汇报、周报和日常跟进。",
+            ),
+            (
+                "局域网",
+                "团队同步和更新。",
+                "查看在线同事、同步团队数据、查看日志视角；发现同系统高版本安装包时可从这里更新。",
+            ),
+            (
+                "成长履历",
+                "回顾个人成长线。",
+                "根据周报和项目记录汇总阶段成果，方便做个人复盘。",
+            ),
+            (
+                "徽章墙",
+                "记录习惯和贡献。",
+                "展示工作节奏、记录习惯和项目贡献相关徽章，点击徽章可查看获得规则和明细。",
+            ),
+            (
+                "文档库",
+                "集中找项目资料。",
+                "按本人文档、团队文档、项目和文档类型筛选资料，可上传、打开和删除自己上传的文档。",
+            ),
+            (
+                "桌宠",
+                "轻量提醒和互动。",
+                "左下角入口可打开桌宠设置，切换形象、互动动作，或隐藏和重新显示桌宠。",
+            ),
+            (
+                "名字/PIN",
+                "维护个人身份。",
+                "设置姓名、PIN 和钉钉号；姓名用于团队同步识别，PIN 用于保护设置和接管旧电脑身份。",
+            ),
+            (
+                "版本",
+                "查看功能日志。",
+                "查看当前版本、本版更新和全部历史记录；后续新增功能继续同步更新版本号和日志。",
+            ),
+        ]
+
+        for index, (title, summary, detail) in enumerate(items):
+            card = _panel()
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(18, 16, 18, 16)
+            card_layout.setSpacing(8)
+            card_layout.addWidget(_label(title, "eyebrow"))
+            card_layout.addWidget(_label(summary, "memberName"))
+            detail_label = _label(detail, "muted")
+            detail_label.setMinimumHeight(64)
+            card_layout.addWidget(detail_label)
+            card_layout.addStretch()
+            grid.addWidget(card, index // 2, index % 2)
+
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        scroll.setWidget(scroll_content)
+        outer.addWidget(scroll)
+        return page
+
     def _docs_tab(self) -> QWidget:
         page = QWidget()
         outer = QVBoxLayout(page)
@@ -4076,6 +5018,7 @@ class MainWindow(QMainWindow):
         self.editor.clear()
         self._prepend_report(report)
         self._refresh_home()
+        self._refresh_badge_wall()
         self._nudge_after_late_record()
 
     def _load_reports(self) -> None:
@@ -4135,6 +5078,7 @@ class MainWindow(QMainWindow):
             self.summary.clear()
         self._update_delete_weekly_enabled()
         self._refresh_home()
+        self._refresh_badge_wall()
 
     def _refresh_home(self) -> None:
         reports = self.db.list_weekly_reports(limit=100)
@@ -4161,10 +5105,13 @@ class MainWindow(QMainWindow):
                 self._refresh_peers(self.discovery.sorted_peers())
 
     def _open_pet(self) -> None:
+        self.db.record_activity("打开桌宠")
         self.pet.move_to_bottom_right()
         self.pet.show_manually()
         dialog = PetDialog(self.db, self.pet)
         dialog.exec()
+        self._refresh_badge_wall()
+        self._announce_presence()
 
     def _open_version(self) -> None:
         dialog = VersionDialog()
@@ -4199,6 +5146,7 @@ class MainWindow(QMainWindow):
         self._refresh_rest_calendar()
         self._refresh_document_library()
         self._refresh_home()
+        self._refresh_badge_wall()
         if self.lan_view_mode == "logs":
             self._refresh_lan_logs(self.current_lan_peers)
 
