@@ -395,6 +395,10 @@ DOCUMENT_OPEN_FILTER = (
     "*.zip *.rar *.7z *.tar *.gz *.tgz *.bz2 *.xz *.txt *.md);;All Files (*)"
 )
 PROJECT_HERO_HEIGHT = 300
+PROJECT_TASK_SECTION_HEIGHT = 430
+PROJECT_DAILY_SECTION_HEIGHT = 560
+PROJECT_TASK_SIDE_HEIGHT = PROJECT_TASK_SECTION_HEIGHT + 18
+PROJECT_DAILY_SIDE_HEIGHT = PROJECT_DAILY_SECTION_HEIGHT + 18
 SUPER_ADMIN_NAMES = {"尉久洋"}
 
 
@@ -1007,6 +1011,11 @@ class ProjectLogHistoryDialog(QDialog):
         item.setFlags(Qt.ItemFlag.NoItemFlags)
         card = QWidget()
         card.setObjectName("feedCard")
+        todo_id = self._log_todo_id(log)
+        if todo_id is not None:
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            card.setToolTip("查看代办详情")
+            card.mousePressEvent = lambda event, selected=todo_id: self._open_todo_detail_id(selected)  # type: ignore[method-assign]
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
@@ -1023,6 +1032,21 @@ class ProjectLogHistoryDialog(QDialog):
         item.setSizeHint(QSize(0, self._history_card_height(content)))
         self.log_list.addItem(item)
         self.log_list.setItemWidget(item, card)
+
+    def _log_todo_id(self, log: dict[str, object]) -> int | None:
+        raw = str(log.get("todo_id", "")).strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    def _open_todo_detail_id(self, todo_id: int) -> None:
+        parent = self.parent()
+        opener = getattr(parent, "_open_todo_detail_by_id", None)
+        if callable(opener):
+            opener(todo_id)
 
     def _format_log_time(self, value: str) -> str:
         try:
@@ -2085,35 +2109,33 @@ class MainWindow(QMainWindow):
 
         self.progress_panel = _panel()
         progress_panel = self.progress_panel
-        progress_panel.setMinimumHeight(620)
+        progress_panel.setFixedHeight(PROJECT_TASK_SECTION_HEIGHT + PROJECT_DAILY_SECTION_HEIGHT + 14 + 36)
         progress_layout = QVBoxLayout(progress_panel)
         progress_layout.setContentsMargins(18, 18, 18, 18)
-        progress_layout.setSpacing(12)
-        feed_split = QSplitter(Qt.Orientation.Vertical)
+        progress_layout.setSpacing(14)
 
         product_feed_panel = QWidget()
+        product_feed_panel.setFixedHeight(PROJECT_TASK_SECTION_HEIGHT)
         product_feed_layout = QVBoxLayout(product_feed_panel)
         product_feed_layout.setContentsMargins(0, 0, 0, 0)
         product_feed_layout.setSpacing(8)
         product_feed_layout.addWidget(_label("项目进展流", "eyebrow"))
         self.product_feed = QListWidget()
-        self.product_feed.setMinimumHeight(410)
-        product_feed_layout.addWidget(self.product_feed)
+        self.product_feed.setMinimumHeight(0)
+        product_feed_layout.addWidget(self.product_feed, 1)
 
         developer_feed_panel = QWidget()
+        developer_feed_panel.setFixedHeight(PROJECT_DAILY_SECTION_HEIGHT)
         developer_feed_layout = QVBoxLayout(developer_feed_panel)
         developer_feed_layout.setContentsMargins(0, 0, 0, 0)
         developer_feed_layout.setSpacing(8)
         developer_feed_layout.addWidget(_label("日报流", "eyebrow"))
         self.developer_feed = QListWidget()
-        self.developer_feed.setMinimumHeight(410)
-        developer_feed_layout.addWidget(self.developer_feed)
+        self.developer_feed.setMinimumHeight(0)
+        developer_feed_layout.addWidget(self.developer_feed, 1)
 
-        feed_split.addWidget(product_feed_panel)
-        feed_split.addWidget(developer_feed_panel)
-        feed_split.setChildrenCollapsible(False)
-        feed_split.setSizes([430, 430])
-        progress_layout.addWidget(feed_split)
+        progress_layout.addWidget(product_feed_panel)
+        progress_layout.addWidget(developer_feed_panel)
 
         self.config_project_panel = _panel()
         self.config_project_panel.setFixedHeight(260)
@@ -2188,6 +2210,7 @@ class MainWindow(QMainWindow):
 
         self.todo_panel = _panel()
         todo_panel = self.todo_panel
+        todo_panel.setFixedHeight(PROJECT_TASK_SIDE_HEIGHT)
         todo_layout = QVBoxLayout(todo_panel)
         todo_layout.setContentsMargins(18, 18, 18, 18)
         todo_layout.setSpacing(10)
@@ -2240,20 +2263,25 @@ class MainWindow(QMainWindow):
         self.todo_board = QListWidget()
         self.todo_board.setMinimumHeight(168)
         self.todo_board.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        todo_layout.addWidget(self.todo_board)
+        todo_layout.addWidget(self.todo_board, 1)
 
-        self.daily_form = _panel()
+        self.activity_forms_panel = _panel()
+        self.activity_forms_panel.setFixedHeight(PROJECT_DAILY_SIDE_HEIGHT)
+        activity_forms_layout = QVBoxLayout(self.activity_forms_panel)
+        activity_forms_layout.setContentsMargins(18, 18, 18, 18)
+        activity_forms_layout.setSpacing(12)
+
+        self.daily_form = QWidget()
         daily_form = self.daily_form
-        daily_form.setFixedHeight(265)
         daily_layout = QVBoxLayout(daily_form)
-        daily_layout.setContentsMargins(18, 18, 18, 18)
-        daily_layout.setSpacing(10)
+        daily_layout.setContentsMargins(0, 0, 0, 0)
+        daily_layout.setSpacing(8)
         daily_layout.addWidget(_label("日报", "eyebrow"))
         self.daily_member_label = _label("当前身份：自己", "muted")
         self.daily_todo_link = QComboBox()
         self.daily_todo_link.addItem("不关联代办", 0)
         self.daily_editor = QTextEdit()
-        self.daily_editor.setFixedHeight(118)
+        self.daily_editor.setFixedHeight(76)
         self.daily_editor.setPlaceholderText("今天完成了什么、遇到什么阻塞、明天准备做什么。")
         self.save_daily_button = QPushButton("保存日报")
         self.save_daily_button.setObjectName("primaryButton")
@@ -2263,15 +2291,14 @@ class MainWindow(QMainWindow):
         daily_layout.addWidget(self.daily_editor)
         daily_layout.addWidget(self.save_daily_button)
 
-        self.weekly_form = _panel()
+        self.weekly_form = QWidget()
         weekly_form = self.weekly_form
-        weekly_form.setFixedHeight(390)
         weekly_layout = QVBoxLayout(weekly_form)
-        weekly_layout.setContentsMargins(18, 18, 18, 18)
-        weekly_layout.setSpacing(10)
+        weekly_layout.setContentsMargins(0, 0, 0, 0)
+        weekly_layout.setSpacing(8)
         weekly_layout.addWidget(_label("负责人周报 / 文档", "eyebrow"))
         self.project_weekly_editor = QTextEdit()
-        self.project_weekly_editor.setFixedHeight(118)
+        self.project_weekly_editor.setFixedHeight(70)
         self.project_weekly_editor.setPlaceholderText("本周项目整体进度、风险、下周计划。")
         self.save_project_weekly_button = QPushButton("保存项目周报")
         self.save_project_weekly_button.clicked.connect(self._save_project_weekly_report)
@@ -2284,15 +2311,23 @@ class MainWindow(QMainWindow):
         self.upload_deck_button = QPushButton("上传项目文档")
         self.upload_deck_button.clicked.connect(self._upload_project_deck)
         weekly_layout.addWidget(self.project_weekly_editor)
-        weekly_layout.addWidget(self.save_project_weekly_button)
-        weekly_layout.addWidget(self.project_document_type)
-        weekly_layout.addWidget(self.project_document_visibility)
-        weekly_layout.addWidget(self.upload_deck_button)
+        weekly_action_row = QHBoxLayout()
+        weekly_action_row.setSpacing(8)
+        weekly_action_row.addWidget(self.save_project_weekly_button, 1)
+        weekly_action_row.addWidget(self.project_document_type, 1)
+        weekly_layout.addLayout(weekly_action_row)
+        document_action_row = QHBoxLayout()
+        document_action_row.setSpacing(8)
+        document_action_row.addWidget(self.project_document_visibility, 1)
+        document_action_row.addWidget(self.upload_deck_button, 1)
+        weekly_layout.addLayout(document_action_row)
+        activity_forms_layout.addWidget(daily_form)
+        activity_forms_layout.addWidget(weekly_form)
+        activity_forms_layout.addStretch()
 
         display_side_layout.addWidget(member_panel, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addWidget(todo_panel, 0, Qt.AlignmentFlag.AlignTop)
-        display_side_layout.addWidget(daily_form, 0, Qt.AlignmentFlag.AlignTop)
-        display_side_layout.addWidget(weekly_form, 0, Qt.AlignmentFlag.AlignTop)
+        display_side_layout.addWidget(self.activity_forms_panel, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addStretch()
         config_side_layout.addWidget(member_form)
         config_side_layout.addWidget(config_member_panel)
@@ -2952,6 +2987,13 @@ class MainWindow(QMainWindow):
         reports = self.db.list_daily_reports_for_todo(latest.id, limit=1000)
         TodoDetailDialog(latest, project_name, reports, self).exec()
 
+    def _open_todo_detail_by_id(self, todo_id: int) -> None:
+        todo = self.db.get_project_todo(todo_id)
+        if todo is None:
+            QMessageBox.information(self, "代办不存在", "这条代办已经不存在。")
+            return
+        self._open_todo_detail(todo)
+
     def _select_project_item(self, item: QListWidgetItem) -> None:
         project_id = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(project_id, int):
@@ -3321,6 +3363,7 @@ class MainWindow(QMainWindow):
         )
         self.todo_panel.setVisible(current_member is not None or is_manager or self.todo_view_mode == "project")
         can_write_daily = current_member is not None
+        self.activity_forms_panel.setVisible(can_write_daily or is_manager)
         self.daily_form.setVisible(can_write_daily)
         placeholder_by_mode = {
             "personal": "新增一个个人代办",
@@ -3494,6 +3537,8 @@ class MainWindow(QMainWindow):
             self.daily_todo_link.setEnabled(False)
         self.save_daily_button.setEnabled(False)
         self.todo_panel.setVisible(False)
+        if hasattr(self, "activity_forms_panel"):
+            self.activity_forms_panel.setVisible(False)
         self.daily_form.setVisible(False)
         self.project_todo_input.clear()
         self.project_todo_input.setEnabled(False)

@@ -1427,6 +1427,7 @@ class Database:
                     "member_name": name,
                     "role": str(row.get("role", "")),
                     "content": str(row.get("content", "")),
+                    "todo_id": str(row.get("todo_id", "")).strip(),
                     "created_at": created_at.isoformat(timespec="seconds"),
                 }
             )
