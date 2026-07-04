@@ -362,9 +362,23 @@ QWidget#darkPanel QLabel {
 QWidget#darkPanel QLabel#muted {
     color: #bfc5ba;
 }
+QWidget#badgeWallPage {
+    background: #eef3ec;
+}
+QWidget#badgeWallPage QLabel#sectionTitle {
+    color: #17251c;
+}
+QWidget#badgeWallPage QLabel#muted {
+    color: #66756a;
+}
 QWidget#badgeCard {
-    background: transparent;
-    border: 0;
+    background: #f8f8f2;
+    border: 1px solid #d8dfd4;
+    border-radius: 8px;
+}
+QWidget#badgeCard:hover {
+    background: #fbfaf4;
+    border: 1px solid #c6d1c5;
 }
 QLabel#badgeIcon {
     font-size: 38px;
@@ -381,6 +395,7 @@ QLabel#badgeWinner, QLabel#badgeRule {
 DOCUMENT_TYPES = [
     "产品原型图",
     "项目汇报PPT",
+    "测试文档",
     "交接文档",
     "调研/可行性报告",
     "竞品调研报告",
@@ -1675,9 +1690,11 @@ class MainWindow(QMainWindow):
 
     def _badge_wall_tab(self) -> QWidget:
         page = QWidget()
+        page.setObjectName("badgeWallPage")
+        page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(42, 38, 42, 38)
-        outer.setSpacing(24)
+        outer.setContentsMargins(42, 34, 42, 42)
+        outer.setSpacing(28)
 
         header = QVBoxLayout()
         header.setSpacing(4)
@@ -1686,8 +1703,8 @@ class MainWindow(QMainWindow):
         outer.addLayout(header)
 
         self.badge_grid = QGridLayout()
-        self.badge_grid.setHorizontalSpacing(22)
-        self.badge_grid.setVerticalSpacing(18)
+        self.badge_grid.setHorizontalSpacing(34)
+        self.badge_grid.setVerticalSpacing(30)
         outer.addLayout(self.badge_grid)
         outer.addStretch()
 
@@ -2296,7 +2313,8 @@ class MainWindow(QMainWindow):
         weekly_layout = QVBoxLayout(weekly_form)
         weekly_layout.setContentsMargins(0, 0, 0, 0)
         weekly_layout.setSpacing(8)
-        weekly_layout.addWidget(_label("负责人周报 / 文档", "eyebrow"))
+        self.weekly_form_title = _label("负责人周报 / 文档", "eyebrow")
+        weekly_layout.addWidget(self.weekly_form_title)
         self.project_weekly_editor = QTextEdit()
         self.project_weekly_editor.setFixedHeight(70)
         self.project_weekly_editor.setPlaceholderText("本周项目整体进度、风险、下周计划。")
@@ -2311,16 +2329,10 @@ class MainWindow(QMainWindow):
         self.upload_deck_button = QPushButton("上传项目文档")
         self.upload_deck_button.clicked.connect(self._upload_project_deck)
         weekly_layout.addWidget(self.project_weekly_editor)
-        weekly_action_row = QHBoxLayout()
-        weekly_action_row.setSpacing(8)
-        weekly_action_row.addWidget(self.save_project_weekly_button, 1)
-        weekly_action_row.addWidget(self.project_document_type, 1)
-        weekly_layout.addLayout(weekly_action_row)
-        document_action_row = QHBoxLayout()
-        document_action_row.setSpacing(8)
-        document_action_row.addWidget(self.project_document_visibility, 1)
-        document_action_row.addWidget(self.upload_deck_button, 1)
-        weekly_layout.addLayout(document_action_row)
+        weekly_layout.addWidget(self.save_project_weekly_button)
+        weekly_layout.addWidget(self.project_document_type)
+        weekly_layout.addWidget(self.project_document_visibility)
+        weekly_layout.addWidget(self.upload_deck_button)
         activity_forms_layout.addWidget(daily_form)
         activity_forms_layout.addWidget(weekly_form)
         activity_forms_layout.addStretch()
@@ -3273,6 +3285,12 @@ class MainWindow(QMainWindow):
         project = self._current_project()
         if project is None:
             return
+        members = self.db.list_project_members(project.id)
+        current_member = self._current_project_member(project, members)
+        is_manager = self._can_manage_project(project, current_member)
+        if not self._can_upload_project_document(project, current_member, is_manager):
+            QMessageBox.information(self, "不能上传", "只有项目负责人或测试成员可以上传项目文档。")
+            return
         doc_type = self.project_document_type.currentText().strip() or "其他"
         visibility = self.project_document_visibility.currentData() or "team"
         self._upload_project_document(project.id, doc_type, str(visibility))
@@ -3363,7 +3381,8 @@ class MainWindow(QMainWindow):
         )
         self.todo_panel.setVisible(current_member is not None or is_manager or self.todo_view_mode == "project")
         can_write_daily = current_member is not None
-        self.activity_forms_panel.setVisible(can_write_daily or is_manager)
+        can_upload_project_document = self._can_upload_project_document(project, current_member, is_manager)
+        self.activity_forms_panel.setVisible(can_write_daily or is_manager or can_upload_project_document)
         self.daily_form.setVisible(can_write_daily)
         placeholder_by_mode = {
             "personal": "新增一个个人代办",
@@ -3392,12 +3411,16 @@ class MainWindow(QMainWindow):
         self.config_project_description.setEnabled(is_manager)
         self.save_project_description_button.setEnabled(is_manager)
         self.delete_project_button.setEnabled(is_manager)
-        self.weekly_form.setVisible(is_manager)
+        self.weekly_form.setVisible(is_manager or can_upload_project_document)
+        self.weekly_form_title.setText("负责人周报 / 文档" if is_manager else "测试文档")
         self.project_weekly_editor.setEnabled(is_manager)
+        self.project_weekly_editor.setVisible(is_manager)
         self.save_project_weekly_button.setEnabled(is_manager)
-        self.project_document_type.setEnabled(is_manager)
-        self.project_document_visibility.setEnabled(is_manager)
-        self.upload_deck_button.setEnabled(is_manager)
+        self.save_project_weekly_button.setVisible(is_manager)
+        self._refresh_project_document_type_options(is_manager, can_upload_project_document)
+        self.project_document_type.setEnabled(can_upload_project_document)
+        self.project_document_visibility.setEnabled(can_upload_project_document)
+        self.upload_deck_button.setEnabled(can_upload_project_document)
         for member in members:
             self._add_member_card(member)
         self._refresh_config_member_list(project, members, is_manager)
@@ -3566,7 +3589,9 @@ class MainWindow(QMainWindow):
         self.delete_project_button.setEnabled(False)
         self.weekly_form.setVisible(False)
         self.project_weekly_editor.setEnabled(False)
+        self.project_weekly_editor.setVisible(True)
         self.save_project_weekly_button.setEnabled(False)
+        self.save_project_weekly_button.setVisible(True)
         self.project_document_type.setEnabled(False)
         self.project_document_visibility.setEnabled(False)
         self.upload_deck_button.setEnabled(False)
@@ -3600,6 +3625,29 @@ class MainWindow(QMainWindow):
             return False
         role = member.role.strip()
         return "产品" in role or "测试" in role
+
+    def _can_upload_project_document(self, project: Project, member: ProjectMember | None, is_manager: bool | None = None) -> bool:
+        can_manage = is_manager if is_manager is not None else self._can_manage_project(project, member)
+        if can_manage:
+            return True
+        if member is None:
+            return False
+        return "测试" in member.role.strip()
+
+    def _refresh_project_document_type_options(self, is_manager: bool, can_upload: bool) -> None:
+        if not hasattr(self, "project_document_type"):
+            return
+        current = self.project_document_type.currentText().strip()
+        options = DOCUMENT_TYPES if is_manager else ["测试文档"]
+        self.project_document_type.blockSignals(True)
+        self.project_document_type.clear()
+        if can_upload:
+            self.project_document_type.addItems(options)
+            if current in options:
+                self.project_document_type.setCurrentText(current)
+            elif "测试文档" in options:
+                self.project_document_type.setCurrentText("测试文档")
+        self.project_document_type.blockSignals(False)
 
     def _refresh_assigned_todo_assignees(self, members: list[ProjectMember], can_assign: bool) -> None:
         if not hasattr(self, "assigned_todo_assignee"):
