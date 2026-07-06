@@ -65,10 +65,20 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.113",
+  "version": "0.1.115",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "测试角色可在项目页上传测试文档，文档上传权限与负责人周报权限分离。",
+  "notes": "项目长流程新增可选 UI/设计环节：有 UI 时先流转给唯一 UI，支持提交开发、跳过 UI、记录链接和上传设计图。",
   "history": [
+    {
+      "version": "0.1.115",
+      "date": "2026-07-06",
+      "notes": "项目长流程新增可选 UI/设计环节：有 UI 时先流转给唯一 UI，支持提交开发、跳过 UI、记录链接和上传设计图。"
+    },
+    {
+      "version": "0.1.114",
+      "date": "2026-07-06",
+      "notes": "项目分配代办新增开发-测试-产品验收长流程，支持待开发、开发中、待测试、待验收状态和完整流转详情。"
+    },
     {
       "version": "0.1.113",
       "date": "2026-07-04",

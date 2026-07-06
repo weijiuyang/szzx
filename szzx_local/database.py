@@ -136,6 +136,8 @@ class Database:
         self._migrate_project_ids_to_timestamps()
         self._migrate_weekly_report_owners()
         self._migrate_weekly_ids_to_timestamps()
+        self._migrate_project_todo_scopes()
+        self._repair_project_todo_completion_duplicates()
         self._claim_display_name(self.display_name(), save=False)
         self._ensure_sync_state()
         self._save(bump_sync=False)
@@ -559,6 +561,16 @@ class Database:
                 row.setdefault("legacy_id", old_id)
         self._sync_counters_to_rows()
 
+    def _migrate_project_todo_scopes(self) -> None:
+        rows = self.data.get("project_todos")
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("scope", "")).strip() not in {"personal", "project", "assigned"}:
+                row["scope"] = "personal"
+
     def add_project(self, name: str, owner: str, description: str, status: str = "推进中") -> Project:
         created_at = datetime.now()
         row = self._with_operator({
@@ -670,6 +682,82 @@ class Database:
                 tombstones[index] = tombstone
                 return
         tombstones.append(tombstone)
+
+    def _is_current_user_deleted_rest_record(self, row: dict[str, Any]) -> bool:
+        if str(row.get("table", "")) != "rest_days":
+            return False
+        deleted_by = str(row.get("deleted_by", "")).strip()
+        deleted_by_device_id = str(row.get("deleted_by_device_id", "")).strip()
+        source_device_id = str(row.get("source_device_id", "")).strip()
+        if deleted_by and self.is_current_user_name(deleted_by):
+            return True
+        if deleted_by_device_id and deleted_by_device_id == self.device_id():
+            return True
+        if source_device_id and source_device_id == self.device_id():
+            return True
+        return False
+
+    def _remote_rest_owner_matches(self, row: dict[str, Any], sync: dict[str, Any]) -> bool:
+        actor = self._normalize_display_name(str(sync.get("actor", "")).strip())
+        origin = str(sync.get("origin", "")).strip()
+        row_devices = (
+            str(row.get("operator_device_id", "")).strip(),
+            str(row.get("source_device_id", "")).strip(),
+            str(row.get("deleted_by_device_id", "")).strip(),
+        )
+        if origin and origin in row_devices:
+            return True
+        row_names = (
+            self._normalize_display_name(str(row.get("operator", "")).strip()),
+            self._normalize_display_name(str(row.get("deleted_by", "")).strip()),
+        )
+        if actor and actor in row_names:
+            return True
+        return not actor and not origin
+
+    def _personalized_snapshot_tables(self, tables: dict[str, Any]) -> dict[str, Any]:
+        personalized = dict(tables)
+        rest_days = personalized.get("rest_days")
+        if isinstance(rest_days, list):
+            personalized["rest_days"] = [
+                dict(row)
+                for row in rest_days
+                if isinstance(row, dict) and self._is_current_user_row(row)
+            ]
+        deleted_records = personalized.get("deleted_records")
+        if isinstance(deleted_records, list):
+            personalized["deleted_records"] = [
+                dict(row)
+                for row in deleted_records
+                if isinstance(row, dict)
+                and (
+                    str(row.get("table", "")) != "rest_days"
+                    or self._is_current_user_deleted_rest_record(row)
+                )
+            ]
+        return personalized
+
+    def _personalized_remote_tables(self, tables: dict[str, Any], sync: dict[str, Any]) -> dict[str, Any]:
+        personalized = dict(tables)
+        rest_days = personalized.get("rest_days")
+        if isinstance(rest_days, list):
+            personalized["rest_days"] = [
+                dict(row)
+                for row in rest_days
+                if isinstance(row, dict) and self._remote_rest_owner_matches(row, sync)
+            ]
+        deleted_records = personalized.get("deleted_records")
+        if isinstance(deleted_records, list):
+            personalized["deleted_records"] = [
+                dict(row)
+                for row in deleted_records
+                if isinstance(row, dict)
+                and (
+                    str(row.get("table", "")) != "rest_days"
+                    or self._remote_rest_owner_matches(row, sync)
+                )
+            ]
+        return personalized
 
     def update_project_description(self, project_id: int, description: str) -> Project | None:
         for row in self.data["projects"]:
@@ -1535,9 +1623,27 @@ class Database:
         assignee: str = "",
         assigned_by: str = "",
         due_at: datetime | None = None,
+        workflow: str = "",
+        designer: str = "",
+        developer: str = "",
+        tester: str = "",
+        acceptor: str = "",
     ) -> ProjectTodo:
         created_at = datetime.now()
         todo_scope = scope if scope in {"personal", "project", "assigned"} else "personal"
+        todo_workflow = workflow if workflow == "dev_test_accept" else ""
+        todo_designer = designer.strip()
+        initial_status = "ui_todo" if todo_workflow and todo_designer else "dev_todo" if todo_workflow else "todo"
+        initial_handler = todo_designer if initial_status == "ui_todo" else developer.strip() if todo_workflow else assignee.strip()
+        flow_history = []
+        if todo_workflow:
+            flow_history.append({
+                "time": created_at.isoformat(timespec="seconds"),
+                "actor": creator.strip(),
+                "action": "指派UI" if initial_status == "ui_todo" else "指派开发",
+                "status": initial_status,
+                "handler": initial_handler,
+            })
         row = self._with_operator({
             "id": self._next_id("project_todos"),
             "project_id": project_id,
@@ -1546,12 +1652,19 @@ class Database:
             "scope": todo_scope,
             "assignee": assignee.strip(),
             "assigned_by": assigned_by.strip(),
-            "status": "todo",
+            "status": initial_status,
             "completed_by": "",
             "created_at": created_at.isoformat(timespec="seconds"),
             "completed_at": "",
             "due_at": due_at.isoformat(timespec="seconds") if due_at is not None else "",
             "started_at": "",
+            "workflow": todo_workflow,
+            "designer": todo_designer,
+            "developer": developer.strip(),
+            "tester": tester.strip(),
+            "acceptor": acceptor.strip(),
+            "current_handler": initial_handler,
+            "flow_history": json.dumps(flow_history, ensure_ascii=False) if flow_history else "",
         })
         self.data["project_todos"].append(row)
         self._save()
@@ -1565,7 +1678,7 @@ class Database:
     ) -> list[ProjectTodo]:
         rows = [row for row in self.data["project_todos"] if int(row["project_id"]) == project_id]
         if scope in {"personal", "project", "assigned"}:
-            rows = [row for row in rows if str(row.get("scope", "personal")) == scope]
+            rows = [row for row in rows if self._todo_row_scope(row) == scope]
         if not include_completed:
             rows = [row for row in rows if str(row.get("status", "todo")) != "done"]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
@@ -1578,7 +1691,7 @@ class Database:
     ) -> list[ProjectTodo]:
         rows = list(self.data["project_todos"])
         if scope in {"personal", "project", "assigned"}:
-            rows = [row for row in rows if str(row.get("scope", "personal")) == scope]
+            rows = [row for row in rows if self._todo_row_scope(row) == scope]
         if not include_completed:
             rows = [row for row in rows if str(row.get("status", "todo")) != "done"]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
@@ -1609,8 +1722,17 @@ class Database:
                 return None
             if str(row.get("scope", "personal")) != "assigned":
                 return None
-            if self._normalize_display_name(str(row.get("assignee", ""))) != self._normalize_display_name(member_name):
+            if self._normalize_display_name(self._todo_current_handler(row)) != self._normalize_display_name(member_name):
                 return None
+            if str(row.get("workflow", "")) == "dev_test_accept":
+                if str(row.get("status", "todo")) != "dev_todo":
+                    return self._todo_from_row(row)
+                now = datetime.now()
+                row["status"] = "dev_doing"
+                row["started_at"] = now.isoformat(timespec="seconds")
+                self._append_todo_flow(row, member_name, "开始开发", "dev_doing", self._todo_current_handler(row), now)
+                self._save()
+                return self._todo_from_row(row)
             if str(row.get("started_at", "")).strip():
                 return self._todo_from_row(row)
             row["started_at"] = datetime.now().isoformat(timespec="seconds")
@@ -1630,10 +1752,13 @@ class Database:
                 continue
             if str(row.get("status", "todo")) == "done":
                 return None
+            if str(row.get("workflow", "")) == "dev_test_accept":
+                return self.advance_project_todo(todo_id, member_name, role, "pass")
             completed_at = datetime.now()
             row["status"] = "done"
             row["completed_by"] = member_name.strip()
             row["completed_at"] = completed_at.isoformat(timespec="seconds")
+            self._mark_overlapping_project_todos_done(row, member_name, completed_at)
             if str(row.get("scope", "personal")) == "project":
                 self._save()
                 return self._todo_from_row(row)
@@ -1646,6 +1771,102 @@ class Database:
             )
             return report
         return None
+
+    def advance_project_todo(
+        self,
+        todo_id: int,
+        member_name: str,
+        role: str,
+        action: str = "pass",
+    ) -> DailyReport | ProjectTodo | None:
+        for row in self.data["project_todos"]:
+            if int(row["id"]) != todo_id:
+                continue
+            if str(row.get("workflow", "")) != "dev_test_accept" or str(row.get("status", "todo")) == "done":
+                return None
+            if self._normalize_display_name(self._todo_current_handler(row)) != self._normalize_display_name(member_name):
+                return None
+            now = datetime.now()
+            status = str(row.get("status", "todo"))
+            if status == "ui_todo":
+                developer = str(row.get("developer", "")).strip()
+                if not developer:
+                    return None
+                row["status"] = "dev_todo"
+                row["current_handler"] = developer
+                action_text = "跳过UI，提交开发" if action == "skip_ui" else "UI完成，提交开发"
+                self._append_todo_flow(row, member_name, action_text, "dev_todo", developer, now)
+                report = self.add_daily_report(
+                    int(row["project_id"]),
+                    member_name,
+                    role,
+                    f"{action_text}：{str(row.get('title', '')).strip()}",
+                    todo_id=todo_id,
+                )
+                return report
+            if status == "dev_doing":
+                tester = str(row.get("tester", "")).strip()
+                if not tester:
+                    return None
+                row["status"] = "test_todo"
+                row["current_handler"] = tester
+                self._append_todo_flow(row, member_name, "开发完成，提交测试", "test_todo", tester, now)
+                report = self.add_daily_report(
+                    int(row["project_id"]),
+                    member_name,
+                    role,
+                    f"开发完成，提交测试：{str(row.get('title', '')).strip()}",
+                    todo_id=todo_id,
+                )
+                return report
+            if status == "test_todo":
+                developer = str(row.get("developer", "")).strip()
+                acceptor = str(row.get("acceptor", "")).strip() or str(row.get("assigned_by", "")).strip()
+                if action == "reject":
+                    row["status"] = "dev_todo"
+                    row["current_handler"] = developer
+                    self._append_todo_flow(row, member_name, "测试不通过，打回开发", "dev_todo", developer, now)
+                    report = self.add_daily_report(
+                        int(row["project_id"]),
+                        member_name,
+                        role,
+                        f"测试不通过，打回开发：{str(row.get('title', '')).strip()}",
+                        todo_id=todo_id,
+                    )
+                    return report
+                row["status"] = "accept_todo"
+                row["current_handler"] = acceptor
+                self._append_todo_flow(row, member_name, "测试通过，提交验收", "accept_todo", acceptor, now)
+                report = self.add_daily_report(
+                    int(row["project_id"]),
+                    member_name,
+                    role,
+                    f"测试通过，提交验收：{str(row.get('title', '')).strip()}",
+                    todo_id=todo_id,
+                )
+                return report
+            if status == "accept_todo":
+                row["status"] = "done"
+                row["completed_by"] = member_name.strip()
+                row["completed_at"] = now.isoformat(timespec="seconds")
+                row["current_handler"] = ""
+                self._append_todo_flow(row, member_name, "验收通过，完成代办", "done", "", now)
+                report = self.add_daily_report(
+                    int(row["project_id"]),
+                    member_name,
+                    role,
+                    f"验收完成：{str(row.get('title', '')).strip()}",
+                    todo_id=todo_id,
+                )
+                return report
+            return None
+        return None
+
+    def reject_project_todo(self, todo_id: int, member_name: str, role: str) -> DailyReport | ProjectTodo | None:
+        return self.advance_project_todo(todo_id, member_name, role, "reject")
+
+    def skip_project_todo_ui(self, todo_id: int, member_name: str, role: str) -> DailyReport | ProjectTodo | None:
+        return self.advance_project_todo(todo_id, member_name, role, "skip_ui")
 
     def _todo_from_row(self, row: dict[str, Any]) -> ProjectTodo:
         completed_at = str(row.get("completed_at", "")).strip()
@@ -1673,7 +1894,116 @@ class Database:
             completed_at=_parse_time(completed_at) if completed_at else None,
             due_at=parsed_due_at,
             started_at=parsed_started_at,
+            workflow=str(row.get("workflow", "")),
+            designer=str(row.get("designer", "")),
+            developer=str(row.get("developer", "")),
+            tester=str(row.get("tester", "")),
+            acceptor=str(row.get("acceptor", "")),
+            current_handler=str(row.get("current_handler", "")),
+            flow_history=str(row.get("flow_history", "")),
         )
+
+    def _todo_current_handler(self, row: dict[str, Any]) -> str:
+        handler = str(row.get("current_handler", "")).strip()
+        if handler:
+            return handler
+        return str(row.get("assignee", "")).strip()
+
+    def _todo_row_scope(self, row: dict[str, Any]) -> str:
+        scope = str(row.get("scope", "")).strip()
+        return scope if scope in {"personal", "project", "assigned"} else "personal"
+
+    def _normalized_todo_title(self, value: Any) -> str:
+        return "".join(str(value or "").split()).casefold()
+
+    def _todo_titles_overlap(self, left: Any, right: Any) -> bool:
+        left_title = self._normalized_todo_title(left)
+        right_title = self._normalized_todo_title(right)
+        if len(left_title) < 8 or len(right_title) < 8:
+            return False
+        return left_title in right_title or right_title in left_title
+
+    def _todo_rows_same_owner(self, left: dict[str, Any], right: dict[str, Any]) -> bool:
+        left_names = {
+            self._normalize_display_name(str(left.get("creator", ""))),
+            self._normalize_display_name(str(left.get("assignee", ""))),
+            self._normalize_display_name(str(left.get("assigned_by", ""))),
+            self._normalize_display_name(str(left.get("completed_by", ""))),
+        }
+        right_names = {
+            self._normalize_display_name(str(right.get("creator", ""))),
+            self._normalize_display_name(str(right.get("assignee", ""))),
+            self._normalize_display_name(str(right.get("assigned_by", ""))),
+            self._normalize_display_name(str(right.get("completed_by", ""))),
+        }
+        left_names.discard("")
+        right_names.discard("")
+        return bool(left_names and right_names and left_names.intersection(right_names))
+
+    def _mark_overlapping_project_todos_done(
+        self,
+        completed_row: dict[str, Any],
+        completed_by: str,
+        completed_at: datetime,
+    ) -> bool:
+        rows = self.data.get("project_todos")
+        if not isinstance(rows, list):
+            return False
+        changed = False
+        completed_project_id = str(completed_row.get("project_id", "")).strip()
+        completed_title = str(completed_row.get("title", ""))
+        for row in rows:
+            if not isinstance(row, dict) or row is completed_row:
+                continue
+            if str(row.get("status", "todo")) == "done":
+                continue
+            if str(row.get("project_id", "")).strip() != completed_project_id:
+                continue
+            if not self._todo_rows_same_owner(completed_row, row):
+                continue
+            if not self._todo_titles_overlap(completed_title, row.get("title", "")):
+                continue
+            row["status"] = "done"
+            row["completed_by"] = completed_by.strip()
+            row["completed_at"] = completed_at.isoformat(timespec="seconds")
+            changed = True
+        return changed
+
+    def _append_todo_flow(
+        self,
+        row: dict[str, Any],
+        actor: str,
+        action: str,
+        status: str,
+        handler: str,
+        happened_at: datetime | None = None,
+    ) -> None:
+        history = self._todo_flow_entries(row)
+        history.append({
+            "time": (happened_at or datetime.now()).isoformat(timespec="seconds"),
+            "actor": actor.strip(),
+            "action": action,
+            "status": status,
+            "handler": handler.strip(),
+        })
+        row["flow_history"] = json.dumps(history, ensure_ascii=False)
+
+    def _todo_flow_entries(self, row: dict[str, Any]) -> list[dict[str, str]]:
+        raw = str(row.get("flow_history", "")).strip()
+        if not raw:
+            return []
+        try:
+            loaded = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(loaded, list):
+            return []
+        entries: list[dict[str, str]] = []
+        for item in loaded:
+            if not isinstance(item, dict):
+                continue
+            entries.append({str(key): str(value) for key, value in item.items()})
+        return entries
 
     def add_project_weekly_report(self, project_id: int, author: str, content: str) -> ProjectWeeklyReport:
         created_at = datetime.now()
@@ -1861,8 +2191,13 @@ class Database:
             table: self.data.get(table, {}).copy() if isinstance(self.data.get(table), dict) else list(self.data.get(table, []))
             for table in SHARED_TABLES
         }
+        tables = self._personalized_snapshot_tables(tables)
         snapshot = {
             "sync": self.sync_state(),
+            "owner": {
+                "actor": self.display_name(),
+                "origin": self.device_id(),
+            },
             "tables": tables,
         }
         if include_files:
@@ -1887,6 +2222,8 @@ class Database:
                     tables[table] = list(self.data.get(table, []))
                 else:
                     return False
+        owner = snapshot.get("owner")
+        tables = self._personalized_remote_tables(tables, owner if isinstance(owner, dict) else sync)
         local_has_missing_rows = self._snapshot_missing_local_shared_rows(tables)
         self._backup_before_sync()
         files = snapshot.get("files")
@@ -1929,6 +2266,11 @@ class Database:
         tables = snapshot.get("tables")
         if not isinstance(tables, dict):
             return False
+        owner = snapshot.get("owner")
+        sync = snapshot.get("sync")
+        if not isinstance(sync, dict):
+            sync = {}
+        tables = self._personalized_remote_tables(tables, owner if isinstance(owner, dict) else sync)
         changed = False
         if self._merge_deleted_projects(tables.get("deleted_projects")):
             changed = True
@@ -2098,11 +2440,29 @@ class Database:
         existing_status = str(existing.get("status", "todo"))
         remote_completed_at = str(remote.get("completed_at", ""))
         existing_completed_at = str(existing.get("completed_at", ""))
+        remote_history = str(remote.get("flow_history", ""))
+        existing_history = str(existing.get("flow_history", ""))
+        if remote_history and len(remote_history) > len(existing_history):
+            for key in (
+                "status",
+                "completed_by",
+                "completed_at",
+                "started_at",
+                "workflow",
+                "designer",
+                "developer",
+                "tester",
+                "acceptor",
+                "current_handler",
+                "flow_history",
+            ):
+                existing[key] = str(remote.get(key, ""))
+            return True
         if remote_status != "done":
             return changed
         if existing_status == "done" and remote_completed_at <= existing_completed_at:
             return changed
-        for key in ("status", "completed_by", "completed_at"):
+        for key in ("status", "completed_by", "completed_at", "current_handler", "flow_history"):
             existing[key] = str(remote.get(key, ""))
         return True
 
@@ -2111,9 +2471,11 @@ class Database:
         if not isinstance(rows, list):
             return False
         completed_by_source: dict[tuple[str, str], dict[str, Any]] = {}
+        completed_rows: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict) or str(row.get("status", "todo")) != "done":
                 continue
+            completed_rows.append(row)
             source = self._row_source_key(row)
             if source is None:
                 continue
@@ -2136,6 +2498,22 @@ class Database:
                 row[key] = str(completed.get(key, ""))
             rows_to_remove.add(id(completed))
             changed = True
+
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("status", "todo")) == "done":
+                continue
+            for completed in completed_rows:
+                if str(row.get("project_id", "")).strip() != str(completed.get("project_id", "")).strip():
+                    continue
+                if not self._todo_rows_same_owner(completed, row):
+                    continue
+                if not self._todo_titles_overlap(completed.get("title", ""), row.get("title", "")):
+                    continue
+                row["status"] = "done"
+                row["completed_by"] = str(completed.get("completed_by", ""))
+                row["completed_at"] = str(completed.get("completed_at", ""))
+                changed = True
+                break
 
         if rows_to_remove:
             rows[:] = [row for row in rows if not isinstance(row, dict) or id(row) not in rows_to_remove]
@@ -2211,7 +2589,7 @@ class Database:
                 table, source_device, source_id = key
                 deleted_by_table.setdefault(table, set()).add((source_device, source_id))
         for table in SHARED_TABLES:
-            if table == "counters" or isinstance(self._empty_data()[table], dict):
+            if table in {"counters", "rest_days"} or isinstance(self._empty_data()[table], dict):
                 continue
             remote_value = tables.get(table)
             local_value = self.data.get(table)
@@ -2543,6 +2921,7 @@ class Database:
                 continue
             if mine_only and not self._is_current_user_row(row):
                 continue
+            self._remember_deleted_record("rest_days", row)
             del rows[index]
             self._save()
             return True

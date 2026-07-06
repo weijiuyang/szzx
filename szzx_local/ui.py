@@ -395,6 +395,7 @@ QLabel#badgeWinner, QLabel#badgeRule {
 DOCUMENT_TYPES = [
     "产品原型图",
     "项目汇报PPT",
+    "设计图",
     "测试文档",
     "交接文档",
     "调研/可行性报告",
@@ -1212,7 +1213,15 @@ class ProjectMetricDialog(QDialog):
                 f"{row.name} · {row.role}",
             )
         if isinstance(row, ProjectTodo):
-            status = "已完成" if row.status == "done" else "待完成"
+            status = {
+                "ui_todo": "待UI",
+                "dev_todo": "待开发",
+                "dev_doing": "开发中",
+                "test_todo": "待测试",
+                "accept_todo": "待验收",
+                "done": "已完成",
+                "todo": "待完成",
+            }.get(row.status, "进行中")
             scope = {"personal": "个人代办", "assigned": "分配代办", "project": "项目代办"}.get(row.scope, "代办")
             lines = [
                 f"{row.created_at.strftime('%Y-%m-%d %H:%M')} · {scope} · {status}",
@@ -1327,9 +1336,19 @@ class TodoDetailDialog(QDialog):
             f"项目：{project_name}",
             f"分配人：{todo.assigned_by or todo.creator or '未记录'}",
             f"接收人：{todo.assignee or '未记录'}",
-            f"状态：{'已完成' if todo.status == 'done' else '进行中'}",
+            f"状态：{self._todo_status_text(todo)}",
             f"创建时间：{todo.created_at.strftime('%Y-%m-%d %H:%M')}",
         ]
+        if todo.workflow == "dev_test_accept":
+            lines.extend(
+                [
+                    f"UI/设计：{todo.designer or '无'}",
+                    f"开发：{todo.developer or '未记录'}",
+                    f"测试：{todo.tester or '未记录'}",
+                    f"验收：{todo.acceptor or todo.assigned_by or '未记录'}",
+                    f"当前处理人：{todo.current_handler or '已结束'}",
+                ]
+            )
         if todo.due_at is not None:
             lines.append(f"截止时间：{todo.due_at.strftime('%Y-%m-%d %H:%M')}")
         lines.append(
@@ -1341,6 +1360,10 @@ class TodoDetailDialog(QDialog):
             lines.append(f"完成时间：{todo.completed_at.strftime('%Y-%m-%d %H:%M')}")
         if todo.completed_by:
             lines.append(f"完成人：{todo.completed_by}")
+
+        flow_lines = self._todo_flow_lines(todo)
+        if flow_lines:
+            lines.extend(["", "流转记录", *flow_lines])
 
         lines.extend(["", "关联日报"])
         if not reports:
@@ -1354,6 +1377,39 @@ class TodoDetailDialog(QDialog):
                 ]
             )
         return "\n".join(lines)
+
+    def _todo_status_text(self, todo: ProjectTodo) -> str:
+        return {
+            "ui_todo": "待UI",
+            "dev_todo": "待开发",
+            "dev_doing": "开发中",
+            "test_todo": "待测试",
+            "accept_todo": "待验收",
+            "done": "已完成",
+            "todo": "待完成",
+        }.get(todo.status, "进行中")
+
+    def _todo_flow_lines(self, todo: ProjectTodo) -> list[str]:
+        raw = todo.flow_history.strip()
+        if not raw:
+            return []
+        try:
+            entries = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(entries, list):
+            return []
+        lines: list[str] = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            time_text = str(item.get("time", "")).replace("T", " ")[:16]
+            actor = str(item.get("actor", "")).strip() or "未记录"
+            action = str(item.get("action", "")).strip() or "流转"
+            handler = str(item.get("handler", "")).strip()
+            handler_text = f" -> {handler}" if handler else ""
+            lines.append(f"{time_text} · {actor} · {action}{handler_text}")
+        return lines
 
 
 class TodoDailyReportDialog(QDialog):
@@ -2198,7 +2254,7 @@ class MainWindow(QMainWindow):
         self.member_name = QLineEdit()
         self.member_name.setPlaceholderText("姓名，例如 张三")
         self.member_role = QComboBox()
-        self.member_role.addItems(["前端开发", "后端开发", "数据开发", "测试", "产品经理", "设计", "运维"])
+        self.member_role.addItems(["前端开发", "后端开发", "数据开发", "UI/设计", "测试", "产品经理", "设计", "运维"])
         self.add_member_button = QPushButton("添加成员")
         self.add_member_button.clicked.connect(self._add_project_member)
         member_form_layout.addWidget(self.member_name)
@@ -2564,9 +2620,9 @@ class MainWindow(QMainWindow):
             todo
             for todo in all_assigned
             if todo.status != "done"
-            and (self.db.is_current_user_name(todo.assignee) or self.db.is_current_user_name(todo.assigned_by))
+            and (self._todo_visible_to_current_user(todo) or self.db.is_current_user_name(todo.assigned_by))
         ]
-        assigned_to_me = [todo for todo in active_tasks if self.db.is_current_user_name(todo.assignee)]
+        assigned_to_me = [todo for todo in active_tasks if self._todo_visible_to_current_user(todo)]
         assigned_by_me = [todo for todo in active_tasks if self.db.is_current_user_name(todo.assigned_by)]
         self._clear_layout(self.my_tasks_layout)
         if not active_tasks:
@@ -2640,7 +2696,7 @@ class MainWindow(QMainWindow):
             for todo in todos
             if todo.scope == "assigned"
             and todo.status != "done"
-            and self.db.is_current_user_name(todo.assignee)
+            and self._todo_visible_to_current_user(todo)
             and todo.id not in assigned_seen
         ]
         new_completed = [
@@ -2915,14 +2971,14 @@ class MainWindow(QMainWindow):
         meta_row.setContentsMargins(0, 0, 0, 0)
         meta_row.setSpacing(5)
         assigned_days = self._days_since(todo.created_at)
-        if self.db.is_current_user_name(todo.assignee):
+        if self._todo_visible_to_current_user(todo):
             meta_row.addWidget(_nowrap_label(
-                f"分配给我 · {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {assigned_days} 天",
+                f"{self._todo_status_text(todo)} · {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {assigned_days} 天",
                 "eyebrow",
             ))
         else:
             meta_row.addWidget(_nowrap_label("我分配给", "eyebrow"))
-            meta_row.addWidget(self._name_with_chat(todo.assignee))
+            meta_row.addWidget(self._name_with_chat(self._todo_current_handler(todo) or todo.assignee))
             meta_row.addWidget(_nowrap_label(
                 f"· {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {assigned_days} 天",
                 "eyebrow",
@@ -2942,21 +2998,33 @@ class MainWindow(QMainWindow):
         layout.addLayout(body, 1)
 
         project = self.db.get_project(todo.project_id)
-        if project is not None and self.db.is_current_user_name(todo.assignee):
-            if todo.scope == "assigned" and todo.started_at is None:
-                start_button = QPushButton("开始")
+        if project is not None and self._todo_visible_to_current_user(todo):
+            if todo.scope == "assigned" and self._todo_can_start(todo):
+                start_button = QPushButton("开始开发" if todo.workflow == "dev_test_accept" else "开始")
                 start_button.setObjectName("smallButton")
                 start_button.clicked.connect(lambda checked=False, selected=todo: self._start_project_todo(selected))
                 layout.addWidget(start_button)
-            elif todo.scope == "assigned":
+            elif todo.scope == "assigned" and self._todo_can_record(todo):
                 record_button = QPushButton("记录")
                 record_button.setObjectName("smallButton")
                 record_button.clicked.connect(lambda checked=False, selected=todo: self._record_todo_daily_report(selected))
                 layout.addWidget(record_button)
-            done_button = QPushButton("完成")
-            done_button.setObjectName("smallButton")
-            done_button.clicked.connect(lambda checked=False, p=project, selected=todo: self._complete_todo_for_project(p, selected))
-            layout.addWidget(done_button)
+            if self._todo_can_advance(todo):
+                done_button = QPushButton("完成")
+                done_button.setText(self._todo_primary_action_text(todo))
+                done_button.setObjectName("smallButton")
+                done_button.clicked.connect(lambda checked=False, p=project, selected=todo: self._complete_todo_for_project(p, selected))
+                layout.addWidget(done_button)
+            if self._todo_can_reject(todo):
+                reject_button = QPushButton("打回")
+                reject_button.setObjectName("smallButton")
+                reject_button.clicked.connect(lambda checked=False, p=project, selected=todo: self._reject_todo_for_project(p, selected))
+                layout.addWidget(reject_button)
+            if self._todo_can_skip_ui(todo):
+                skip_button = QPushButton("跳过UI")
+                skip_button.setObjectName("smallButton")
+                skip_button.clicked.connect(lambda checked=False, p=project, selected=todo: self._skip_todo_ui_for_project(p, selected))
+                layout.addWidget(skip_button)
         if self.db.is_current_user_name(todo.assigned_by):
             delete_button = QPushButton("删除")
             delete_button.setObjectName("smallButton")
@@ -3200,11 +3268,28 @@ class MainWindow(QMainWindow):
             return
         assignee = ""
         due_at = None
+        workflow = ""
+        designer = ""
+        developer = ""
+        tester = ""
+        acceptor = ""
         if self.todo_view_mode == "assigned":
             assignee = str(self.assigned_todo_assignee.currentData() or self.assigned_todo_assignee.currentText()).strip()
             if not assignee:
                 QMessageBox.information(self, "没有接收人", "先选择要分配给谁。")
                 return
+            assignee_member = self._project_member_by_name(members, assignee)
+            if self._member_is_developer(assignee_member) and (is_manager or self._member_is_product(current_member)):
+                tester_member = self._first_project_tester(members, exclude_name=assignee)
+                if tester_member is None:
+                    QMessageBox.information(self, "缺少测试", "项目里还没有测试成员，先添加测试后再创建开发流转代办。")
+                    return
+                workflow = "dev_test_accept"
+                designer_member = self._first_project_designer(members, exclude_name=assignee)
+                designer = designer_member.name if designer_member is not None else ""
+                developer = assignee
+                tester = tester_member.name
+                acceptor = self.db.display_name()
             if self.assigned_todo_deadline_days is not None:
                 due_at = datetime.now() + timedelta(days=self.assigned_todo_deadline_days)
         self.db.add_project_todo(
@@ -3215,6 +3300,11 @@ class MainWindow(QMainWindow):
             assignee=assignee,
             assigned_by=self.db.display_name() if self.todo_view_mode == "assigned" else "",
             due_at=due_at,
+            workflow=workflow,
+            designer=designer,
+            developer=developer,
+            tester=tester,
+            acceptor=acceptor,
         )
         self.project_todo_input.clear()
         self.assigned_todo_deadline_days = None
@@ -3238,14 +3328,60 @@ class MainWindow(QMainWindow):
         if todo.scope == "project" and not is_manager:
             QMessageBox.information(self, "不能完成", "只有项目负责人或最高权限用户可以完成项目代办。")
             return
-        if todo.scope == "assigned" and not self.db.is_current_user_name(todo.assignee):
-            QMessageBox.information(self, "不能完成", "只有代办接收人可以完成这条分配代办。")
+        if todo.scope == "assigned" and not self._todo_visible_to_current_user(todo):
+            QMessageBox.information(self, "不能流转", "只有当前处理人可以处理这条代办。")
             return
         report = self.db.complete_project_todo(todo.id, current_member.name, current_member.role)
         if report is None:
-            QMessageBox.information(self, "已完成", "这个代办已经被完成。")
+            QMessageBox.information(self, "不能流转", "这个代办已经完成、状态不匹配，或已经不存在。")
         else:
             self._nudge_after_late_record()
+        self._refresh_project_workspace()
+        self._refresh_my_panel()
+        self._refresh_badge_wall()
+        self._announce_presence()
+
+    def _reject_project_todo(self, todo: ProjectTodo) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        self._reject_todo_for_project(project, todo)
+
+    def _reject_todo_for_project(self, project: Project, todo: ProjectTodo) -> None:
+        current_member = self._current_project_member(project, self.db.list_project_members(project.id))
+        if current_member is None:
+            QMessageBox.information(self, "不能打回", "只有项目成员可以处理代办。")
+            return
+        if not self._todo_can_reject(todo) or not self._todo_visible_to_current_user(todo):
+            QMessageBox.information(self, "不能打回", "只有测试人在待测试阶段可以打回开发。")
+            return
+        report = self.db.reject_project_todo(todo.id, current_member.name, current_member.role)
+        if report is None:
+            QMessageBox.information(self, "不能打回", "这个代办状态已经变化或不存在。")
+            return
+        self._refresh_project_workspace()
+        self._refresh_my_panel()
+        self._refresh_badge_wall()
+        self._announce_presence()
+
+    def _skip_project_todo_ui(self, todo: ProjectTodo) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        self._skip_todo_ui_for_project(project, todo)
+
+    def _skip_todo_ui_for_project(self, project: Project, todo: ProjectTodo) -> None:
+        current_member = self._current_project_member(project, self.db.list_project_members(project.id))
+        if current_member is None:
+            QMessageBox.information(self, "不能跳过", "只有项目成员可以处理代办。")
+            return
+        if not self._todo_can_skip_ui(todo) or not self._todo_visible_to_current_user(todo):
+            QMessageBox.information(self, "不能跳过", "只有 UI/设计在待 UI 阶段可以跳过。")
+            return
+        report = self.db.skip_project_todo_ui(todo.id, current_member.name, current_member.role)
+        if report is None:
+            QMessageBox.information(self, "不能跳过", "这个代办状态已经变化或不存在。")
+            return
         self._refresh_project_workspace()
         self._refresh_my_panel()
         self._refresh_badge_wall()
@@ -3412,7 +3548,7 @@ class MainWindow(QMainWindow):
         self.save_project_description_button.setEnabled(is_manager)
         self.delete_project_button.setEnabled(is_manager)
         self.weekly_form.setVisible(is_manager or can_upload_project_document)
-        self.weekly_form_title.setText("负责人周报 / 文档" if is_manager else "测试文档")
+        self.weekly_form_title.setText("负责人周报 / 文档" if is_manager else "项目文档")
         self.project_weekly_editor.setEnabled(is_manager)
         self.project_weekly_editor.setVisible(is_manager)
         self.save_project_weekly_button.setEnabled(is_manager)
@@ -3520,20 +3656,8 @@ class MainWindow(QMainWindow):
                 max_content_lines=None,
                 visual_chars_per_line=46,
             )
-        for report in visible_daily_reports[:5]:
-            linked_todo = self._daily_report_todo_text(report)
-            content = f"{report.content}\n关联代办：{linked_todo}" if linked_todo else report.content
-            self._add_feed_card(
-                self.developer_feed,
-                report.created_at.strftime("%m-%d %H:%M"),
-                f"日报 · {report.role}",
-                content,
-                daily_report=report,
-                min_content_lines=1,
-                max_content_lines=None,
-                visual_chars_per_line=46,
-                person_name=report.member_name,
-            )
+        for group in self._daily_report_groups(visible_daily_reports)[:5]:
+            self._add_daily_report_group_card(self.developer_feed, group)
         self._refresh_my_panel()
 
     def _clear_project_workspace(self) -> None:
@@ -3626,25 +3750,72 @@ class MainWindow(QMainWindow):
         role = member.role.strip()
         return "产品" in role or "测试" in role
 
+    def _member_is_product(self, member: ProjectMember | None) -> bool:
+        return member is not None and "产品" in member.role.strip()
+
+    def _member_is_developer(self, member: ProjectMember | None) -> bool:
+        if member is None:
+            return False
+        role = member.role.strip()
+        return any(keyword in role for keyword in ("开发", "前端", "后端", "数据", "运维"))
+
+    def _member_is_designer(self, member: ProjectMember | None) -> bool:
+        if member is None:
+            return False
+        role = member.role.strip().upper()
+        return "UI" in role or "设计" in role
+
+    def _project_member_by_name(self, members: list[ProjectMember], name: str) -> ProjectMember | None:
+        for member in members:
+            if self.db.is_current_user_name(member.name) and self.db.is_current_user_name(name):
+                return member
+            if member.name.strip() == name.strip():
+                return member
+        return None
+
+    def _first_project_tester(self, members: list[ProjectMember], exclude_name: str = "") -> ProjectMember | None:
+        for member in members:
+            if member.name.strip() != exclude_name.strip() and "测试" in member.role.strip():
+                return member
+        return None
+
+    def _first_project_designer(self, members: list[ProjectMember], exclude_name: str = "") -> ProjectMember | None:
+        for member in members:
+            if member.name.strip() != exclude_name.strip() and self._member_is_designer(member):
+                return member
+        return None
+
     def _can_upload_project_document(self, project: Project, member: ProjectMember | None, is_manager: bool | None = None) -> bool:
         can_manage = is_manager if is_manager is not None else self._can_manage_project(project, member)
         if can_manage:
             return True
         if member is None:
             return False
-        return "测试" in member.role.strip()
+        return "测试" in member.role.strip() or self._member_is_designer(member)
 
     def _refresh_project_document_type_options(self, is_manager: bool, can_upload: bool) -> None:
         if not hasattr(self, "project_document_type"):
             return
         current = self.project_document_type.currentText().strip()
-        options = DOCUMENT_TYPES if is_manager else ["测试文档"]
+        options = DOCUMENT_TYPES
+        if not is_manager:
+            project = self._current_project()
+            current_member = self._current_project_member(project, self.db.list_project_members(project.id)) if project is not None else None
+            options = []
+            if self._member_is_designer(current_member):
+                options.append("设计图")
+            if current_member is not None and "测试" in current_member.role.strip():
+                options.append("测试文档")
+            if not options:
+                options = ["其他"]
         self.project_document_type.blockSignals(True)
         self.project_document_type.clear()
         if can_upload:
             self.project_document_type.addItems(options)
             if current in options:
                 self.project_document_type.setCurrentText(current)
+            elif "设计图" in options:
+                self.project_document_type.setCurrentText("设计图")
             elif "测试文档" in options:
                 self.project_document_type.setCurrentText("测试文档")
         self.project_document_type.blockSignals(False)
@@ -3696,7 +3867,7 @@ class MainWindow(QMainWindow):
     def _can_link_daily_todo(self, todo: ProjectTodo, current_member: ProjectMember | None, is_manager: bool) -> bool:
         if current_member is None or todo.status == "done":
             return False
-        return todo.scope == "assigned" and self.db.is_current_user_name(todo.assignee)
+        return todo.scope == "assigned" and self._todo_visible_to_current_user(todo)
 
     def _daily_todo_option_label(self, todo: ProjectTodo) -> str:
         title = todo.title.strip()
@@ -3705,7 +3876,11 @@ class MainWindow(QMainWindow):
         return f"关联代办：{todo.assigned_by or todo.creator} · {title}"
 
     def _todos_for_current_view(self, project_id: int, is_manager: bool) -> list[ProjectTodo]:
-        todos = self.db.list_project_todos(project_id, scope=self.todo_view_mode)
+        todos = [
+            todo
+            for todo in self.db.list_project_todos(project_id, scope=self.todo_view_mode)
+            if todo.status != "done"
+        ]
         if self.todo_view_mode == "personal":
             if is_manager:
                 return todos
@@ -3714,11 +3889,64 @@ class MainWindow(QMainWindow):
             return [
                 todo
                 for todo in todos
-                if self.db.is_current_user_name(todo.assignee)
+                if self._todo_visible_to_current_user(todo)
                 or self.db.is_current_user_name(todo.assigned_by)
                 or is_manager
             ]
         return todos
+
+    def _todo_visible_to_current_user(self, todo: ProjectTodo) -> bool:
+        if todo.workflow == "dev_test_accept":
+            return self.db.is_current_user_name(todo.current_handler)
+        return self.db.is_current_user_name(todo.assignee)
+
+    def _todo_current_handler(self, todo: ProjectTodo) -> str:
+        return todo.current_handler.strip() or todo.assignee.strip()
+
+    def _todo_status_text(self, todo: ProjectTodo) -> str:
+        return {
+            "ui_todo": "待UI",
+            "dev_todo": "待开发",
+            "dev_doing": "开发中",
+            "test_todo": "待测试",
+            "accept_todo": "待验收",
+            "done": "已完成",
+            "todo": "待完成",
+        }.get(todo.status, "进行中")
+
+    def _todo_primary_action_text(self, todo: ProjectTodo) -> str:
+        if todo.workflow != "dev_test_accept":
+            return "完成"
+        return {
+            "ui_todo": "提交开发",
+            "dev_todo": "提交测试",
+            "dev_doing": "提交测试",
+            "test_todo": "测试通过",
+            "accept_todo": "验收通过",
+        }.get(todo.status, "完成")
+
+    def _todo_can_start(self, todo: ProjectTodo) -> bool:
+        if todo.workflow == "dev_test_accept":
+            return todo.status == "dev_todo"
+        return todo.started_at is None
+
+    def _todo_can_record(self, todo: ProjectTodo) -> bool:
+        if todo.workflow == "dev_test_accept":
+            return todo.status in {"ui_todo", "dev_doing"}
+        return todo.started_at is not None
+
+    def _todo_can_reject(self, todo: ProjectTodo) -> bool:
+        return todo.workflow == "dev_test_accept" and todo.status == "test_todo"
+
+    def _todo_can_advance(self, todo: ProjectTodo) -> bool:
+        if todo.status == "done":
+            return False
+        if todo.workflow == "dev_test_accept":
+            return todo.status in {"ui_todo", "dev_doing", "test_todo", "accept_todo"}
+        return True
+
+    def _todo_can_skip_ui(self, todo: ProjectTodo) -> bool:
+        return todo.workflow == "dev_test_accept" and todo.status == "ui_todo"
 
     def _can_complete_todo(
         self,
@@ -3731,7 +3959,7 @@ class MainWindow(QMainWindow):
         if todo.scope == "project":
             return is_manager
         if todo.scope == "assigned":
-            return self.db.is_current_user_name(todo.assignee)
+            return self._todo_visible_to_current_user(todo)
         return True
 
     def _clear_layout(self, layout: QGridLayout) -> None:
@@ -3900,10 +4128,10 @@ class MainWindow(QMainWindow):
             meta_row = QHBoxLayout()
             meta_row.setContentsMargins(0, 0, 0, 0)
             meta_row.setSpacing(5)
-            meta_row.addWidget(_label(meta_text, "eyebrow"))
+            meta_row.addWidget(_label(f"{meta_text} · {self._todo_status_text(todo)}", "eyebrow"))
             meta_row.addWidget(self._name_with_chat(todo.assigned_by or todo.creator))
             meta_row.addWidget(_label("->", "eyebrow"))
-            meta_row.addWidget(self._name_with_chat(todo.assignee))
+            meta_row.addWidget(self._name_with_chat(self._todo_current_handler(todo) or todo.assignee))
             meta_row.addStretch()
             body.addLayout(meta_row)
             due_text = self._todo_due_text(todo)
@@ -3930,21 +4158,35 @@ class MainWindow(QMainWindow):
         layout.addLayout(body, 1)
 
         if todo is not None:
-            if todo.scope == "assigned" and self.db.is_current_user_name(todo.assignee) and todo.started_at is None:
-                start_button = QPushButton("开始")
+            if todo.scope == "assigned" and self._todo_visible_to_current_user(todo) and self._todo_can_start(todo):
+                start_button = QPushButton("开始开发" if todo.workflow == "dev_test_accept" else "开始")
                 start_button.setObjectName("smallButton")
                 start_button.clicked.connect(lambda checked=False, selected=todo: self._start_project_todo(selected))
                 layout.addWidget(start_button)
-            elif todo.scope == "assigned" and self.db.is_current_user_name(todo.assignee):
+            elif todo.scope == "assigned" and self._todo_visible_to_current_user(todo) and self._todo_can_record(todo):
                 record_button = QPushButton("记录")
                 record_button.setObjectName("smallButton")
                 record_button.clicked.connect(lambda checked=False, selected=todo: self._record_todo_daily_report(selected))
                 layout.addWidget(record_button)
-            done_button = QPushButton("完成")
-            done_button.setObjectName("smallButton")
-            done_button.setEnabled(can_complete)
-            done_button.clicked.connect(lambda checked=False, selected=todo: self._complete_project_todo(selected))
-            layout.addWidget(done_button)
+            if self._todo_can_advance(todo):
+                done_button = QPushButton("完成")
+                done_button.setText(self._todo_primary_action_text(todo))
+                done_button.setObjectName("smallButton")
+                done_button.setEnabled(can_complete)
+                done_button.clicked.connect(lambda checked=False, selected=todo: self._complete_project_todo(selected))
+                layout.addWidget(done_button)
+            if self._todo_can_reject(todo):
+                reject_button = QPushButton("打回")
+                reject_button.setObjectName("smallButton")
+                reject_button.setEnabled(can_complete)
+                reject_button.clicked.connect(lambda checked=False, selected=todo: self._reject_project_todo(selected))
+                layout.addWidget(reject_button)
+            if self._todo_can_skip_ui(todo):
+                skip_button = QPushButton("跳过UI")
+                skip_button.setObjectName("smallButton")
+                skip_button.setEnabled(can_complete)
+                skip_button.clicked.connect(lambda checked=False, selected=todo: self._skip_project_todo_ui(selected))
+                layout.addWidget(skip_button)
 
         extra_lines = 0
         if todo is not None:
@@ -3959,8 +4201,8 @@ class MainWindow(QMainWindow):
         self.todo_board.setItemWidget(item, card)
 
     def _start_project_todo(self, todo: ProjectTodo) -> None:
-        if not self.db.is_current_user_name(todo.assignee):
-            QMessageBox.information(self, "不能开始", "只有代办接收人可以开始这条分配代办。")
+        if not self._todo_visible_to_current_user(todo):
+            QMessageBox.information(self, "不能开始", "只有当前处理人可以开始这条分配代办。")
             return
         updated = self.db.start_project_todo(todo.id, self.db.display_name())
         if updated is None:
@@ -3976,8 +4218,8 @@ class MainWindow(QMainWindow):
         if project is None:
             QMessageBox.information(self, "项目不存在", "这条代办对应的项目已经不存在。")
             return
-        if not self.db.is_current_user_name(latest.assignee):
-            QMessageBox.information(self, "不能记录", "只有代办接收人可以记录这条代办的日报。")
+        if not self._todo_visible_to_current_user(latest):
+            QMessageBox.information(self, "不能记录", "只有当前处理人可以记录这条代办的日报。")
             return
         current_member = self._current_project_member(project, self.db.list_project_members(project.id))
         if current_member is None:
@@ -4099,6 +4341,104 @@ class MainWindow(QMainWindow):
                 visual_chars_per_line=visual_chars_per_line,
             )
         item.setSizeHint(QSize(0, height))
+        list_widget.addItem(item)
+        list_widget.setItemWidget(item, card)
+
+    def _daily_report_groups(self, reports: list[DailyReport]) -> list[list[DailyReport]]:
+        groups: dict[tuple[date, str], list[DailyReport]] = {}
+        for report in reports:
+            key = (report.created_at.date(), " ".join(report.member_name.strip().split()).casefold())
+            groups.setdefault(key, []).append(report)
+        result = list(groups.values())
+        for group in result:
+            group.sort(key=lambda report: report.created_at)
+        result.sort(key=lambda group: group[-1].created_at, reverse=True)
+        return result
+
+    def _add_daily_report_group_card(self, list_widget: QListWidget, reports: list[DailyReport]) -> None:
+        if not reports:
+            return
+        latest = max(reports, key=lambda report: report.created_at)
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+
+        card = QWidget()
+        card.setObjectName("feedCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        header.addWidget(_nowrap_label(f"{latest.created_at.strftime('%m-%d %H:%M')}  日报 · {latest.role}", "eyebrow"))
+        header.addWidget(self._name_with_chat(latest.member_name, self.db.dingtalk_id_for_name(latest.member_name)))
+        header.addStretch()
+        layout.addLayout(header)
+
+        detail_widgets: list[QWidget] = []
+
+        def visual_line_count(value: str, visual_chars_per_line: int = 46) -> int:
+            normalized_value = " ".join(value.strip().split())
+            if not normalized_value:
+                return 1
+            explicit = len([line for line in value.splitlines() if line.strip()])
+            width = sum(1 if ord(char) < 128 else 2 for char in normalized_value)
+            return max(explicit, max(1, (width + visual_chars_per_line - 1) // visual_chars_per_line))
+
+        row_texts: dict[int, str] = {}
+
+        def refresh_height() -> None:
+            row_height = sum(22 + visual_line_count(row_texts.get(report.id, "")) * 22 for report in reports)
+            height = 52 + row_height + sum(72 for detail in detail_widgets if detail.isVisible())
+            item.setSizeHint(QSize(0, height))
+            list_widget.doItemsLayout()
+
+        for report in reports:
+            row_box = QVBoxLayout()
+            row_box.setContentsMargins(0, 0, 0, 0)
+            row_box.setSpacing(4)
+
+            content = report.content.strip() or "空日报"
+            row_text = f"{report.created_at.strftime('%H:%M')}  {content}"
+            row_texts[report.id] = row_text
+            row_widget = QWidget()
+            row_widget.setCursor(Qt.CursorShape.PointingHandCursor)
+            row_widget.setStyleSheet("padding: 4px 0;")
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(0)
+            row_label = _label(row_text)
+            row_label.setWordWrap(True)
+            row_layout.addWidget(row_label, 1)
+            row_box.addWidget(row_widget)
+
+            detail = QWidget()
+            detail.setVisible(False)
+            detail_layout = QHBoxLayout(detail)
+            detail_layout.setContentsMargins(10, 0, 0, 4)
+            detail_layout.setSpacing(8)
+            linked_todo = self.db.get_project_todo(report.todo_id) if report.todo_id is not None else None
+            linked_text = self._daily_report_todo_text(report)
+            detail_label = _label(f"关联代办：{linked_text}" if linked_text else "未关联代办", "muted")
+            detail_label.setWordWrap(True)
+            detail_layout.addWidget(detail_label, 1)
+            if linked_todo is not None:
+                todo_button = QPushButton("查看代办")
+                todo_button.setObjectName("smallButton")
+                todo_button.clicked.connect(lambda checked=False, selected=linked_todo: self._open_todo_detail(selected))
+                detail_layout.addWidget(todo_button)
+            if self.db.is_current_user_name(report.member_name):
+                delete_button = QPushButton("删除")
+                delete_button.setObjectName("smallButton")
+                delete_button.clicked.connect(lambda checked=False, selected=report: self._delete_daily_report(selected))
+                detail_layout.addWidget(delete_button)
+            row_box.addWidget(detail)
+            detail_widgets.append(detail)
+            row_widget.mousePressEvent = lambda event, selected=detail: (selected.setVisible(not selected.isVisible()), refresh_height())  # type: ignore[method-assign]
+            layout.addLayout(row_box)
+
+        refresh_height()
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
 

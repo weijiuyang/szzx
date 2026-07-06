@@ -71,6 +71,13 @@ class ProjectTodo:
     completed_at: datetime | None
     due_at: datetime | None
     started_at: datetime | None
+    workflow: str = ""
+    designer: str = ""
+    developer: str = ""
+    tester: str = ""
+    acceptor: str = ""
+    current_handler: str = ""
+    flow_history: str = ""
 
 
 ProjectDeck = ProjectDocument
