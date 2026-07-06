@@ -134,6 +134,7 @@ class Database:
         self._remove_legacy_demo_project()
         self._migrate_project_decks()
         self._migrate_project_ids_to_timestamps()
+        self._migrate_shared_ids_to_timestamps()
         self._migrate_weekly_report_owners()
         self._migrate_weekly_ids_to_timestamps()
         self._migrate_project_todo_scopes()
@@ -166,11 +167,8 @@ class Database:
         sync["origin"] = ""
         sync["actor"] = ""
 
-    def _next_id(self, table: str) -> int:
-        counters = self.data.setdefault("counters", {})
-        current = int(counters.get(table, 0)) + 1
-        counters[table] = current
-        return current
+    def _next_id(self, table: str, created_at: datetime | None = None) -> int:
+        return self._next_timestamp_id(table, created_at or datetime.now())
 
     def _next_project_id(self, created_at: datetime) -> int:
         base = int(created_at.strftime("%Y%m%d%H%M%S")) * 1000 + created_at.microsecond // 1000
@@ -205,6 +203,9 @@ class Database:
             return int(value) >= PROJECT_ID_TIMESTAMP_FLOOR
         except (TypeError, ValueError):
             return False
+
+    def _is_timestamp_id(self, value: Any) -> bool:
+        return self._is_timestamp_project_id(value)
 
     def _with_operator(self, row: dict[str, Any]) -> dict[str, Any]:
         row["operator"] = self.display_name()
@@ -462,9 +463,13 @@ class Database:
             deck_id = int(deck["id"])
             if deck_id in existing_deck_ids:
                 continue
+            try:
+                created_at = _parse_time(str(deck["created_at"]))
+            except ValueError:
+                created_at = datetime.now()
             documents.append(
                 {
-                    "id": self._next_id("project_documents"),
+                    "id": self._next_id("project_documents", created_at),
                     "legacy_deck_id": deck_id,
                     "project_id": int(deck["project_id"]),
                     "title": str(deck["title"]),
@@ -472,7 +477,7 @@ class Database:
                     "visibility": "team",
                     "uploader": self.display_name(),
                     "file_path": str(deck["file_path"]),
-                    "created_at": str(deck["created_at"]),
+                    "created_at": created_at.isoformat(timespec="seconds"),
                 }
             )
 
@@ -561,6 +566,73 @@ class Database:
                 row.setdefault("legacy_id", old_id)
         self._sync_counters_to_rows()
 
+    def _migrate_shared_ids_to_timestamps(self) -> None:
+        id_maps: dict[str, dict[int, int]] = {}
+        todo_id_map_by_project: dict[tuple[int, int], int] = {}
+        for table in (
+            "project_members",
+            "daily_reports",
+            "project_todos",
+            "project_decks",
+            "project_documents",
+            "rest_days",
+            "activity_events",
+        ):
+            rows = self.data.get(table, [])
+            if not isinstance(rows, list):
+                continue
+            id_map: dict[int, int] = {}
+            used_ids: set[int] = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    old_id = int(row.get("id", 0) or 0)
+                except (TypeError, ValueError):
+                    old_id = 0
+                if old_id and self._is_timestamp_id(old_id) and old_id not in used_ids:
+                    used_ids.add(old_id)
+                    continue
+                try:
+                    created_at = _parse_time(str(row.get("created_at", "")))
+                except ValueError:
+                    created_at = datetime.now()
+                new_id = int(created_at.strftime("%Y%m%d%H%M%S")) * 1000 + created_at.microsecond // 1000
+                while new_id in used_ids:
+                    new_id += 1
+                if old_id:
+                    row.setdefault("legacy_id", old_id)
+                    id_map[old_id] = new_id
+                    if table == "project_todos":
+                        try:
+                            project_id = int(row.get("project_id", 0) or 0)
+                        except (TypeError, ValueError):
+                            project_id = 0
+                        todo_id_map_by_project[(project_id, old_id)] = new_id
+                row["id"] = new_id
+                used_ids.add(new_id)
+            if id_map:
+                id_maps[table] = id_map
+
+        todo_id_map = id_maps.get("project_todos", {})
+        if todo_id_map:
+            for row in self.data.get("daily_reports", []):
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    old_todo_id = int(row.get("todo_id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    project_id = int(row.get("project_id", 0) or 0)
+                except (TypeError, ValueError):
+                    project_id = 0
+                if (project_id, old_todo_id) in todo_id_map_by_project:
+                    row["todo_id"] = todo_id_map_by_project[(project_id, old_todo_id)]
+                elif old_todo_id in todo_id_map:
+                    row["todo_id"] = todo_id_map[old_todo_id]
+        self._sync_counters_to_rows()
+
     def _migrate_project_todo_scopes(self) -> None:
         rows = self.data.get("project_todos")
         if not isinstance(rows, list):
@@ -570,6 +642,7 @@ class Database:
                 continue
             if str(row.get("scope", "")).strip() not in {"personal", "project", "assigned"}:
                 row["scope"] = "personal"
+
 
     def add_project(self, name: str, owner: str, description: str, status: str = "推进中") -> Project:
         created_at = datetime.now()
@@ -781,7 +854,7 @@ class Database:
     def add_project_member(self, project_id: int, name: str, role: str, dingtalk_id: str = "") -> ProjectMember:
         created_at = datetime.now()
         row = self._with_operator({
-            "id": self._next_id("project_members"),
+            "id": self._next_id("project_members", created_at),
             "project_id": project_id,
             "name": name.strip(),
             "role": role.strip(),
@@ -859,7 +932,7 @@ class Database:
     ) -> DailyReport:
         created_at = datetime.now()
         row = self._with_operator({
-            "id": self._next_id("daily_reports"),
+            "id": self._next_id("daily_reports", created_at),
             "project_id": project_id,
             "member_name": member_name.strip(),
             "role": role.strip(),
@@ -1645,7 +1718,7 @@ class Database:
                 "handler": initial_handler,
             })
         row = self._with_operator({
-            "id": self._next_id("project_todos"),
+            "id": self._next_id("project_todos", created_at),
             "project_id": project_id,
             "title": title.strip(),
             "creator": creator.strip(),
@@ -1919,7 +1992,7 @@ class Database:
     def _todo_titles_overlap(self, left: Any, right: Any) -> bool:
         left_title = self._normalized_todo_title(left)
         right_title = self._normalized_todo_title(right)
-        if len(left_title) < 8 or len(right_title) < 8:
+        if len(left_title) < 5 or len(right_title) < 5:
             return False
         return left_title in right_title or right_title in left_title
 
@@ -2054,7 +2127,7 @@ class Database:
     ) -> ProjectDocument:
         created_at = datetime.now()
         row = self._with_operator({
-            "id": self._next_id("project_documents"),
+            "id": self._next_id("project_documents", created_at),
             "project_id": project_id,
             "title": title.strip(),
             "doc_type": doc_type.strip(),
@@ -2422,7 +2495,11 @@ class Database:
                 continue
             self._remember_row_source(next_row, row)
             if existing is not None:
-                next_row["id"] = self._next_id(table)
+                try:
+                    next_created_at = _parse_time(str(next_row.get("created_at", "")))
+                except ValueError:
+                    next_created_at = datetime.now()
+                next_row["id"] = self._next_id(table, next_created_at)
             local_value.append(next_row)
             changed = True
         return changed
@@ -2903,11 +2980,12 @@ class Database:
                 self._save()
                 return self._rest_day_from_row(row)
 
+        created_at = datetime.now()
         row = self._with_operator({
-            "id": self._next_id("rest_days"),
+            "id": self._next_id("rest_days", created_at),
             "day": day_text,
             "note": note.strip(),
-            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "created_at": created_at.isoformat(timespec="seconds"),
         })
         self.data["rest_days"].append(row)
         self._save()

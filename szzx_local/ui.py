@@ -3319,6 +3319,16 @@ class MainWindow(QMainWindow):
         self._complete_todo_for_project(project, todo)
 
     def _complete_todo_for_project(self, project: Project, todo: ProjectTodo) -> None:
+        latest_todo = self.db.get_project_todo(todo.id)
+        if latest_todo is None:
+            self._refresh_project_workspace()
+            self._refresh_my_panel()
+            return
+        if latest_todo.status == "done":
+            self._refresh_project_workspace()
+            self._refresh_my_panel()
+            return
+        todo = latest_todo
         members = self.db.list_project_members(project.id)
         current_member = self._current_project_member(project, members)
         is_manager = self._can_manage_project(project, current_member)
