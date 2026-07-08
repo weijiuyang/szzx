@@ -1033,6 +1033,12 @@ class Database:
         )
 
     def add_project_member(self, project_id: int, name: str, role: str, dingtalk_id: str = "") -> ProjectMember:
+        existing = self._find_project_member_row(project_id, name, role)
+        if existing is not None:
+            if dingtalk_id.strip() and not str(existing.get("dingtalk_id", "")).strip():
+                existing["dingtalk_id"] = dingtalk_id.strip()
+                self._save()
+            return self._member_from_row(existing)
         created_at = datetime.now()
         row = self._with_operator({
             "id": self._next_id("project_members", created_at),
@@ -1049,7 +1055,39 @@ class Database:
     def list_project_members(self, project_id: int) -> list[ProjectMember]:
         rows = [row for row in self.data["project_members"] if int(row["project_id"]) == project_id]
         rows.sort(key=lambda row: int(row["id"]))
-        return [self._member_from_row(row) for row in rows]
+        unique_rows: list[dict[str, Any]] = []
+        seen: set[tuple[int, str, str]] = set()
+        for row in rows:
+            key = self._project_member_natural_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_rows.append(row)
+        return [self._member_from_row(row) for row in unique_rows]
+
+    def _find_project_member_row(self, project_id: int, name: str, role: str) -> dict[str, Any] | None:
+        target = (
+            int(project_id),
+            self._normalize_display_name(name),
+            self._normalize_display_name(role),
+        )
+        for row in self.data.get("project_members", []):
+            if not isinstance(row, dict):
+                continue
+            if self._project_member_natural_key(row) == target:
+                return row
+        return None
+
+    def _project_member_natural_key(self, row: dict[str, Any]) -> tuple[int, str, str]:
+        try:
+            project_id = int(row.get("project_id", 0) or 0)
+        except (TypeError, ValueError):
+            project_id = 0
+        return (
+            project_id,
+            self._normalize_display_name(str(row.get("name", ""))),
+            self._normalize_display_name(str(row.get("role", ""))),
+        )
 
     def delete_project_member(self, member_id: int) -> bool:
         rows = self.data["project_members"]
@@ -2769,6 +2807,21 @@ class Database:
                 local_value.append(next_row)
                 changed = True
                 continue
+            if table == "project_members":
+                existing = self._find_project_member_row(
+                    int(next_row.get("project_id", 0) or 0),
+                    str(next_row.get("name", "")),
+                    str(next_row.get("role", "")),
+                )
+                if existing is not None:
+                    self._remember_row_source(existing, row)
+                    if (
+                        str(next_row.get("dingtalk_id", "")).strip()
+                        and not str(existing.get("dingtalk_id", "")).strip()
+                    ):
+                        existing["dingtalk_id"] = str(next_row.get("dingtalk_id", "")).strip()
+                        changed = True
+                    continue
             try:
                 row_id = int(next_row.get("id", 0) or 0)
             except (TypeError, ValueError):
