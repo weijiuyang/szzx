@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import ipaddress
 import json
 import shutil
 import subprocess
@@ -1741,6 +1742,7 @@ class MainWindow(QMainWindow):
         self.todo_view_mode = "personal"
         self.current_lan_peers: list[LanPeer] = []
         self._lan_logs_signature: tuple[object, ...] | None = None
+        self.lan_direct_peers = self._load_lan_direct_peers()
         self.calendar_mode = "rest"
         self.rest_calendar_month = date.today().replace(day=1)
         self.selected_rest_day: date | None = None
@@ -1777,6 +1779,7 @@ class MainWindow(QMainWindow):
         self._refresh_badge_wall()
 
         if self.discovery is not None:
+            self.discovery.set_direct_peer_addresses(self.lan_direct_peers)
             self.discovery.peers_changed.connect(self._refresh_peers)
             self.discovery.data_synced.connect(self._refresh_after_lan_sync)
             self.discovery.start()
@@ -5490,6 +5493,22 @@ class MainWindow(QMainWindow):
         panel_layout.setSpacing(14)
         self.lan_panel_title = _label("在线同事", "eyebrow")
         panel_layout.addWidget(self.lan_panel_title)
+        direct_peer_row = QHBoxLayout()
+        direct_peer_row.setSpacing(8)
+        self.lan_direct_peer_input = QLineEdit()
+        self.lan_direct_peer_input.setPlaceholderText("跨网段同事 IP，例如 192.168.11.71")
+        self.lan_direct_peer_input.returnPressed.connect(self._add_lan_direct_peer)
+        add_direct_peer = QPushButton("添加直连")
+        add_direct_peer.clicked.connect(self._add_lan_direct_peer)
+        clear_direct_peer = QPushButton("清空")
+        clear_direct_peer.clicked.connect(self._clear_lan_direct_peers)
+        direct_peer_row.addWidget(self.lan_direct_peer_input, 1)
+        direct_peer_row.addWidget(add_direct_peer)
+        direct_peer_row.addWidget(clear_direct_peer)
+        panel_layout.addLayout(direct_peer_row)
+        self.lan_direct_peer_hint = _label("", "muted")
+        panel_layout.addWidget(self.lan_direct_peer_hint)
+        self._refresh_lan_direct_peer_hint()
         self.peer_list = QListWidget()
         self.peer_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.peer_list.itemClicked.connect(self._open_lan_log_item)
@@ -5894,6 +5913,58 @@ class MainWindow(QMainWindow):
         if self.discovery is not None:
             self.discovery.announce_burst()
 
+    def _load_lan_direct_peers(self) -> list[str]:
+        raw = self.db.get_setting("lan_direct_peers") or "[]"
+        try:
+            values = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(values, list):
+            return []
+        addresses: list[str] = []
+        for value in values:
+            address = str(value).strip()
+            try:
+                ipaddress.ip_address(address)
+            except ValueError:
+                continue
+            if address not in addresses:
+                addresses.append(address)
+        return addresses
+
+    def _save_lan_direct_peers(self) -> None:
+        self.db.set_setting("lan_direct_peers", json.dumps(self.lan_direct_peers), save=True)
+        if self.discovery is not None:
+            self.discovery.set_direct_peer_addresses(self.lan_direct_peers)
+        self._refresh_lan_direct_peer_hint()
+
+    def _refresh_lan_direct_peer_hint(self) -> None:
+        if not hasattr(self, "lan_direct_peer_hint"):
+            return
+        if self.lan_direct_peers:
+            self.lan_direct_peer_hint.setText(f"直连 IP：{', '.join(self.lan_direct_peers)}")
+        else:
+            self.lan_direct_peer_hint.setText("跨网段时，可添加一位同事的 IP 来辅助发现。")
+
+    def _add_lan_direct_peer(self) -> None:
+        address = self.lan_direct_peer_input.text().strip()
+        try:
+            ipaddress.ip_address(address)
+        except ValueError:
+            QMessageBox.information(self, "IP 无效", "请输入完整的 IPv4 或 IPv6 地址。")
+            return
+        if address not in self.lan_direct_peers:
+            self.lan_direct_peers.append(address)
+            self._save_lan_direct_peers()
+        self.lan_direct_peer_input.clear()
+        self._manual_lan_refresh()
+
+    def _clear_lan_direct_peers(self) -> None:
+        if not self.lan_direct_peers:
+            return
+        self.lan_direct_peers = []
+        self._save_lan_direct_peers()
+
     def _manual_lan_refresh(self) -> None:
         if self.discovery is None:
             self.lan_subtitle.setText("局域网发现没有启动。")
@@ -6155,9 +6226,10 @@ class MainWindow(QMainWindow):
         body.addWidget(_label(self._peer_list_text(peer, seen), "muted"))
         layout.addLayout(body, 1)
 
-        if self._peer_has_lan_update(peer):
-            download = QPushButton("下载更新")
-            download.setObjectName("primaryButton")
+        if self._peer_has_downloadable_package(peer):
+            is_update = version_tuple(peer.app_version) > version_tuple(APP_VERSION)
+            download = QPushButton("下载更新" if is_update else "下载安装包")
+            download.setObjectName("primaryButton" if is_update else "smallButton")
             download.clicked.connect(lambda checked=False, selected=peer: self._download_lan_update(selected))
             layout.addWidget(download)
         elif peer.platform == sys.platform and peer.app_version and version_tuple(peer.app_version) > version_tuple(APP_VERSION):
@@ -6171,10 +6243,15 @@ class MainWindow(QMainWindow):
 
     def _peer_has_lan_update(self, peer: LanPeer) -> bool:
         return (
+            self._peer_has_downloadable_package(peer)
+            and version_tuple(peer.app_version) > version_tuple(APP_VERSION)
+        )
+
+    def _peer_has_downloadable_package(self, peer: LanPeer) -> bool:
+        return (
             peer.platform == sys.platform
             and bool(peer.update_package)
             and bool(peer.app_version)
-            and version_tuple(peer.app_version) > version_tuple(APP_VERSION)
         )
 
     def _download_lan_update(self, peer: LanPeer) -> None:
@@ -6228,6 +6305,8 @@ class MainWindow(QMainWindow):
                 status = " · 可局域网更新" if peer.update_package else " · 高版本但未共享安装包"
             elif version_tuple(peer.app_version) < version_tuple(APP_VERSION):
                 status = " · 对方版本较低"
+            elif peer.update_package:
+                status = " · 可下载同版本安装包"
         elif peer.platform and peer.platform != sys.platform:
             status = " · 不同系统"
         package = peer.update_package

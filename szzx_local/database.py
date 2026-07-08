@@ -14,6 +14,10 @@ from typing import Any
 
 from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, ProjectWeeklyReport, RestDay, WeeklyReport
 from .pin import DEFAULT_PIN, hash_pin, verify_pin
+from .version import APP_VERSION
+
+
+BUNDLED_SEED_ENV = "SZZX_BUNDLED_SEED_PATH"
 
 
 def _default_app_dir() -> Path:
@@ -21,15 +25,77 @@ def _default_app_dir() -> Path:
     if override:
         return Path(override)
 
+    platform_dir = _platform_app_dir()
     if getattr(sys, "frozen", False):
-        if sys.platform == "win32":
-            base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-            return Path(base) / "SZZXLocalDesk"
-        if sys.platform == "darwin":
-            return Path.home() / "Library" / "Application Support" / "SZZXLocalDesk"
-        return Path.home() / ".local" / "share" / "SZZXLocalDesk"
+        return platform_dir
 
-    return Path.cwd() / "local_data"
+    if os.environ.get("SZZX_USE_PROJECT_LOCAL_DATA") == "1":
+        return Path.cwd() / "local_data"
+
+    _seed_app_data_from_development(Path.cwd() / "local_data" / "szzx.json", platform_dir / "szzx.json")
+    return platform_dir
+
+
+def _platform_app_dir() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "SZZXLocalDesk"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "SZZXLocalDesk"
+    return Path.home() / ".local" / "share" / "SZZXLocalDesk"
+
+
+def _bundled_seed_path() -> Path | None:
+    override = os.environ.get(BUNDLED_SEED_ENV, "").strip()
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    frozen_base = getattr(sys, "_MEIPASS", "")
+    if frozen_base:
+        candidates.append(Path(str(frozen_base)) / "szzx_local" / "seed" / "szzx_seed.json")
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _seed_app_data_from_development(dev_db: Path, app_db: Path) -> None:
+    if not dev_db.is_file():
+        return
+    should_copy = not app_db.exists()
+    if app_db.exists():
+        dev_score = _database_completeness_score(dev_db)
+        app_score = _database_completeness_score(app_db)
+        should_copy = dev_score > app_score
+    if not should_copy:
+        return
+    app_db.parent.mkdir(parents=True, exist_ok=True)
+    if app_db.exists():
+        backup = app_db.with_name(f"szzx.backup.{datetime.now().strftime('%Y%m%d%H%M%S')}.json")
+        try:
+            backup.write_bytes(app_db.read_bytes())
+        except OSError:
+            return
+    try:
+        app_db.write_bytes(dev_db.read_bytes())
+    except OSError:
+        return
+
+
+def _database_completeness_score(path: Path) -> tuple[int, int, int, int, int]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return (0, 0, 0, 0, 0)
+    if not isinstance(data, dict):
+        return (0, 0, 0, 0, 0)
+    sync = data.get("sync") if isinstance(data.get("sync"), dict) else {}
+    revision = int(sync.get("revision", 0) or 0) if isinstance(sync, dict) else 0
+    projects = len(data.get("projects", [])) if isinstance(data.get("projects"), list) else 0
+    members = len(data.get("project_members", [])) if isinstance(data.get("project_members"), list) else 0
+    todos = len(data.get("project_todos", [])) if isinstance(data.get("project_todos"), list) else 0
+    reports = len(data.get("daily_reports", [])) if isinstance(data.get("daily_reports"), list) else 0
+    return (projects, members + todos + reports, revision, int(path.stat().st_mtime), path.stat().st_size)
 
 
 APP_DIR = _default_app_dir()
@@ -142,6 +208,79 @@ class Database:
         self._claim_display_name(self.display_name(), save=False)
         self._ensure_sync_state()
         self._save(bump_sync=False)
+        self._apply_bundled_seed_snapshot()
+
+    def _apply_bundled_seed_snapshot(self) -> None:
+        snapshot = self._load_bundled_seed_snapshot()
+        if snapshot is None:
+            return
+        seed_id = self._seed_snapshot_id(snapshot)
+        if seed_id and self.get_setting("bundled_seed_applied") == seed_id:
+            return
+        changed = self.merge_missing_shared_snapshot(snapshot, honor_deletions=False)
+        if seed_id:
+            self.set_setting("bundled_seed_applied", seed_id, save=False)
+            self._save(bump_sync=False)
+        elif changed:
+            self._save(bump_sync=False)
+
+    def _load_bundled_seed_snapshot(self) -> dict[str, Any] | None:
+        path = _bundled_seed_path()
+        if path is None:
+            return None
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        tables = loaded.get("tables")
+        if not isinstance(tables, dict):
+            return None
+        normalized_tables: dict[str, Any] = {}
+        has_shared_rows = False
+        for table in SHARED_TABLES:
+            source_value = tables.get(table)
+            empty_value = self._empty_data()[table]
+            if isinstance(empty_value, dict):
+                normalized_tables[table] = dict(source_value) if isinstance(source_value, dict) else {}
+            else:
+                normalized_tables[table] = list(source_value) if isinstance(source_value, list) else []
+                if table in {"projects", "project_members", "project_todos"} and normalized_tables[table]:
+                    has_shared_rows = True
+        if not has_shared_rows:
+            return None
+        sync = loaded.get("sync") if isinstance(loaded.get("sync"), dict) else {}
+        owner = loaded.get("owner") if isinstance(loaded.get("owner"), dict) else {}
+        return {
+            "sync": sync,
+            "owner": owner,
+            "tables": normalized_tables,
+        }
+
+    def _seed_snapshot_id(self, snapshot: dict[str, Any]) -> str:
+        tables = snapshot.get("tables") if isinstance(snapshot.get("tables"), dict) else {}
+        counts: dict[str, int] = {}
+        project_keys: list[str] = []
+        for table in SHARED_TABLES:
+            value = tables.get(table) if isinstance(tables, dict) else None
+            if isinstance(value, list):
+                counts[table] = len(value)
+                if table == "projects":
+                    project_keys = sorted(
+                        self._project_fingerprint_key(row)
+                        for row in value
+                        if isinstance(row, dict) and self._project_fingerprint_key(row)
+                    )
+            elif isinstance(value, dict):
+                counts[table] = len(value)
+        payload = {
+            "app_version": APP_VERSION,
+            "sync": snapshot.get("sync") if isinstance(snapshot.get("sync"), dict) else {},
+            "counts": counts,
+            "projects": project_keys,
+        }
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
     def _save(self, bump_sync: bool = True) -> None:
         if bump_sync:
@@ -663,6 +802,7 @@ class Database:
             "project_link": project_link.strip(),
             "backup_project_link": backup_project_link.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
+            "updated_at": created_at.isoformat(timespec="seconds"),
         })
         self.data["projects"].append(row)
         self._save()
@@ -847,6 +987,7 @@ class Database:
             if int(row["id"]) != project_id:
                 continue
             row["description"] = description.strip()
+            row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
             self._save()
             return self._project_from_row(row)
         return None
@@ -864,6 +1005,7 @@ class Database:
             row["description"] = description.strip()
             row["project_link"] = project_link.strip()
             row["backup_project_link"] = backup_project_link.strip()
+            row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
             self._save()
             return self._project_from_row(row)
         return None
@@ -873,6 +1015,7 @@ class Database:
             if int(row["id"]) != project_id:
                 continue
             row["owner"] = owner.strip()
+            row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
             self._save()
             return self._project_from_row(row)
         return None
@@ -2281,6 +2424,42 @@ class Database:
             "actor": str(sync.get("actor", "")),
         }
 
+    def shared_record_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for table in SHARED_TABLES:
+            value = self.data.get(table)
+            if isinstance(value, list):
+                counts[table] = len(value)
+        return counts
+
+    def shared_project_fingerprints(self) -> dict[str, dict[str, str]]:
+        fingerprints: dict[str, dict[str, str]] = {}
+        projects = self.data.get("projects")
+        if not isinstance(projects, list):
+            return fingerprints
+        for row in projects:
+            if not isinstance(row, dict):
+                continue
+            key = self._project_fingerprint_key(row)
+            if not key:
+                continue
+            fingerprints[key] = {
+                "name": str(row.get("name", "")),
+                "owner": str(row.get("owner", "")),
+                "status": str(row.get("status", "")),
+                "description": str(row.get("description", "")),
+                "project_link": str(row.get("project_link", "")),
+                "backup_project_link": str(row.get("backup_project_link", "")),
+                "updated_at": str(row.get("updated_at", "")),
+            }
+        return fingerprints
+
+    def _project_fingerprint_key(self, row: dict[str, Any]) -> str:
+        source = self._row_source_key(row)
+        if source is not None:
+            return f"{source[0]}:{source[1]}"
+        return str(row.get("id", "")).strip()
+
     def _document_file_payloads(self, documents: Any) -> dict[str, dict[str, str]]:
         if not isinstance(documents, list):
             return {}
@@ -2351,7 +2530,11 @@ class Database:
             changed = True
         if self._apply_deleted_records():
             changed = True
-        project_id_map, projects_changed = self._merge_remote_projects(tables.get("projects"))
+        project_id_map, projects_changed = self._merge_remote_projects(
+            tables.get("projects"),
+            update_existing=True,
+            allow_untimestamped_updates=True,
+        )
         changed = changed or projects_changed
         for table in SHARED_TABLES:
             if table in {"projects", "deleted_projects", "deleted_records", "counters"}:
@@ -2377,7 +2560,7 @@ class Database:
         self._save(bump_sync=local_has_missing_rows)
         return True
 
-    def merge_missing_shared_snapshot(self, snapshot: dict[str, Any]) -> bool:
+    def merge_missing_shared_snapshot(self, snapshot: dict[str, Any], honor_deletions: bool = True) -> bool:
         tables = snapshot.get("tables")
         if not isinstance(tables, dict):
             return False
@@ -2395,12 +2578,21 @@ class Database:
             changed = True
         if self._apply_deleted_records():
             changed = True
-        project_id_map, projects_changed = self._merge_remote_projects(tables.get("projects"))
+        project_id_map, projects_changed = self._merge_remote_projects(
+            tables.get("projects"),
+            update_existing=True,
+            honor_deleted_projects=honor_deletions,
+        )
         changed = changed or projects_changed
         for table in SHARED_TABLES:
             if table in {"projects", "deleted_projects", "deleted_records", "counters"}:
                 continue
-            if self._merge_remote_table(table, tables.get(table), project_id_map):
+            if self._merge_remote_table(
+                table,
+                tables.get(table),
+                project_id_map,
+                honor_deleted_records=honor_deletions,
+            ):
                 changed = True
         if self._apply_deleted_projects():
             changed = True
@@ -2417,7 +2609,13 @@ class Database:
         self._save()
         return True
 
-    def _merge_remote_projects(self, remote_value: Any) -> tuple[dict[int, int], bool]:
+    def _merge_remote_projects(
+        self,
+        remote_value: Any,
+        update_existing: bool = False,
+        allow_untimestamped_updates: bool = False,
+        honor_deleted_projects: bool = True,
+    ) -> tuple[dict[int, int], bool]:
         project_id_map: dict[int, int] = {}
         changed = False
         local_projects = self.data.get("projects")
@@ -2425,7 +2623,7 @@ class Database:
             return project_id_map, changed
         existing_sources = self._source_index("projects")
         existing_ids = self._id_index("projects")
-        deleted_sources = self._deleted_project_keys()
+        deleted_sources = self._deleted_project_keys() if honor_deleted_projects else set()
         for row in remote_value:
             if not isinstance(row, dict):
                 continue
@@ -2437,12 +2635,18 @@ class Database:
             if source and source in deleted_sources:
                 continue
             if source and source in existing_sources:
-                project_id_map[remote_id] = int(existing_sources[source].get("id", remote_id))
+                existing = existing_sources[source]
+                project_id_map[remote_id] = int(existing.get("id", remote_id))
+                if update_existing and self._merge_existing_project(existing, row, allow_untimestamped_updates):
+                    changed = True
                 continue
             existing = existing_ids.get(remote_id)
-            if existing is not None and self._rows_match(existing, row):
-                self._remember_row_source(existing, row)
+            if existing is not None:
                 project_id_map[remote_id] = remote_id
+                if update_existing and self._merge_existing_project(existing, row, allow_untimestamped_updates):
+                    changed = True
+                elif self._rows_match(existing, row):
+                    self._remember_row_source(existing, row)
                 continue
             next_row = dict(row)
             self._remember_row_source(next_row, row)
@@ -2457,7 +2661,49 @@ class Database:
             changed = True
         return project_id_map, changed
 
-    def _merge_remote_table(self, table: str, remote_value: Any, project_id_map: dict[int, int]) -> bool:
+    def _merge_existing_project(
+        self,
+        existing: dict[str, Any],
+        remote: dict[str, Any],
+        allow_untimestamped_updates: bool = False,
+    ) -> bool:
+        if not self._remote_project_is_newer(existing, remote, allow_untimestamped_updates):
+            return False
+        changed = False
+        for key in ("name", "owner", "description", "status", "project_link", "backup_project_link", "updated_at"):
+            if key not in remote:
+                continue
+            value = remote.get(key)
+            if existing.get(key) == value:
+                continue
+            existing[key] = value
+            changed = True
+        self._remember_row_source(existing, remote)
+        return changed
+
+    def _remote_project_is_newer(
+        self,
+        existing: dict[str, Any],
+        remote: dict[str, Any],
+        allow_untimestamped_updates: bool = False,
+    ) -> bool:
+        remote_updated = str(remote.get("updated_at") or remote.get("created_at") or "").strip()
+        existing_updated = str(existing.get("updated_at") or existing.get("created_at") or "").strip()
+        if remote_updated and existing_updated:
+            return remote_updated > existing_updated
+        if remote_updated and not existing_updated:
+            return True
+        if allow_untimestamped_updates and not remote_updated and not existing_updated:
+            return True
+        return False
+
+    def _merge_remote_table(
+        self,
+        table: str,
+        remote_value: Any,
+        project_id_map: dict[int, int],
+        honor_deleted_records: bool = True,
+    ) -> bool:
         local_value = self.data.get(table)
         if isinstance(self._empty_data()[table], dict):
             if not isinstance(remote_value, dict) or not isinstance(local_value, dict):
@@ -2477,7 +2723,7 @@ class Database:
             return False
         existing_sources = self._source_index(table)
         existing_ids = self._id_index(table)
-        deleted_sources = self._deleted_record_keys_for_table(table)
+        deleted_sources = self._deleted_record_keys_for_table(table) if honor_deleted_records else set()
         changed = False
         for row in remote_value:
             if not isinstance(row, dict):

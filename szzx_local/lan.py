@@ -7,6 +7,7 @@ import struct
 import sys
 import threading
 import time
+import zipfile
 import zlib
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,7 @@ LAN_PORT = 45454
 SYNC_TCP_PORT = 45455
 APP_PROTOCOL = "szzx-local-desk"
 SNAPSHOT_MAGIC = b"SZZXSNAP1\n"
+PEER_MAGIC = b"SZZXPEER1\n"
 PACKAGE_MAGIC = b"SZZXPKG01\n"
 PACKAGE_ENV = "SZZX_UPDATE_PACKAGE"
 
@@ -39,6 +41,8 @@ class LanPeer:
     app_version: str
     platform: str
     update_package: dict[str, Any]
+    record_counts: dict[str, int]
+    project_fingerprints: dict[str, dict[str, str]]
     today_project_logs: list[dict[str, Any]]
 
 
@@ -47,6 +51,7 @@ class LanDiscovery(QObject):
     data_synced = Signal()
     _snapshot_fetched = Signal(object, object, bool)
     _snapshot_failed = Signal(object)
+    _direct_peer_seen = Signal(object)
 
     def __init__(self, device_id: str, display_name: str, port: int = LAN_PORT, db: Any | None = None) -> None:
         super().__init__()
@@ -60,6 +65,7 @@ class LanDiscovery(QObject):
         self.update_package_path = self._find_update_package()
         self._pulling_peer_ids: set[str] = set()
         self._last_pull_started: dict[str, float] = {}
+        self.direct_peer_addresses: list[str] = []
 
         self.listen_socket = QUdpSocket(self)
         self.send_socket = QUdpSocket(self)
@@ -84,6 +90,7 @@ class LanDiscovery(QObject):
         self.sweep_timer.timeout.connect(self._sweep)
         self._snapshot_fetched.connect(self._apply_fetched_snapshot)
         self._snapshot_failed.connect(self._finish_snapshot_pull)
+        self._direct_peer_seen.connect(self._apply_direct_peer_seen)
 
     def start(self) -> None:
         self._start_snapshot_server()
@@ -96,6 +103,15 @@ class LanDiscovery(QObject):
         self.display_name = name.strip() or self.display_name
         self.announce()
 
+    def set_direct_peer_addresses(self, addresses: list[str]) -> None:
+        self.direct_peer_addresses = []
+        for address in addresses:
+            address = address.strip()
+            if address and address not in self.direct_peer_addresses:
+                self.direct_peer_addresses.append(address)
+        self.announce_burst()
+        self._poll_direct_peers()
+
     def _presence_payload(self, kind: str = "presence", direct_reply: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "protocol": APP_PROTOCOL,
@@ -107,6 +123,8 @@ class LanDiscovery(QObject):
             "app_version": APP_VERSION,
             "platform": sys.platform,
             "update_package": self._update_package_info(),
+            "record_counts": self.db.shared_record_counts() if self.db is not None else {},
+            "project_fingerprints": self.db.shared_project_fingerprints() if self.db is not None else {},
             "today_project_logs": self._today_project_logs(),
         }
         if kind == "presence":
@@ -129,6 +147,7 @@ class LanDiscovery(QObject):
         if self.db is None:
             return
         self._send_broadcast_payload(self._presence_payload("db_state"))
+        self._poll_direct_peers()
         self._pull_newer_peer_snapshots()
 
     def _send_broadcast_payload(self, payload: dict[str, Any]) -> None:
@@ -138,10 +157,36 @@ class LanDiscovery(QObject):
     def _send_broadcast(self, data: bytes) -> None:
         for address in self._broadcast_targets():
             self.send_socket.writeDatagram(data, address, self.port)
+        for address in self.direct_peer_addresses:
+            self.send_socket.writeDatagram(data, QHostAddress(address), self.port)
 
     def _send_direct_presence_reply(self, address: QHostAddress) -> None:
         data = json.dumps(self._presence_payload("presence", direct_reply=True), ensure_ascii=False).encode("utf-8")
         self.send_socket.writeDatagram(data, address, self.port)
+
+    def _poll_direct_peers(self) -> None:
+        for address in self.direct_peer_addresses:
+            thread = threading.Thread(target=self._fetch_direct_peer_worker, args=(address,), daemon=True)
+            thread.start()
+
+    def _fetch_direct_peer_worker(self, address: str) -> None:
+        try:
+            peer = self._fetch_peer_info(address, self.sync_port)
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            return
+        self._direct_peer_seen.emit(peer)
+
+    def _fetch_peer_info(self, address: str, sync_port: int) -> LanPeer:
+        with socket.create_connection((address, sync_port), timeout=1.5) as client:
+            client.settimeout(3)
+            client.sendall(PEER_MAGIC)
+            size = struct.unpack("!I", self._recv_exact(client, 4))[0]
+            if size <= 0 or size > 64 * 1024:
+                raise ValueError("peer info size is invalid")
+            payload = json.loads(self._recv_exact(client, size).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("peer info is invalid")
+        return self._peer_from_payload(payload, address)
 
     def _broadcast_targets(self) -> list[QHostAddress]:
         targets: dict[str, QHostAddress] = {}
@@ -212,6 +257,11 @@ class LanDiscovery(QObject):
                 if request == PACKAGE_MAGIC:
                     self._send_update_package(client)
                     return
+                if request == PEER_MAGIC:
+                    data = json.dumps(self._presence_payload("presence"), ensure_ascii=False).encode("utf-8")
+                    client.sendall(struct.pack("!I", len(data)))
+                    client.sendall(data)
+                    return
                 if request != SNAPSHOT_MAGIC or self.db is None:
                     return
                 data = zlib.compress(
@@ -229,20 +279,26 @@ class LanDiscovery(QObject):
             candidates.append(Path(override))
 
         cwd = Path.cwd()
+        executable = Path(sys.executable)
         if sys.platform == "win32":
             candidates.extend([
                 cwd / "dist" / "SZZXLocalDesk.exe",
-                Path(sys.executable),
+                executable,
             ])
         elif sys.platform == "darwin":
+            app_bundle = executable.parents[2] if len(executable.parents) >= 3 else executable.parent
             candidates.extend([
                 cwd / "dist" / "SZZXLocalDesk-mac.dmg",
                 cwd / "dist" / "SZZXLocalDesk.app.zip",
+                app_bundle.parent / "SZZXLocalDesk-mac.dmg",
+                app_bundle.parent / "SZZXLocalDesk.app.zip",
+                Path.home() / "Downloads" / "SZZXLocalDesk-mac.dmg",
+                Path.home() / "Downloads" / "SZZXLocalDesk.app.zip",
             ])
         else:
             candidates.extend([
                 cwd / "dist" / "SZZXLocalDesk",
-                Path(sys.executable),
+                executable,
             ])
 
         for path in candidates:
@@ -251,6 +307,39 @@ class LanDiscovery(QObject):
                     return path
             except OSError:
                 continue
+        if sys.platform == "darwin":
+            return self._create_macos_app_zip(executable)
+        return None
+
+    def _create_macos_app_zip(self, executable: Path) -> Path | None:
+        if not getattr(sys, "frozen", False):
+            return None
+        app_bundle = self._macos_app_bundle(executable)
+        if app_bundle is None or not app_bundle.is_dir():
+            return None
+        target_dir = Path.home() / "Library" / "Application Support" / "SZZXLocalDesk" / "updates"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"SZZXLocalDesk-v{APP_VERSION}-mac.app.zip"
+        if target.is_file() and target.stat().st_size > 0:
+            return target
+        tmp_target = target.with_suffix(".tmp")
+        try:
+            if tmp_target.exists():
+                tmp_target.unlink()
+            with zipfile.ZipFile(tmp_target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for path in app_bundle.rglob("*"):
+                    if path.is_dir():
+                        continue
+                    archive.write(path, path.relative_to(app_bundle.parent))
+            tmp_target.replace(target)
+        except OSError:
+            return None
+        return target if target.is_file() and target.stat().st_size > 0 else None
+
+    def _macos_app_bundle(self, executable: Path) -> Path | None:
+        for parent in executable.parents:
+            if parent.suffix == ".app":
+                return parent
         return None
 
     def _update_package_info(self) -> dict[str, Any]:
@@ -330,10 +419,18 @@ class LanDiscovery(QObject):
         if kind not in {"presence", "db_state"}:
             return False
 
-        name = str(payload.get("name") or "未命名")
         address = datagram.senderAddress().toString()
         if datagram.senderAddress().protocol() == QAbstractSocket.NetworkLayerProtocol.IPv6Protocol:
             return False
+        peer = self._peer_from_payload(payload, address)
+        self.peers[device_id] = peer
+        if not bool(payload.get("direct_reply")):
+            self._send_direct_presence_reply(datagram.senderAddress())
+        if kind == "db_state":
+            self._pull_peer_snapshot_if_newer(peer)
+        return True
+
+    def _peer_from_payload(self, payload: dict[str, Any], address: str) -> LanPeer:
         sync = payload.get("sync")
         if not isinstance(sync, dict):
             sync = {}
@@ -341,10 +438,9 @@ class LanDiscovery(QObject):
             sync_port = int(payload.get("sync_port") or self.sync_port)
         except (TypeError, ValueError):
             sync_port = self.sync_port
-
-        peer = LanPeer(
-            device_id=device_id,
-            name=name,
+        return LanPeer(
+            device_id=str(payload.get("device_id") or ""),
+            name=str(payload.get("name") or "未命名"),
             address=address,
             last_seen=datetime.now(),
             sync_port=sync_port,
@@ -352,18 +448,25 @@ class LanDiscovery(QObject):
             app_version=str(payload.get("app_version") or ""),
             platform=str(payload.get("platform") or ""),
             update_package=payload.get("update_package") if isinstance(payload.get("update_package"), dict) else {},
+            record_counts=payload.get("record_counts") if isinstance(payload.get("record_counts"), dict) else {},
+            project_fingerprints=(
+                payload.get("project_fingerprints")
+                if isinstance(payload.get("project_fingerprints"), dict)
+                else {}
+            ),
             today_project_logs=(
                 payload.get("today_project_logs")
                 if isinstance(payload.get("today_project_logs"), list)
                 else []
             ),
         )
-        self.peers[device_id] = peer
-        if not bool(payload.get("direct_reply")):
-            self._send_direct_presence_reply(datagram.senderAddress())
-        if kind == "db_state":
-            self._pull_peer_snapshot_if_newer(peer)
-        return True
+
+    def _apply_direct_peer_seen(self, peer: object) -> None:
+        if not isinstance(peer, LanPeer) or not peer.device_id or peer.device_id == self.device_id:
+            return
+        self.peers[peer.device_id] = peer
+        self.peers_changed.emit(self.sorted_peers())
+        self._pull_peer_snapshot_if_newer(peer)
 
     def _pull_newer_peer_snapshots(self) -> None:
         for peer in list(self.peers.values()):
@@ -372,8 +475,6 @@ class LanDiscovery(QObject):
     def request_peer_snapshot_refresh(self) -> int:
         started_count = 0
         for peer in list(self.peers.values()):
-            if self.db is not None and peer.sync and not self.db.remote_sync_is_newer(peer.sync):
-                continue
             if self._start_snapshot_pull(peer, force=False, bypass_throttle=True):
                 started_count += 1
         return started_count
@@ -381,9 +482,46 @@ class LanDiscovery(QObject):
     def _pull_peer_snapshot_if_newer(self, peer: LanPeer) -> None:
         if self.db is None:
             return
-        if not peer.sync or not self.db.remote_sync_is_newer(peer.sync):
+        if (
+            (not peer.sync or not self.db.remote_sync_is_newer(peer.sync))
+            and not self._peer_may_have_missing_shared_rows(peer)
+            and not self._peer_may_have_project_updates(peer)
+        ):
             return
         self._start_snapshot_pull(peer, force=False)
+
+    def _peer_may_have_project_updates(self, peer: LanPeer) -> bool:
+        if self.db is None or not peer.project_fingerprints:
+            return False
+        local_fingerprints = self.db.shared_project_fingerprints()
+        for key, remote in peer.project_fingerprints.items():
+            if not isinstance(remote, dict):
+                continue
+            local = local_fingerprints.get(str(key))
+            if local is None:
+                return True
+            for field in ("name", "owner", "status", "description", "project_link", "backup_project_link"):
+                if str(remote.get(field, "")) != str(local.get(field, "")):
+                    return True
+        return False
+
+    def _peer_may_have_missing_shared_rows(self, peer: LanPeer) -> bool:
+        if self.db is None or not peer.record_counts:
+            return False
+        local_counts = self.db.shared_record_counts()
+        for table in (
+            "projects",
+            "project_members",
+            "daily_reports",
+            "project_weekly_reports",
+            "project_documents",
+            "project_todos",
+        ):
+            remote_count = int(peer.record_counts.get(table, 0) or 0)
+            local_count = int(local_counts.get(table, 0) or 0)
+            if remote_count > local_count:
+                return True
+        return False
 
     def _start_snapshot_pull(self, peer: LanPeer, force: bool = False, bypass_throttle: bool = False) -> bool:
         if peer.device_id in self._pulling_peer_ids:
@@ -414,10 +552,6 @@ class LanDiscovery(QObject):
             self._finish_snapshot_pull(peer.device_id)
         if self.db is None or not isinstance(snapshot, dict):
             return
-        if not force and isinstance(peer, LanPeer):
-            local_peer = self.peers.get(peer.device_id)
-            if local_peer is not None and not self.db.remote_sync_is_newer(local_peer.sync):
-                return
         changed = False
         if self.db.apply_shared_snapshot(snapshot, force=force):
             changed = True
