@@ -164,28 +164,26 @@ QPushButton#chatButton:hover {
     background: transparent;
 }
 QPushButton#projectPrimaryLinkButton, QPushButton#projectBackupLinkButton {
-    border-radius: 14px;
+    border: none;
+    border-radius: 11px;
     padding: 0;
-    min-width: 30px;
-    max-width: 30px;
-    min-height: 30px;
-    max-height: 30px;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+    background: transparent;
 }
 QPushButton#projectPrimaryLinkButton {
-    background: #263229;
-    border: 1px solid #263229;
+    background: transparent;
 }
 QPushButton#projectPrimaryLinkButton:hover {
-    background: #385340;
-    border-color: #385340;
+    background: #dceee4;
 }
 QPushButton#projectBackupLinkButton {
-    background: #f3f6f0;
-    border: 1px solid #aebfaf;
+    background: transparent;
 }
 QPushButton#projectBackupLinkButton:hover {
-    background: #e7efe4;
-    border-color: #7f9b82;
+    background: #edf4ed;
 }
 QPushButton#calendarDay {
     min-width: 76px;
@@ -440,6 +438,8 @@ PROJECT_DAILY_SECTION_HEIGHT = 560
 PROJECT_TASK_SIDE_HEIGHT = PROJECT_TASK_SECTION_HEIGHT + 18
 PROJECT_DAILY_SIDE_HEIGHT = PROJECT_DAILY_SECTION_HEIGHT + 18
 SUPER_ADMIN_NAMES = {"尉久洋"}
+ASSIGNED_TODO_MIN_VERSION = "0.1.61"
+ASSIGNED_TODO_WORKFLOW_MIN_VERSION = "0.1.114"
 
 
 def _asset_path(*parts: str) -> Path:
@@ -485,8 +485,8 @@ def _project_link_icon(kind: str) -> QIcon:
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    color = QColor("#f8fbf6" if kind == "primary" else "#42624d")
-    pen = QPen(color, 4)
+    color = QColor("#2f7557" if kind == "primary" else "#3d7a5b")
+    pen = QPen(color, 5)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     painter.setPen(pen)
@@ -1051,6 +1051,10 @@ class ProjectLogHistoryDialog(QDialog):
         name = _label(str(project.get("project_name", "未知项目")), "memberName")
         name.setMaximumHeight(42)
         top.addWidget(name, 1)
+        if str(project.get("project_link", "")).strip():
+            top.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignTop)
+        if str(project.get("backup_project_link", "")).strip():
+            top.addWidget(self._project_link_button(project, "backup"), 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(top)
 
         role = str(project.get("role", "")).strip() or "未配置角色"
@@ -1064,6 +1068,27 @@ class ProjectLogHistoryDialog(QDialog):
         item.setSizeHint(QSize(184, 124))
         self.project_list.addItem(item)
         self.project_list.setItemWidget(item, card)
+
+    def _project_link_button(self, project: dict[str, object], kind: str) -> QPushButton:
+        link_key = "backup_project_link" if kind == "backup" else "project_link"
+        link = str(project.get(link_key, "")).strip()
+        button = QPushButton()
+        button.setObjectName("projectBackupLinkButton" if kind == "backup" else "projectPrimaryLinkButton")
+        button.setIcon(_project_link_icon(kind))
+        button.setIconSize(QSize(16, 16))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip(link or ("打开备用项目" if kind == "backup" else "打开主要项目"))
+        button.clicked.connect(lambda checked=False, selected=link: self._open_project_link(selected))
+        return button
+
+    def _open_project_link(self, link: str) -> None:
+        if not link:
+            return
+        url = QUrl.fromUserInput(link)
+        if not url.isValid() or url.scheme().lower() not in {"http", "https"}:
+            QMessageBox.information(self, "项目连接无效", "这个项目还没有配置可打开的网页链接。")
+            return
+        QDesktopServices.openUrl(url)
 
     def _open_project_item(self, item: QListWidgetItem) -> None:
         project_id = item.data(Qt.ItemDataRole.UserRole)
@@ -2208,7 +2233,7 @@ class MainWindow(QMainWindow):
         self.project_primary_link_button = QPushButton()
         self.project_primary_link_button.setObjectName("projectPrimaryLinkButton")
         self.project_primary_link_button.setIcon(_project_link_icon("primary"))
-        self.project_primary_link_button.setIconSize(QSize(19, 19))
+        self.project_primary_link_button.setIconSize(QSize(16, 16))
         self.project_primary_link_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.project_primary_link_button.setToolTip("打开主要项目")
         self.project_primary_link_button.clicked.connect(lambda checked=False: self._open_current_project_link("primary"))
@@ -2216,7 +2241,7 @@ class MainWindow(QMainWindow):
         self.project_backup_link_button = QPushButton()
         self.project_backup_link_button.setObjectName("projectBackupLinkButton")
         self.project_backup_link_button.setIcon(_project_link_icon("backup"))
-        self.project_backup_link_button.setIconSize(QSize(19, 19))
+        self.project_backup_link_button.setIconSize(QSize(16, 16))
         self.project_backup_link_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.project_backup_link_button.setToolTip("打开备用项目")
         self.project_backup_link_button.clicked.connect(lambda checked=False: self._open_current_project_link("backup"))
@@ -2655,9 +2680,17 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
 
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(4)
         title = _label(project.name, "memberName")
         title.setWordWrap(True)
-        layout.addWidget(title)
+        title_row.addWidget(title, 1)
+        if project.project_link:
+            title_row.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignTop)
+        if project.backup_project_link:
+            title_row.addWidget(self._project_link_button(project, "backup"), 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(title_row)
         owner_row = QHBoxLayout()
         owner_row.setContentsMargins(0, 0, 0, 0)
         owner_row.setSpacing(4)
@@ -2942,6 +2975,10 @@ class MainWindow(QMainWindow):
 
         title_row = QHBoxLayout()
         title_row.addWidget(_label(project.name, "memberName"))
+        if project.project_link:
+            title_row.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignVCenter)
+        if project.backup_project_link:
+            title_row.addWidget(self._project_link_button(project, "backup"), 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch()
         title_row.addWidget(_label(project.status, "compactRoleBadge"))
         layout.addLayout(title_row)
@@ -2971,11 +3008,19 @@ class MainWindow(QMainWindow):
         self._load_projects()
         self._show_project_overview()
 
-    def _open_current_project_link(self, kind: str = "primary") -> None:
-        project = self._current_project()
-        link = ""
-        if project is not None:
-            link = project.backup_project_link if kind == "backup" else project.project_link
+    def _project_link_button(self, project: Project, kind: str) -> QPushButton:
+        link = project.backup_project_link if kind == "backup" else project.project_link
+        button = QPushButton()
+        button.setObjectName("projectBackupLinkButton" if kind == "backup" else "projectPrimaryLinkButton")
+        button.setIcon(_project_link_icon(kind))
+        button.setIconSize(QSize(16, 16))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip(link or ("打开备用项目" if kind == "backup" else "打开主要项目"))
+        button.clicked.connect(lambda checked=False, selected=project, selected_kind=kind: self._open_project_link(selected, selected_kind))
+        return button
+
+    def _open_project_link(self, project: Project, kind: str = "primary") -> None:
+        link = project.backup_project_link if kind == "backup" else project.project_link
         if not link:
             return
         url = QUrl.fromUserInput(link)
@@ -2983,6 +3028,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "项目连接无效", "这个项目还没有配置可打开的网页链接。")
             return
         QDesktopServices.openUrl(url)
+
+    def _open_current_project_link(self, kind: str = "primary") -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        self._open_project_link(project, kind)
 
     def _open_dingtalk_chat(self, name: str, dingtalk_id: str = "") -> None:
         target_id = dingtalk_id.strip() or self.db.dingtalk_id_for_name(name)
@@ -3431,6 +3482,8 @@ class MainWindow(QMainWindow):
                 acceptor = self.db.display_name()
             if self.assigned_todo_deadline_days is not None:
                 due_at = datetime.now() + timedelta(days=self.assigned_todo_deadline_days)
+            if not self._assignee_version_supports_todo(assignee, workflow):
+                return
         self.db.add_project_todo(
             project.id,
             title,
@@ -3450,6 +3503,39 @@ class MainWindow(QMainWindow):
         self._refresh_assigned_deadline_buttons()
         self._refresh_project_workspace()
         self._refresh_my_panel()
+
+    def _assignee_version_supports_todo(self, assignee: str, workflow: str) -> bool:
+        peer = self._peer_for_display_name(assignee)
+        if peer is None or not peer.app_version:
+            return True
+        minimum_version = ASSIGNED_TODO_WORKFLOW_MIN_VERSION if workflow else ASSIGNED_TODO_MIN_VERSION
+        if version_tuple(peer.app_version) >= version_tuple(minimum_version):
+            return True
+        feature_text = "开发-测试-验收流转代办" if workflow else "分配代办"
+        QMessageBox.warning(
+            self,
+            "对方版本过低",
+            (
+                f"{assignee} 当前在线版本是 v{peer.app_version}，低于 {feature_text} 需要的 "
+                f"v{minimum_version}。\n\n"
+                "请先让对方更新到新版本，否则他那边可能看不到这条代办。"
+            ),
+        )
+        return False
+
+    def _peer_for_display_name(self, name: str) -> LanPeer | None:
+        normalized = name.strip()
+        if not normalized:
+            return None
+        peers = getattr(self, "current_lan_peers", [])
+        for peer in peers:
+            if peer.name.strip() == normalized:
+                return peer
+        if self.discovery is not None:
+            for peer in self.discovery.sorted_peers():
+                if peer.name.strip() == normalized:
+                    return peer
+        return None
 
     def _complete_project_todo(self, todo: ProjectTodo) -> None:
         project = self._current_project()

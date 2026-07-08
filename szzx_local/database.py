@@ -1660,6 +1660,8 @@ class Database:
                 "owner": owner,
                 "status": str(row.get("status", "")),
                 "description": str(row.get("description", "")),
+                "project_link": str(row.get("project_link", "")),
+                "backup_project_link": str(row.get("backup_project_link", "")),
                 "joined_at": created_at.isoformat(timespec="seconds"),
                 "joined_days": max(1, (today - created_at.date()).days + 1),
             }
@@ -1688,6 +1690,8 @@ class Database:
                 "owner": str(project.get("owner", "")),
                 "status": str(project.get("status", "")),
                 "description": str(project.get("description", "")),
+                "project_link": str(project.get("project_link", "")),
+                "backup_project_link": str(project.get("backup_project_link", "")),
                 "joined_at": joined_at.isoformat(timespec="seconds"),
                 "joined_days": max(1, (today - joined_at.date()).days + 1),
             }
