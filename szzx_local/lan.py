@@ -96,13 +96,12 @@ class LanDiscovery(QObject):
         self.display_name = name.strip() or self.display_name
         self.announce()
 
-    def announce(self) -> None:
-        payload = {
+    def _presence_payload(self, kind: str = "presence", direct_reply: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "protocol": APP_PROTOCOL,
-            "kind": "presence",
+            "kind": kind,
             "device_id": self.device_id,
             "name": self.display_name,
-            "port": self.port,
             "sync_port": self.sync_port,
             "sync": self.db.sync_state() if self.db is not None else {},
             "app_version": APP_VERSION,
@@ -110,8 +109,14 @@ class LanDiscovery(QObject):
             "update_package": self._update_package_info(),
             "today_project_logs": self._today_project_logs(),
         }
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self._send_broadcast(data)
+        if kind == "presence":
+            payload["port"] = self.port
+        if direct_reply:
+            payload["direct_reply"] = True
+        return payload
+
+    def announce(self) -> None:
+        self._send_broadcast_payload(self._presence_payload("presence"))
 
     def announce_burst(self) -> None:
         self.announce()
@@ -123,25 +128,20 @@ class LanDiscovery(QObject):
     def broadcast_database(self) -> None:
         if self.db is None:
             return
-        payload = {
-            "protocol": APP_PROTOCOL,
-            "kind": "db_state",
-            "device_id": self.device_id,
-            "name": self.display_name,
-            "sync_port": self.sync_port,
-            "sync": self.db.sync_state(),
-            "app_version": APP_VERSION,
-            "platform": sys.platform,
-            "update_package": self._update_package_info(),
-            "today_project_logs": self._today_project_logs(),
-        }
+        self._send_broadcast_payload(self._presence_payload("db_state"))
+        self._pull_newer_peer_snapshots()
+
+    def _send_broadcast_payload(self, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send_broadcast(data)
-        self._pull_newer_peer_snapshots()
 
     def _send_broadcast(self, data: bytes) -> None:
         for address in self._broadcast_targets():
             self.send_socket.writeDatagram(data, address, self.port)
+
+    def _send_direct_presence_reply(self, address: QHostAddress) -> None:
+        data = json.dumps(self._presence_payload("presence", direct_reply=True), ensure_ascii=False).encode("utf-8")
+        self.send_socket.writeDatagram(data, address, self.port)
 
     def _broadcast_targets(self) -> list[QHostAddress]:
         targets: dict[str, QHostAddress] = {}
@@ -359,6 +359,8 @@ class LanDiscovery(QObject):
             ),
         )
         self.peers[device_id] = peer
+        if not bool(payload.get("direct_reply")):
+            self._send_direct_presence_reply(datagram.senderAddress())
         if kind == "db_state":
             self._pull_peer_snapshot_if_newer(peer)
         return True
