@@ -23,6 +23,7 @@ SHARED_TABLES = (
     "deleted_records",
     "counters",
 )
+ACTIVITY_EVENT_SYNC_DAYS = 0
 
 
 def load_json(path: Path) -> dict | None:
@@ -59,6 +60,25 @@ def platform_app_db() -> Path:
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "SZZXLocalDesk" / "szzx.json"
     return Path.home() / ".local" / "share" / "SZZXLocalDesk" / "szzx.json"
+
+
+def recent_activity_events(rows: object) -> list[dict]:
+    if ACTIVITY_EVENT_SYNC_DAYS <= 0:
+        return []
+    if not isinstance(rows, list):
+        return []
+    cutoff = datetime.now().timestamp() - ACTIVITY_EVENT_SYNC_DAYS * 24 * 60 * 60
+    recent: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            created_at = datetime.fromisoformat(str(row.get("created_at", ""))).timestamp()
+        except ValueError:
+            continue
+        if created_at >= cutoff:
+            recent.append(dict(row))
+    return recent
 
 
 def candidate_paths() -> list[Path]:
@@ -104,6 +124,8 @@ def main() -> int:
         value = best_data.get(table)
         if table == "counters":
             tables[table] = dict(value) if isinstance(value, dict) else {}
+        elif table == "activity_events":
+            tables[table] = recent_activity_events(value)
         else:
             tables[table] = list(value) if isinstance(value, list) else []
     sync = best_data.get("sync") if isinstance(best_data.get("sync"), dict) else {}

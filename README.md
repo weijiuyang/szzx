@@ -65,10 +65,15 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.124",
+  "version": "0.1.125",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "Windows 打包也会携带共享数据种子，并与 macOS 共用种子生成逻辑，避免安装包只同步到旧项目数量。",
+  "notes": "局域网同步减负：活动事件不再参与同步，自动快照不再携带文档文件内容，加快项目补齐和刷新速度。",
   "history": [
+    {
+      "version": "0.1.125",
+      "date": "2026-07-08",
+      "notes": "局域网同步减负：活动事件不再参与同步，自动快照不再携带文档文件内容，加快项目补齐和刷新速度。"
+    },
     {
       "version": "0.1.124",
       "date": "2026-07-08",

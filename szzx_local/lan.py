@@ -264,9 +264,7 @@ class LanDiscovery(QObject):
                     return
                 if request != SNAPSHOT_MAGIC or self.db is None:
                     return
-                data = zlib.compress(
-                    json.dumps(self.db.shared_snapshot(include_files=True), ensure_ascii=False).encode("utf-8")
-                )
+                data = zlib.compress(json.dumps(self.db.shared_snapshot(), ensure_ascii=False).encode("utf-8"))
                 client.sendall(struct.pack("!Q", len(data)))
                 client.sendall(data)
             except OSError:

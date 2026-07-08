@@ -119,6 +119,7 @@ SHARED_TABLES = (
     "deleted_records",
     "counters",
 )
+ACTIVITY_EVENT_SYNC_DAYS = 0
 RECORD_TOMBSTONE_TABLES = {
     "project_members",
     "daily_reports",
@@ -2467,7 +2468,7 @@ class Database:
         for table in SHARED_TABLES:
             value = self.data.get(table)
             if isinstance(value, list):
-                counts[table] = len(value)
+                counts[table] = len(self._recent_activity_events()) if table == "activity_events" else len(value)
         return counts
 
     def shared_project_fingerprints(self) -> dict[str, dict[str, str]]:
@@ -2507,9 +2508,9 @@ class Database:
                 continue
             document_id = str(row.get("id", ""))
             source = Path(str(row.get("file_path", "")))
-            if not document_id or not source.is_file():
-                continue
             try:
+                if not document_id or not source.is_file():
+                    continue
                 files[document_id] = {
                     "name": source.name,
                     "content": base64.b64encode(source.read_bytes()).decode("ascii"),
@@ -2519,10 +2520,13 @@ class Database:
         return files
 
     def shared_snapshot(self, include_files: bool = False) -> dict[str, Any]:
-        tables = {
-            table: self.data.get(table, {}).copy() if isinstance(self.data.get(table), dict) else list(self.data.get(table, []))
-            for table in SHARED_TABLES
-        }
+        tables: dict[str, Any] = {}
+        for table in SHARED_TABLES:
+            if table == "activity_events":
+                tables[table] = self._recent_activity_events()
+                continue
+            value = self.data.get(table)
+            tables[table] = value.copy() if isinstance(value, dict) else list(value or [])
         tables = self._personalized_snapshot_tables(tables)
         snapshot = {
             "sync": self.sync_state(),
@@ -2535,6 +2539,25 @@ class Database:
         if include_files:
             snapshot["files"] = self._document_file_payloads(tables.get("project_documents", []))
         return snapshot
+
+    def _recent_activity_events(self) -> list[dict[str, Any]]:
+        if ACTIVITY_EVENT_SYNC_DAYS <= 0:
+            return []
+        rows = self.data.get("activity_events", [])
+        if not isinstance(rows, list):
+            return []
+        cutoff = datetime.now() - timedelta(days=ACTIVITY_EVENT_SYNC_DAYS)
+        recent: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                created_at = _parse_time(str(row.get("created_at", "")))
+            except ValueError:
+                continue
+            if created_at >= cutoff:
+                recent.append(dict(row))
+        return recent
 
     def remote_sync_is_newer(self, sync: dict[str, Any]) -> bool:
         return self._remote_sync_key(sync) > self._local_sync_key()
