@@ -644,7 +644,15 @@ class Database:
                 row["scope"] = "personal"
 
 
-    def add_project(self, name: str, owner: str, description: str, status: str = "推进中") -> Project:
+    def add_project(
+        self,
+        name: str,
+        owner: str,
+        description: str,
+        status: str = "推进中",
+        project_link: str = "",
+        backup_project_link: str = "",
+    ) -> Project:
         created_at = datetime.now()
         row = self._with_operator({
             "id": self._next_project_id(created_at),
@@ -652,6 +660,8 @@ class Database:
             "owner": owner.strip(),
             "description": description.strip(),
             "status": status.strip(),
+            "project_link": project_link.strip(),
+            "backup_project_link": backup_project_link.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
         })
         self.data["projects"].append(row)
@@ -841,14 +851,42 @@ class Database:
             return self._project_from_row(row)
         return None
 
+    def update_project_details(
+        self,
+        project_id: int,
+        description: str,
+        project_link: str = "",
+        backup_project_link: str = "",
+    ) -> Project | None:
+        for row in self.data["projects"]:
+            if int(row["id"]) != project_id:
+                continue
+            row["description"] = description.strip()
+            row["project_link"] = project_link.strip()
+            row["backup_project_link"] = backup_project_link.strip()
+            self._save()
+            return self._project_from_row(row)
+        return None
+
+    def update_project_owner(self, project_id: int, owner: str) -> Project | None:
+        for row in self.data["projects"]:
+            if int(row["id"]) != project_id:
+                continue
+            row["owner"] = owner.strip()
+            self._save()
+            return self._project_from_row(row)
+        return None
+
     def _project_from_row(self, row: dict[str, Any]) -> Project:
         return Project(
             id=int(row["id"]),
             name=str(row["name"]),
             owner=str(row["owner"]),
-            description=str(row["description"]),
-            status=str(row["status"]),
+            description=str(row.get("description", "")),
+            status=str(row.get("status", "推进中")),
             created_at=_parse_time(str(row["created_at"])),
+            project_link=str(row.get("project_link", "")),
+            backup_project_link=str(row.get("backup_project_link", "")),
         )
 
     def add_project_member(self, project_id: int, name: str, role: str, dingtalk_id: str = "") -> ProjectMember:

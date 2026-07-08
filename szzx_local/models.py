@@ -12,6 +12,8 @@ class Project:
     description: str
     status: str
     created_at: datetime
+    project_link: str = ""
+    backup_project_link: str = ""
 
 
 @dataclass(frozen=True)

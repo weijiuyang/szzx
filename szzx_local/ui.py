@@ -12,7 +12,7 @@ from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QIcon, QKeySequence, QPixmap, QShortcut, QTextDocument
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextDocument
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -162,6 +162,30 @@ QPushButton#chatButton {
 }
 QPushButton#chatButton:hover {
     background: transparent;
+}
+QPushButton#projectPrimaryLinkButton, QPushButton#projectBackupLinkButton {
+    border-radius: 14px;
+    padding: 0;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+}
+QPushButton#projectPrimaryLinkButton {
+    background: #263229;
+    border: 1px solid #263229;
+}
+QPushButton#projectPrimaryLinkButton:hover {
+    background: #385340;
+    border-color: #385340;
+}
+QPushButton#projectBackupLinkButton {
+    background: #f3f6f0;
+    border: 1px solid #aebfaf;
+}
+QPushButton#projectBackupLinkButton:hover {
+    background: #e7efe4;
+    border-color: #7f9b82;
 }
 QPushButton#calendarDay {
     min-width: 76px;
@@ -444,6 +468,39 @@ def _nowrap_label(text: str, object_name: str | None = None) -> QLabel:
 
 def _dingtalk_chat_url(dingtalk_id: str) -> str:
     return f"dingtalk://dingtalkclient/action/sendmsg?dingtalk_id={quote(dingtalk_id.strip())}"
+
+
+def _normalize_project_link(value: str) -> str:
+    link = value.strip()
+    if not link:
+        return ""
+    url = QUrl.fromUserInput(link)
+    if url.scheme().lower() not in {"http", "https"} or not url.host():
+        return ""
+    return url.toString()
+
+
+def _project_link_icon(kind: str) -> QIcon:
+    pixmap = QPixmap(48, 48)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    color = QColor("#f8fbf6" if kind == "primary" else "#42624d")
+    pen = QPen(color, 4)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    if kind == "primary":
+        painter.drawRect(12, 18, 18, 18)
+        painter.drawLine(24, 13, 36, 13)
+        painter.drawLine(36, 13, 36, 25)
+        painter.drawLine(23, 26, 36, 13)
+    else:
+        painter.drawArc(10, 17, 18, 14, 35 * 16, 250 * 16)
+        painter.drawArc(20, 17, 18, 14, -145 * 16, 250 * 16)
+        painter.drawLine(21, 24, 27, 24)
+    painter.end()
+    return QIcon(pixmap)
 
 
 def _try_click_dingtalk_send_message() -> None:
@@ -2144,10 +2201,32 @@ class MainWindow(QMainWindow):
         hero_layout.setContentsMargins(24, 22, 24, 22)
         hero_layout.setSpacing(10)
         self.project_status = _label("推进中", "eyebrow")
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
         self.project_title = _label("选择一个项目", "heroTitle")
+        self.project_primary_link_button = QPushButton()
+        self.project_primary_link_button.setObjectName("projectPrimaryLinkButton")
+        self.project_primary_link_button.setIcon(_project_link_icon("primary"))
+        self.project_primary_link_button.setIconSize(QSize(19, 19))
+        self.project_primary_link_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.project_primary_link_button.setToolTip("打开主要项目")
+        self.project_primary_link_button.clicked.connect(lambda checked=False: self._open_current_project_link("primary"))
+        self.project_primary_link_button.setVisible(False)
+        self.project_backup_link_button = QPushButton()
+        self.project_backup_link_button.setObjectName("projectBackupLinkButton")
+        self.project_backup_link_button.setIcon(_project_link_icon("backup"))
+        self.project_backup_link_button.setIconSize(QSize(19, 19))
+        self.project_backup_link_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.project_backup_link_button.setToolTip("打开备用项目")
+        self.project_backup_link_button.clicked.connect(lambda checked=False: self._open_current_project_link("backup"))
+        self.project_backup_link_button.setVisible(False)
+        title_row.addWidget(self.project_title, 1)
+        title_row.addWidget(self.project_primary_link_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addWidget(self.project_backup_link_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.project_description = _label("项目负责人可以在这里查看所有日报、维护项目周报，并归档项目文档。", "muted")
         hero_layout.addWidget(self.project_status)
-        hero_layout.addWidget(self.project_title)
+        hero_layout.addLayout(title_row)
         hero_layout.addWidget(self.project_description)
         metrics = QHBoxLayout()
         metrics.setSpacing(12)
@@ -2211,18 +2290,26 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(developer_feed_panel)
 
         self.config_project_panel = _panel()
-        self.config_project_panel.setFixedHeight(260)
+        self.config_project_panel.setFixedHeight(378)
         config_project_layout = QVBoxLayout(self.config_project_panel)
         config_project_layout.setContentsMargins(18, 18, 18, 18)
-        config_project_layout.setSpacing(12)
+        config_project_layout.setSpacing(10)
         config_project_layout.addWidget(_label("项目简介", "eyebrow"))
         self.config_project_description = QTextEdit()
         self.config_project_description.setPlaceholderText("项目目标、范围、当前进展或代办。")
-        self.config_project_description.setFixedHeight(130)
+        self.config_project_description.setFixedHeight(112)
+        self.config_project_link = QLineEdit()
+        self.config_project_link.setPlaceholderText("主要项目连接，例如 https://example.com")
+        self.config_project_backup_link = QLineEdit()
+        self.config_project_backup_link.setPlaceholderText("备用项目连接，例如 https://preview.example.com")
         self.save_project_description_button = QPushButton("保存项目简介")
         self.save_project_description_button.setObjectName("primaryButton")
         self.save_project_description_button.clicked.connect(self._save_project_description)
         config_project_layout.addWidget(self.config_project_description)
+        config_project_layout.addWidget(_label("主要项目连接", "eyebrow"))
+        config_project_layout.addWidget(self.config_project_link)
+        config_project_layout.addWidget(_label("备用项目连接", "eyebrow"))
+        config_project_layout.addWidget(self.config_project_backup_link)
         config_project_layout.addWidget(self.save_project_description_button)
         self.config_project_panel.setVisible(False)
 
@@ -2260,6 +2347,17 @@ class MainWindow(QMainWindow):
         member_form_layout.addWidget(self.member_name)
         member_form_layout.addWidget(self.member_role)
         member_form_layout.addWidget(self.add_member_button)
+
+        owner_form = _panel()
+        owner_form_layout = QVBoxLayout(owner_form)
+        owner_form_layout.setContentsMargins(18, 18, 18, 18)
+        owner_form_layout.setSpacing(10)
+        owner_form_layout.addWidget(_label("更改负责人", "eyebrow"))
+        self.project_owner_select = QComboBox()
+        self.save_project_owner_button = QPushButton("保存负责人")
+        self.save_project_owner_button.clicked.connect(self._save_project_owner)
+        owner_form_layout.addWidget(self.project_owner_select)
+        owner_form_layout.addWidget(self.save_project_owner_button)
 
         config_member_panel = _panel()
         config_member_layout = QVBoxLayout(config_member_panel)
@@ -2398,6 +2496,7 @@ class MainWindow(QMainWindow):
         display_side_layout.addWidget(self.activity_forms_panel, 0, Qt.AlignmentFlag.AlignTop)
         display_side_layout.addStretch()
         config_side_layout.addWidget(member_form)
+        config_side_layout.addWidget(owner_form)
         config_side_layout.addWidget(config_member_panel)
         config_side_layout.addWidget(project_danger)
         config_side_layout.addStretch()
@@ -2510,8 +2609,13 @@ class MainWindow(QMainWindow):
     def _load_projects(self) -> None:
         if not hasattr(self, "project_list"):
             return
+        previous_scroll = self.project_list.verticalScrollBar().value()
+        previous_project_id = self.current_project_id
         self.project_list.clear()
         projects = self._visible_projects()
+        should_restore_scroll = previous_project_id is not None and any(
+            project.id == previous_project_id for project in projects
+        )
         for project in projects:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, project.id)
@@ -2532,8 +2636,16 @@ class MainWindow(QMainWindow):
         else:
             self.current_project_id = None
             self._clear_project_workspace()
+        if should_restore_scroll:
+            QTimer.singleShot(0, lambda value=previous_scroll: self._restore_project_list_scroll(value))
         self._update_project_sync_hint()
         self._refresh_my_panel()
+
+    def _restore_project_list_scroll(self, value: int) -> None:
+        if not hasattr(self, "project_list"):
+            return
+        scroll_bar = self.project_list.verticalScrollBar()
+        scroll_bar.setValue(min(value, scroll_bar.maximum()))
 
     def _project_list_card(self, project: Project, active: bool = False) -> QWidget:
         card = QWidget()
@@ -2858,6 +2970,19 @@ class MainWindow(QMainWindow):
         self._select_project_mode(0)
         self._load_projects()
         self._show_project_overview()
+
+    def _open_current_project_link(self, kind: str = "primary") -> None:
+        project = self._current_project()
+        link = ""
+        if project is not None:
+            link = project.backup_project_link if kind == "backup" else project.project_link
+        if not link:
+            return
+        url = QUrl.fromUserInput(link)
+        if not url.isValid() or url.scheme().lower() not in {"http", "https"}:
+            QMessageBox.information(self, "项目连接无效", "这个项目还没有配置可打开的网页链接。")
+            return
+        QDesktopServices.openUrl(url)
 
     def _open_dingtalk_chat(self, name: str, dingtalk_id: str = "") -> None:
         target_id = dingtalk_id.strip() or self.db.dingtalk_id_for_name(name)
@@ -3192,7 +3317,21 @@ class MainWindow(QMainWindow):
         if not description:
             QMessageBox.information(self, "简介为空", "先写一点项目简介。")
             return
-        updated = self.db.update_project_description(project.id, description)
+        raw_link = self.config_project_link.text().strip() if hasattr(self, "config_project_link") else ""
+        project_link = _normalize_project_link(raw_link)
+        if raw_link and not project_link:
+            QMessageBox.information(self, "主要项目连接无效", "请填写网页链接，例如 example.com 或 https://example.com。")
+            return
+        raw_backup_link = (
+            self.config_project_backup_link.text().strip()
+            if hasattr(self, "config_project_backup_link")
+            else ""
+        )
+        backup_project_link = _normalize_project_link(raw_backup_link)
+        if raw_backup_link and not backup_project_link:
+            QMessageBox.information(self, "备用项目连接无效", "请填写网页链接，例如 preview.example.com 或 https://preview.example.com。")
+            return
+        updated = self.db.update_project_details(project.id, description, project_link, backup_project_link)
         if updated is None:
             QMessageBox.warning(self, "保存失败", "这个项目记录已经不存在。")
             self._load_projects()
@@ -3498,8 +3637,16 @@ class MainWindow(QMainWindow):
 
         self.project_status.setText(f"{project.status} · 负责人 {project.owner}")
         self.project_title.setText(project.name)
+        self.project_primary_link_button.setVisible(bool(project.project_link))
+        self.project_primary_link_button.setToolTip(project.project_link or "打开主要项目")
+        self.project_backup_link_button.setVisible(bool(project.backup_project_link))
+        self.project_backup_link_button.setToolTip(project.backup_project_link or "打开备用项目")
         self.project_description.setText(project.description)
         self.config_project_description.setPlainText(project.description)
+        if hasattr(self, "config_project_link"):
+            self.config_project_link.setText(project.project_link)
+        if hasattr(self, "config_project_backup_link"):
+            self.config_project_backup_link.setText(project.backup_project_link)
         self._set_metric(self.metric_members, len(members))
         self._set_metric(self.metric_todos, len(open_todos))
         self._set_metric(self.metric_daily, len(daily_reports))
@@ -3554,7 +3701,13 @@ class MainWindow(QMainWindow):
         self.member_name.setEnabled(is_manager)
         self.member_role.setEnabled(is_manager)
         self.add_member_button.setEnabled(is_manager)
+        if hasattr(self, "project_owner_select"):
+            self._refresh_project_owner_options(project, members, is_manager)
         self.config_project_description.setEnabled(is_manager)
+        if hasattr(self, "config_project_link"):
+            self.config_project_link.setEnabled(is_manager)
+        if hasattr(self, "config_project_backup_link"):
+            self.config_project_backup_link.setEnabled(is_manager)
         self.save_project_description_button.setEnabled(is_manager)
         self.delete_project_button.setEnabled(is_manager)
         self.weekly_form.setVisible(is_manager or can_upload_project_document)
@@ -3632,7 +3785,17 @@ class MainWindow(QMainWindow):
                 )
             )
         if product_items:
-            for _, time_text, kind, content, document, progress_delete in sorted(product_items, reverse=True)[:5]:
+            for _, time_text, kind, content, document, progress_delete in sorted(
+                product_items,
+                key=lambda item: (
+                    item[0],
+                    item[2],
+                    item[3],
+                    item[4].id if item[4] is not None else 0,
+                    item[5][1] if item[5] is not None else 0,
+                ),
+                reverse=True,
+            )[:5]:
                 self._add_feed_card(
                     self.product_feed,
                     time_text,
@@ -3675,6 +3838,10 @@ class MainWindow(QMainWindow):
             return
         self.project_status.setText("暂无项目")
         self.project_title.setText("创建一个项目")
+        if hasattr(self, "project_primary_link_button"):
+            self.project_primary_link_button.setVisible(False)
+        if hasattr(self, "project_backup_link_button"):
+            self.project_backup_link_button.setVisible(False)
         if getattr(self, "project_scope_value", "mine") == "mine":
             self.project_description.setText("当前没有你参与的项目。可以创建项目，或切到“全部项目”查看团队项目。")
         else:
@@ -3716,8 +3883,19 @@ class MainWindow(QMainWindow):
         self.member_name.setEnabled(False)
         self.member_role.setEnabled(False)
         self.add_member_button.setEnabled(False)
+        if hasattr(self, "project_owner_select"):
+            self.project_owner_select.clear()
+            self.project_owner_select.setEnabled(False)
+        if hasattr(self, "save_project_owner_button"):
+            self.save_project_owner_button.setEnabled(False)
         self.config_project_description.clear()
         self.config_project_description.setEnabled(False)
+        if hasattr(self, "config_project_link"):
+            self.config_project_link.clear()
+            self.config_project_link.setEnabled(False)
+        if hasattr(self, "config_project_backup_link"):
+            self.config_project_backup_link.clear()
+            self.config_project_backup_link.setEnabled(False)
         self.save_project_description_button.setEnabled(False)
         self.config_project_panel.setVisible(False)
         self.delete_project_button.setEnabled(False)
@@ -3748,7 +3926,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _can_manage_project(self, project: Project, member: ProjectMember | None) -> bool:
-        if self.db.display_name() in SUPER_ADMIN_NAMES:
+        if self._is_super_admin():
             return True
         return self.db.is_current_user_name(project.owner)
 
@@ -3979,6 +4157,62 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
 
+    def _is_super_admin(self) -> bool:
+        return any(self.db.is_current_user_name(name) for name in SUPER_ADMIN_NAMES)
+
+    def _refresh_project_owner_options(
+        self,
+        project: Project,
+        members: list[ProjectMember],
+        can_manage: bool,
+    ) -> None:
+        self.project_owner_select.blockSignals(True)
+        self.project_owner_select.clear()
+        names: list[str] = []
+        for name in [project.owner, *(member.name for member in members)]:
+            name = name.strip()
+            if name and name not in names:
+                names.append(name)
+        for name in names:
+            role = "负责人" if name == project.owner else self._project_member_role(members, name)
+            self.project_owner_select.addItem(f"{name} · {role}" if role else name, name)
+        for index in range(self.project_owner_select.count()):
+            if self.project_owner_select.itemData(index) == project.owner:
+                self.project_owner_select.setCurrentIndex(index)
+                break
+        self.project_owner_select.setEnabled(can_manage and bool(names))
+        self.save_project_owner_button.setEnabled(can_manage and bool(names))
+        self.project_owner_select.blockSignals(False)
+
+    def _project_member_role(self, members: list[ProjectMember], name: str) -> str:
+        for member in members:
+            if member.name.strip() == name.strip():
+                return member.role.strip()
+        return ""
+
+    def _save_project_owner(self) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        if not self._can_manage_project(project, None):
+            QMessageBox.warning(self, "不能保存", "只有这个项目的负责人或最高权限用户可以更改负责人。")
+            return
+        owner = str(self.project_owner_select.currentData() or self.project_owner_select.currentText()).strip()
+        if not owner:
+            QMessageBox.information(self, "负责人为空", "先选择新的项目负责人。")
+            return
+        if owner == project.owner:
+            return
+        updated = self.db.update_project_owner(project.id, owner)
+        if updated is None:
+            QMessageBox.warning(self, "保存失败", "这个项目记录已经不存在。")
+            self._load_projects()
+            return
+        self.current_project_id = updated.id
+        self._load_projects()
+        self._refresh_project_workspace()
+        self._announce_presence()
+
     def _refresh_config_member_list(
         self,
         project: Project,
@@ -4012,7 +4246,11 @@ class MainWindow(QMainWindow):
 
         delete_button = QPushButton("删除")
         delete_button.setObjectName("smallButton")
-        delete_button.setEnabled(can_manage and not self.db.is_current_user_name(member.name) and member.name != project.owner)
+        protected_member = (
+            not self._is_super_admin()
+            and (self.db.is_current_user_name(member.name) or member.name == project.owner)
+        )
+        delete_button.setEnabled(can_manage and not protected_member)
         delete_button.clicked.connect(lambda checked=False, selected=member: self._delete_project_member(selected))
         layout.addWidget(delete_button)
 
@@ -4027,7 +4265,7 @@ class MainWindow(QMainWindow):
         if not self._can_manage_project(project, None):
             QMessageBox.warning(self, "不能配置", "只有这个项目的负责人或最高权限用户可以删除成员。")
             return
-        if self.db.is_current_user_name(member.name) or member.name == project.owner:
+        if not self._is_super_admin() and (self.db.is_current_user_name(member.name) or member.name == project.owner):
             QMessageBox.information(self, "不能删除", "负责人不能从项目成员里删除。")
             return
         message = f"确定从项目「{project.name}」删除成员「{member.name}」吗？"
@@ -5614,6 +5852,10 @@ class MainWindow(QMainWindow):
         if self.lan_view_mode == "logs":
             self._refresh_lan_logs(peers)
             return
+        scrollbar = self.peer_list.verticalScrollBar()
+        scroll_value = scrollbar.value()
+        was_at_bottom = scroll_value >= scrollbar.maximum() - 4
+        self.peer_list.setUpdatesEnabled(False)
         self.peer_list.clear()
         self.lan_panel_title.setText("在线同事")
         if self.discovery is not None and not self.discovery.is_bound:
@@ -5621,16 +5863,28 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem("UDP 45454 端口未能绑定。")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.peer_list.addItem(item)
+            self.peer_list.setUpdatesEnabled(True)
+            QTimer.singleShot(0, lambda value=scroll_value, bottom=was_at_bottom: self._restore_lan_peer_scroll(value, bottom))
             return
         self.lan_subtitle.setText(f"我的名字：{self.db.display_name()}。发现 {len(peers)} 位在线同事。")
         if not peers:
             item = QListWidgetItem("暂时没有发现其他人。确认大家在同一局域网，并且都打开了数智中心。")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.peer_list.addItem(item)
+            self.peer_list.setUpdatesEnabled(True)
+            QTimer.singleShot(0, lambda value=scroll_value, bottom=was_at_bottom: self._restore_lan_peer_scroll(value, bottom))
             return
         for peer in peers:
             seen = peer.last_seen.strftime("%H:%M:%S")
             self._add_peer_card(peer, seen)
+        self.peer_list.setUpdatesEnabled(True)
+        QTimer.singleShot(0, lambda value=scroll_value, bottom=was_at_bottom: self._restore_lan_peer_scroll(value, bottom))
+
+    def _restore_lan_peer_scroll(self, value: int, was_at_bottom: bool) -> None:
+        if not hasattr(self, "peer_list") or self.lan_view_mode != "peers":
+            return
+        scrollbar = self.peer_list.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum() if was_at_bottom else min(value, scrollbar.maximum()))
 
     def _refresh_lan_logs(self, peers: list[LanPeer]) -> None:
         self.lan_panel_title.setText("今日项目日志")
