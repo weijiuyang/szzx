@@ -18,12 +18,11 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QNetworkDatagram, QNetworkInterface, QUdpSocket
 
 from .changelog import CHANGELOG, current_release_notes
+from .central_sync import CentralDataServer
+from .protocol import APP_PROTOCOL, DISCOVERY_SERVER_KIND, LAN_PORT, SYNC_TCP_PORT
 from .version import APP_VERSION
 
 
-LAN_PORT = 45454
-SYNC_TCP_PORT = 45455
-APP_PROTOCOL = "szzx-local-desk"
 SNAPSHOT_MAGIC = b"SZZXSNAP1\n"
 PEER_MAGIC = b"SZZXPEER1\n"
 PACKAGE_MAGIC = b"SZZXPKG01\n"
@@ -49,11 +48,19 @@ class LanPeer:
 class LanDiscovery(QObject):
     peers_changed = Signal(list)
     data_synced = Signal()
+    data_server_seen = Signal(object)
     _snapshot_fetched = Signal(object, object, bool)
     _snapshot_failed = Signal(object)
     _direct_peer_seen = Signal(object)
 
-    def __init__(self, device_id: str, display_name: str, port: int = LAN_PORT, db: Any | None = None) -> None:
+    def __init__(
+        self,
+        device_id: str,
+        display_name: str,
+        port: int = LAN_PORT,
+        db: Any | None = None,
+        peer_data_sync_enabled: bool = True,
+    ) -> None:
         super().__init__()
         self.device_id = device_id
         self.display_name = display_name
@@ -62,6 +69,7 @@ class LanDiscovery(QObject):
         self.db = db
         self.peers: dict[str, LanPeer] = {}
         self.server_socket: socket.socket | None = None
+        self.peer_data_sync_enabled = peer_data_sync_enabled
         self.update_package_path = self._find_update_package()
         self._pulling_peer_ids: set[str] = set()
         self._last_pull_started: dict[str, float] = {}
@@ -93,10 +101,12 @@ class LanDiscovery(QObject):
         self._direct_peer_seen.connect(self._apply_direct_peer_seen)
 
     def start(self) -> None:
-        self._start_snapshot_server()
+        if self.peer_data_sync_enabled:
+            self._start_snapshot_server()
         self.announce_burst()
         self.announce_timer.start(3500)
-        self.sync_timer.start(8000)
+        if self.peer_data_sync_enabled:
+            self.sync_timer.start(8000)
         self.sweep_timer.start(5000)
 
     def set_display_name(self, name: str) -> None:
@@ -138,9 +148,11 @@ class LanDiscovery(QObject):
 
     def announce_burst(self) -> None:
         self.announce()
-        self.broadcast_database()
+        if self.peer_data_sync_enabled:
+            self.broadcast_database()
         QTimer.singleShot(250, self.announce)
-        QTimer.singleShot(500, self.broadcast_database)
+        if self.peer_data_sync_enabled:
+            QTimer.singleShot(500, self.broadcast_database)
         QTimer.singleShot(900, self.announce)
 
     def broadcast_database(self) -> None:
@@ -409,11 +421,15 @@ class LanDiscovery(QObject):
         if payload.get("protocol") != APP_PROTOCOL:
             return False
 
+        kind = payload.get("kind")
+        if kind == DISCOVERY_SERVER_KIND:
+            self.data_server_seen.emit(self._data_server_from_payload(payload, datagram.senderAddress().toString()))
+            return False
+
         device_id = str(payload.get("device_id") or "")
         if not device_id or device_id == self.device_id:
             return False
 
-        kind = payload.get("kind")
         if kind not in {"presence", "db_state"}:
             return False
 
@@ -424,9 +440,25 @@ class LanDiscovery(QObject):
         self.peers[device_id] = peer
         if not bool(payload.get("direct_reply")):
             self._send_direct_presence_reply(datagram.senderAddress())
-        if kind == "db_state":
+        if kind == "db_state" and self.peer_data_sync_enabled:
             self._pull_peer_snapshot_if_newer(peer)
         return True
+
+    def _data_server_from_payload(self, payload: dict[str, Any], address: str) -> CentralDataServer:
+        try:
+            port = int(payload.get("data_port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if port <= 0:
+            port = self.sync_port + 1
+        name = str(payload.get("name") or "数据服务")
+        return CentralDataServer(
+            name=name,
+            address=address,
+            port=port,
+            url=f"http://{address}:{port}",
+            last_seen=time.monotonic(),
+        )
 
     def _peer_from_payload(self, payload: dict[str, Any], address: str) -> LanPeer:
         sync = payload.get("sync")
@@ -464,13 +496,16 @@ class LanDiscovery(QObject):
             return
         self.peers[peer.device_id] = peer
         self.peers_changed.emit(self.sorted_peers())
-        self._pull_peer_snapshot_if_newer(peer)
+        if self.peer_data_sync_enabled:
+            self._pull_peer_snapshot_if_newer(peer)
 
     def _pull_newer_peer_snapshots(self) -> None:
         for peer in list(self.peers.values()):
             self._pull_peer_snapshot_if_newer(peer)
 
     def request_peer_snapshot_refresh(self) -> int:
+        if not self.peer_data_sync_enabled:
+            return 0
         started_count = 0
         for peer in list(self.peers.values()):
             if self._start_snapshot_pull(peer, force=False, bypass_throttle=True):

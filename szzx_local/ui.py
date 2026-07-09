@@ -5973,12 +5973,17 @@ class MainWindow(QMainWindow):
         if self.discovery is None:
             self.lan_subtitle.setText("局域网发现没有启动。")
             return
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is not None:
+            central_sync.sync_now(push_first=True)
         self.discovery.announce_burst()
         started_count = self.discovery.request_peer_snapshot_refresh()
         self._refresh_after_lan_sync()
         self._refresh_peers(self.discovery.sorted_peers())
         if started_count:
             self.lan_subtitle.setText(f"已开始后台同步 {started_count} 位同事，完成后会自动刷新。")
+        elif central_sync is not None:
+            self.lan_subtitle.setText("已请求中央数据服务同步，完成后会自动刷新。")
         else:
             self.lan_subtitle.setText("刷新完成，没有发现比本机更新的数据。")
 

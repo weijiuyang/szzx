@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from .ai import LocalSummarizer
 from .autostart import set_autostart
+from .central_sync import CentralDataSync
 from .database import Database
 from .lan import LanDiscovery
 from .pet import DesktopPet
@@ -36,8 +37,13 @@ def main() -> int:
 
     pet = DesktopPet()
     summarizer = LocalSummarizer()
-    discovery = LanDiscovery(db.device_id(), db.display_name(), db=db)
+    discovery = LanDiscovery(db.device_id(), db.display_name(), db=db, peer_data_sync_enabled=False)
+    central_sync = CentralDataSync(db)
+    discovery.data_server_seen.connect(central_sync.set_discovered_server)
     window = MainWindow(db, summarizer, pet, discovery)
+    window.central_sync = central_sync
+    central_sync.data_synced.connect(window._refresh_after_lan_sync)
+    central_sync.start()
     window.show()
 
     try:

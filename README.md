@@ -1,16 +1,16 @@
 # 数智中心
 
-数智中心是一个本地优先的 Qt 桌面原型，用于周报、AI 摘要、项目协作和桌宠陪伴。
+数智中心是一个局域网 C/S 桌面工具，用于周报、AI 摘要、项目协作和桌宠陪伴。
 
-This first version is intentionally simple:
+Current shape:
 
 - no login
 - local PIN unlock
 - local JSON storage
-- no HTTP client traffic
+- LAN central data service for shared records
 - optional local AI command integration
 - PySide6 desktop UI for macOS and Windows
-- LAN presence discovery without login or friend requests
+- LAN service discovery without login or friend requests
 
 ## Run
 
@@ -34,6 +34,25 @@ The default PIN is `1234`. Change it after first unlock from the app settings pa
 In development, local data is stored in `local_data/szzx.json`.
 In packaged builds, it is stored in the user's application data directory.
 Override it with `SZZX_LOCAL_DATA_DIR`.
+
+## LAN Data Service
+
+Run this only on the computer that should hold the central LAN data, for example
+尉久洋's computer:
+
+```bash
+python -m szzx_local.server --name 尉久洋数据服务 --port 45456
+```
+
+The desktop installer starts only the client app. The data service is a separate
+process and is not launched by the packaged desktop app.
+
+The desktop clients discover the server by service name over UDP `45454`, then
+sync shared records through HTTP on the data service port. If the server IP
+changes, clients can rediscover it by name. To override discovery, set
+`SZZX_DATA_SERVER_URL`, for example `http://192.168.1.23:45456`. The service
+database is separate from the client database by default and is stored under the
+platform application data directory in `DataServer/szzx_server.json`.
 
 ## Build A Desktop App
 
@@ -65,10 +84,15 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.126",
+  "version": "0.2.1",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "修复旧删除记录会挡住远端仍存在项目的问题，避免 26 个项目的旧库无法从 28 个项目的同事处补齐。",
+  "notes": "同步架构升级为局域网 C/S：新增独立中央数据服务，客户端会按服务名自动发现并向服务器推拉共享数据。",
   "history": [
+    {
+      "version": "0.2.1",
+      "date": "2026-07-09",
+      "notes": "同步架构升级为局域网 C/S：新增独立中央数据服务，客户端会按服务名自动发现并向服务器推拉共享数据。"
+    },
     {
       "version": "0.1.126",
       "date": "2026-07-08",

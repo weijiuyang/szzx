@@ -10,7 +10,7 @@ import sys
 import uuid
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, ProjectWeeklyReport, RestDay, WeeklyReport
 from .pin import DEFAULT_PIN, hash_pin, verify_pin
@@ -145,6 +145,7 @@ class Database:
     def __init__(self, path: Path = DB_PATH) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._after_save_callbacks: list[Callable[[bool], None]] = []
         self.data = self._load()
         self._migrate()
 
@@ -292,6 +293,15 @@ class Database:
         with tmp_path.open("w", encoding="utf-8") as file:
             json.dump(self.data, file, ensure_ascii=False, indent=2)
         tmp_path.replace(self.path)
+        for callback in list(self._after_save_callbacks):
+            try:
+                callback(bump_sync)
+            except Exception:
+                continue
+
+    def add_after_save_callback(self, callback: Callable[[bool], None]) -> None:
+        if callback not in self._after_save_callbacks:
+            self._after_save_callbacks.append(callback)
 
     def _bump_sync_revision(self) -> None:
         sync = self.data.setdefault("sync", {})

@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+
+LAN_PORT = 45454
+SYNC_TCP_PORT = 45455
+APP_PROTOCOL = "szzx-local-desk"
+DEFAULT_DATA_SERVER_NAME = "尉久洋数据服务"
+DEFAULT_DATA_SERVER_PORT = 45456
+DISCOVERY_SERVER_KIND = "data_server"
