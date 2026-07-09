@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from .protocol import DEFAULT_DATA_SERVER_NAME
+from .protocol import DEFAULT_DATA_SERVER_NAME, SERVER_AUTHORITATIVE_HEADER, SERVER_AUTHORITATIVE_VALUE
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,13 @@ class CentralDataSync(QObject):
     _snapshot_received = Signal(object)
     _sync_failed = Signal(str)
 
-    def __init__(self, db: Any, server_name: str | None = None, server_url: str | None = None) -> None:
+    def __init__(
+        self,
+        db: Any,
+        server_name: str | None = None,
+        server_url: str | None = None,
+        bootstrap_snapshot: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__()
         self.db = db
         self.server_name = (server_name or os.environ.get("SZZX_DATA_SERVER_NAME") or DEFAULT_DATA_SERVER_NAME).strip()
@@ -41,6 +47,8 @@ class CentralDataSync(QObject):
         self._server_ready = False
         self._local_dirty = False
         self._active_mode = "pull"
+        self._bootstrap_snapshot = bootstrap_snapshot if isinstance(bootstrap_snapshot, dict) else None
+        self._bootstrap_files_uploaded = False
         self._last_success = 0.0
         self._snapshot_received.connect(self._apply_server_snapshot)
         self._sync_failed.connect(self._handle_sync_failed)
@@ -75,7 +83,7 @@ class CentralDataSync(QObject):
         self._busy = True
         mode = "push" if self._server_ready and (push_first or self._local_dirty) else "pull"
         self._active_mode = mode
-        snapshot = self.db.shared_snapshot(include_files=False) if mode == "push" else None
+        snapshot = self.db.shared_snapshot(include_files=True) if mode == "push" else None
         thread = threading.Thread(target=self._sync_worker, args=(self.server_url, snapshot, mode), daemon=True)
         thread.start()
 
@@ -99,13 +107,16 @@ class CentralDataSync(QObject):
                 request = Request(
                     f"{server_url}/snapshot",
                     data=payload,
-                    headers={"Content-Type": "application/json; charset=utf-8"},
+                    headers={
+                        "Content-Type": "application/json; charset=utf-8",
+                        SERVER_AUTHORITATIVE_HEADER: SERVER_AUTHORITATIVE_VALUE,
+                    },
                     method="POST",
                 )
             else:
                 request = Request(f"{server_url}/snapshot", method="GET")
-            with urlopen(request, timeout=8) as response:
-                body = response.read(120 * 1024 * 1024)
+            with urlopen(request, timeout=30) as response:
+                body = response.read(500 * 1024 * 1024)
             server_snapshot = json.loads(body.decode("utf-8"))
             if not isinstance(server_snapshot, dict):
                 raise ValueError("server snapshot is invalid")
@@ -120,6 +131,9 @@ class CentralDataSync(QObject):
         if isinstance(snapshot, dict):
             changed = self.db.replace_shared_snapshot(snapshot)
             self._server_ready = True
+            if not self._bootstrap_files_uploaded and self._post_bootstrap_files(snapshot):
+                self._bootstrap_files_uploaded = True
+                self._pending = True
             if self._active_mode == "push":
                 self._local_dirty = False
         self._last_success = time.monotonic()
@@ -134,6 +148,39 @@ class CentralDataSync(QObject):
         if self._pending:
             self._pending = False
             self.sync_now(push_first=True)
+
+    def _post_bootstrap_files(self, server_snapshot: dict[str, Any]) -> bool:
+        bootstrap = self._bootstrap_snapshot
+        self._bootstrap_snapshot = None
+        if not isinstance(bootstrap, dict) or not self.server_url:
+            return False
+        bootstrap_files = bootstrap.get("files")
+        if not isinstance(bootstrap_files, dict) or not bootstrap_files:
+            return False
+        tables = server_snapshot.get("tables")
+        if not isinstance(tables, dict):
+            return False
+        server_documents = tables.get("project_documents")
+        if not isinstance(server_documents, list):
+            return False
+        server_files = server_snapshot.get("files") if isinstance(server_snapshot.get("files"), dict) else {}
+        missing_files: dict[str, Any] = {}
+        for row in server_documents:
+            if not isinstance(row, dict):
+                continue
+            document_id = str(row.get("id", ""))
+            if not document_id or document_id in server_files or document_id not in bootstrap_files:
+                continue
+            missing_files[document_id] = bootstrap_files[document_id]
+        if not missing_files:
+            return False
+        hydrate_snapshot = dict(server_snapshot)
+        hydrate_snapshot["files"] = missing_files
+        self._busy = True
+        self._active_mode = "push"
+        thread = threading.Thread(target=self._sync_worker, args=(self.server_url, hydrate_snapshot, "push"), daemon=True)
+        thread.start()
+        return True
 
     def _normalize_url(self, value: str) -> str:
         value = value.strip().rstrip("/")

@@ -5,8 +5,10 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import socket
 import sys
+import threading
 import uuid
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -18,6 +20,7 @@ from .version import APP_VERSION
 
 
 BUNDLED_SEED_ENV = "SZZX_BUNDLED_SEED_PATH"
+MAX_DOCUMENT_FILENAME_LENGTH = 120
 
 
 def _default_app_dir() -> Path:
@@ -142,10 +145,36 @@ def _previous_week_range(today: date | None = None) -> tuple[date, date]:
     return start, start + timedelta(days=6)
 
 
+def safe_document_filename(name: str, fallback: str = "document", max_length: int = MAX_DOCUMENT_FILENAME_LENGTH) -> str:
+    raw = Path(str(name or "")).name.strip() or fallback
+    raw = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", raw).strip(" ._") or fallback
+    suffix = Path(raw).suffix[:16]
+    stem = Path(raw).stem or fallback
+    max_stem = max(12, max_length - len(suffix))
+    if len(stem) > max_stem:
+        stem = stem[:max_stem].rstrip(" ._-") or fallback
+    return f"{stem}{suffix}"
+
+
+def unique_document_path(target_dir: Path, filename: str, unique_id: str = "") -> Path:
+    safe_name = safe_document_filename(filename)
+    target = target_dir / safe_name
+    if not target.exists():
+        return target
+    path = Path(safe_name)
+    suffix = path.suffix
+    stem = path.stem or "document"
+    tag = str(unique_id or datetime.now().strftime("%Y%m%d%H%M%S%f"))[-16:]
+    max_stem = max(12, MAX_DOCUMENT_FILENAME_LENGTH - len(suffix) - len(tag) - 1)
+    stem = stem[:max_stem].rstrip(" ._-") or "document"
+    return target_dir / f"{stem}-{tag}{suffix}"
+
+
 class Database:
     def __init__(self, path: Path = DB_PATH) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._save_lock = threading.RLock()
         self._after_save_callbacks: list[Callable[[bool], None]] = []
         self.data = self._load()
         self._migrate()
@@ -289,13 +318,23 @@ class Database:
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
     def _save(self, bump_sync: bool = True) -> None:
-        if bump_sync:
-            self._bump_sync_revision()
-        tmp_path = self.path.with_suffix(".tmp")
-        with tmp_path.open("w", encoding="utf-8") as file:
-            json.dump(self.data, file, ensure_ascii=False, indent=2)
-        tmp_path.replace(self.path)
-        for callback in list(self._after_save_callbacks):
+        with self._save_lock:
+            if bump_sync:
+                self._bump_sync_revision()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self.path.with_name(f"{self.path.stem}.{uuid.uuid4().hex}.tmp")
+            try:
+                with tmp_path.open("w", encoding="utf-8") as file:
+                    json.dump(self.data, file, ensure_ascii=False, indent=2)
+                tmp_path.replace(self.path)
+            finally:
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except OSError:
+                    pass
+            callbacks = list(self._after_save_callbacks)
+        for callback in callbacks:
             try:
                 callback(bump_sync)
             except Exception:
@@ -2549,9 +2588,12 @@ class Database:
             try:
                 if not document_id or not source.is_file():
                     continue
+                content = source.read_bytes()
                 files[document_id] = {
                     "name": source.name,
-                    "content": base64.b64encode(source.read_bytes()).decode("ascii"),
+                    "size": str(len(content)),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "content": base64.b64encode(content).decode("ascii"),
                 }
             except OSError:
                 continue
@@ -2659,8 +2701,8 @@ class Database:
             changed = True
         if self._apply_deleted_records(active_deleted_records):
             changed = True
-        if isinstance(files, dict) and changed:
-            self._restore_document_files(self.data, files)
+        if isinstance(files, dict) and self._restore_document_files(self.data, files):
+            changed = True
         if self._repair_project_todo_completion_duplicates():
             changed = True
         self._sync_counters_to_rows()
@@ -2705,12 +2747,15 @@ class Database:
             self.data["sync"] = next_sync
         files = snapshot.get("files")
         if isinstance(files, dict):
-            self._restore_document_files(self.data, files)
+            if self._restore_document_files(self.data, files):
+                changed = True
+        if self._prune_unreferenced_document_files():
+            changed = True
         self._sync_counters_to_rows()
         self._save(bump_sync=False)
         return changed
 
-    def clear_shared_data_cache(self) -> bool:
+    def clear_shared_data_cache(self, prune_documents: bool = True) -> bool:
         empty = self._empty_data()
         changed = False
         for table in SHARED_TABLES:
@@ -2722,6 +2767,8 @@ class Database:
         next_sync = {"revision": 0, "updated_at": "", "origin": "", "actor": ""}
         if self.data.get("sync") != next_sync:
             self.data["sync"] = next_sync
+            changed = True
+        if prune_documents and self._prune_unreferenced_document_files():
             changed = True
         if changed:
             self._save(bump_sync=False)
@@ -2783,11 +2830,11 @@ class Database:
                 changed = True
         if self._repair_project_todo_completion_duplicates():
             changed = True
+        files = snapshot.get("files")
+        if isinstance(files, dict) and self._restore_document_files(self.data, files):
+            changed = True
         if not changed:
             return False
-        files = snapshot.get("files")
-        if isinstance(files, dict):
-            self._restore_document_files(self.data, files)
         self._sync_counters_to_rows()
         self._save()
         return True
@@ -3460,10 +3507,11 @@ class Database:
         except OSError:
             return
 
-    def _restore_document_files(self, tables: dict[str, Any], files: dict[str, Any]) -> None:
+    def _restore_document_files(self, tables: dict[str, Any], files: dict[str, Any]) -> bool:
         documents = tables.get("project_documents")
         if not isinstance(documents, list):
-            return
+            return False
+        changed = False
         for row in documents:
             if not isinstance(row, dict):
                 continue
@@ -3475,20 +3523,74 @@ class Database:
                 content = base64.b64decode(str(payload.get("content", "")))
             except ValueError:
                 continue
+            expected_hash = str(payload.get("sha256", "")).strip()
+            if expected_hash and hashlib.sha256(content).hexdigest() != expected_hash:
+                continue
             project_id = int(row.get("project_id", 0))
-            filename = Path(str(payload.get("name") or row.get("title") or f"document-{document_id}")).name
+            filename = safe_document_filename(str(payload.get("name") or row.get("title") or f"document-{document_id}"))
             target_dir = self.path.parent / "documents" / str(project_id)
             target_dir.mkdir(parents=True, exist_ok=True)
-            target = target_dir / filename
+            current = Path(str(row.get("file_path", "")))
+            target = current if self._document_path_is_inside_library(current) else target_dir / filename
             if target.exists():
-                stem = target.stem or "document"
-                suffix = target.suffix
-                target = target_dir / f"{stem}-{document_id}{suffix}"
+                try:
+                    existing = target.read_bytes()
+                except OSError:
+                    existing = b""
+                if expected_hash and hashlib.sha256(existing).hexdigest() == expected_hash:
+                    if row.get("file_path") != str(target):
+                        row["file_path"] = str(target)
+                        changed = True
+                    continue
+            else:
+                target = unique_document_path(target_dir, filename, document_id)
             try:
                 target.write_bytes(content)
             except OSError:
                 continue
-            row["file_path"] = str(target)
+            if row.get("file_path") != str(target):
+                row["file_path"] = str(target)
+            changed = True
+        return changed
+
+    def _document_path_is_inside_library(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to((self.path.parent / "documents").resolve())
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def _prune_unreferenced_document_files(self) -> bool:
+        root = self.path.parent / "documents"
+        if not root.exists():
+            return False
+        referenced: set[Path] = set()
+        for row in self.data.get("project_documents", []):
+            if not isinstance(row, dict):
+                continue
+            path = Path(str(row.get("file_path", "")))
+            if not self._document_path_is_inside_library(path):
+                continue
+            try:
+                referenced.add(path.resolve())
+            except OSError:
+                continue
+        changed = False
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if resolved in referenced:
+                continue
+            try:
+                path.unlink()
+                changed = True
+            except OSError:
+                continue
+        return changed
 
     def _is_remote_snapshot_newer(self, snapshot: dict[str, Any]) -> bool:
         remote = snapshot.get("sync")

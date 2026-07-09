@@ -44,6 +44,14 @@ Run this only on the computer that should hold the central LAN data, for example
 python -m szzx_local.server --name 尉久洋数据服务 --port 45456
 ```
 
+If the server database was polluted by an old client, stop the service and start
+once with `--reset-data`; it creates a timestamped backup and clears shared
+records before listening:
+
+```bash
+python -m szzx_local.server --name 尉久洋数据服务 --port 45456 --reset-data
+```
+
 The desktop installer starts only the client app. The data service is a separate
 process and is not launched by the packaged desktop app. Packaged clients do not
 bundle shared project data; they load shared records from the LAN data service.
@@ -58,6 +66,11 @@ platform application data directory in `DataServer/szzx_server.json`.
 On first connection, the server snapshot is authoritative: the client replaces
 its local shared project records with the server copy before it is allowed to
 push new local changes.
+
+Document files are synchronized with the same server-authoritative flow. Clients
+upload local document bytes with hashes, the server stores the canonical copy,
+and clients restore missing or mismatched files from the server snapshot while
+pruning unreferenced files under their local `documents` directory.
 
 ## Build A Desktop App
 

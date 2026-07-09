@@ -576,6 +576,8 @@ class LanDiscovery(QObject):
         return False
 
     def _start_snapshot_pull(self, peer: LanPeer, force: bool = False, bypass_throttle: bool = False) -> bool:
+        if not self.peer_data_sync_enabled:
+            return False
         if peer.device_id in self._pulling_peer_ids:
             return False
         now = time.monotonic()
@@ -602,6 +604,8 @@ class LanDiscovery(QObject):
     def _apply_fetched_snapshot(self, peer: object, snapshot: object, force: bool) -> None:
         if isinstance(peer, LanPeer):
             self._finish_snapshot_pull(peer.device_id)
+        if not self.peer_data_sync_enabled:
+            return
         if self.db is None or not isinstance(snapshot, dict):
             return
         changed = False
@@ -613,6 +617,8 @@ class LanDiscovery(QObject):
             self.data_synced.emit()
 
     def _pull_peer_snapshot(self, peer: LanPeer, force: bool = False) -> bool:
+        if not self.peer_data_sync_enabled:
+            return False
         if self.db is None:
             return False
         snapshot = self._fetch_snapshot(peer)

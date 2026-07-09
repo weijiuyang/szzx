@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
 from .ai import LocalSummarizer
 from .autostart import autostart_registered, is_supported as autostart_supported, set_autostart
 from .changelog import changelog_text, current_release_notes
-from .database import APP_DIR, Database
+from .database import APP_DIR, Database, safe_document_filename, unique_document_path
 from .lan import LanDiscovery, LanPeer
 from .models import (
     DailyReport,
@@ -413,6 +413,29 @@ QLabel#badgeWinner, QLabel#badgeRule {
     color: #1d1e1b;
 }
 """
+
+
+def _safe_local_path(value: str) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if sys.platform != "win32" and len(raw) >= 3 and raw[1:3] == ":\\":
+        return None
+    try:
+        path = Path(raw)
+        path.exists()
+    except (OSError, ValueError):
+        return None
+    return path
+
+
+def _path_exists_safely(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        return path.exists()
+    except (OSError, ValueError):
+        return False
 
 
 DOCUMENT_TYPES = [
@@ -2713,17 +2736,23 @@ class MainWindow(QMainWindow):
         total = len(self.db.list_projects())
         visible = len(self._visible_projects())
         scope = "全部" if getattr(self, "project_scope_value", "mine") == "all" else "自己"
-        base = f"{scope}视角：显示 {visible} / 本机已同步 {total} 个项目。"
+        source = "服务器数据" if getattr(self, "central_sync", None) is not None else "本机已同步"
+        base = f"{scope}视角：显示 {visible} / {source} {total} 个项目。"
         self.project_sync_hint.setText(f"{message} · {base}" if message else base)
 
     def _manual_project_refresh(self) -> None:
-        message = "已刷新本机项目。"
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is not None:
+            central_sync.sync_now()
+            message = "已请求中央数据服务同步。"
+        else:
+            message = "已刷新本机项目。"
         if self.discovery is not None:
             self.discovery.announce_burst()
             started_count = self.discovery.request_peer_snapshot_refresh()
             if started_count:
                 message = f"已开始后台同步 {started_count} 位同事，界面不会卡住。"
-            else:
+            elif central_sync is None:
                 message = "已刷新，没有发现比本机更新的同事数据。"
         self._refresh_after_lan_sync()
         if self.discovery is not None:
@@ -3702,10 +3731,10 @@ class MainWindow(QMainWindow):
     def _copy_document_into_library(self, project_id: int, source: Path) -> Path | None:
         target_dir = APP_DIR / "documents" / str(project_id)
         target_dir.mkdir(parents=True, exist_ok=True)
-        stem = source.stem or "document"
-        suffix = source.suffix
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        target = target_dir / f"{stem}-{timestamp}{suffix}"
+        safe_name = safe_document_filename(source.name)
+        source_name = Path(safe_name)
+        target = unique_document_path(target_dir, f"{source_name.stem}-{timestamp}{source_name.suffix}", timestamp)
         try:
             shutil.copy2(source, target)
         except OSError as exc:
@@ -4846,15 +4875,16 @@ class MainWindow(QMainWindow):
         self.project_content_stack.setCurrentIndex(1)
 
     def _render_deck_detail(self, document: ProjectDocument) -> None:
-        source = Path(document.file_path)
-        status = "文件可用" if source.exists() else "原文件找不到"
+        source = _safe_local_path(document.file_path)
+        exists = _path_exists_safely(source)
+        status = "文件可用" if exists else "文件不在本机"
         visibility = "团队文档" if document.visibility == "team" else "本人文档"
         self.deck_detail_title.setText(document.title)
         self.deck_detail_meta.setText(
             f"{document.doc_type} · {visibility} · {document.uploader} · {document.created_at.strftime('%Y-%m-%d %H:%M')} · {status}"
         )
-        self.deck_detail_path.setPlainText(str(source))
-        self.open_deck_button.setEnabled(source.exists())
+        self.deck_detail_path.setPlainText(str(source) if source is not None else str(document.file_path))
+        self.open_deck_button.setEnabled(exists)
 
     def _show_project_overview(self) -> None:
         if hasattr(self, "project_content_stack"):
@@ -4872,9 +4902,9 @@ class MainWindow(QMainWindow):
         self._open_deck_file(deck)
 
     def _open_deck_file(self, deck: ProjectDocument) -> None:
-        source = Path(deck.file_path)
-        if not source.exists():
-            QMessageBox.warning(self, "文件不存在", "这个文档文件找不到，可能被移动或删除了。")
+        source = _safe_local_path(deck.file_path)
+        if not _path_exists_safely(source):
+            QMessageBox.warning(self, "文件不在本机", "这个文档文件没有同步到当前电脑，或原文件已经被移动。")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(source)))
 

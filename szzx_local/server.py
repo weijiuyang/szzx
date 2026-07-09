@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 import uuid
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from .protocol import (
     DEFAULT_DATA_SERVER_PORT,
     DISCOVERY_SERVER_KIND,
     LAN_PORT,
+    SERVER_AUTHORITATIVE_HEADER,
+    SERVER_AUTHORITATIVE_VALUE,
 )
 from .version import APP_VERSION
 
@@ -37,12 +40,12 @@ class DataService:
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            return self.db.shared_snapshot(include_files=False)
+            return self.db.shared_snapshot(include_files=True)
 
     def merge_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             self.db.apply_shared_snapshot(snapshot, force=True)
-            return self.db.shared_snapshot(include_files=False)
+            return self.db.shared_snapshot(include_files=True)
 
     def health(self) -> dict[str, Any]:
         with self.lock:
@@ -99,12 +102,15 @@ class DataServiceHandler(BaseHTTPRequestHandler):
         if self.path != "/snapshot":
             self.send_error(404)
             return
+        if self.headers.get(SERVER_AUTHORITATIVE_HEADER, "") != SERVER_AUTHORITATIVE_VALUE:
+            self.send_error(409, "client must pull the authoritative server snapshot before pushing")
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             self.send_error(400, "invalid content length")
             return
-        if length <= 0 or length > 120 * 1024 * 1024:
+        if length <= 0 or length > 500 * 1024 * 1024:
             self.send_error(413, "snapshot too large")
             return
         try:
@@ -152,9 +158,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("SZZX_DATA_SERVER_PORT", DEFAULT_DATA_SERVER_PORT)))
     parser.add_argument("--name", default=os.environ.get("SZZX_DATA_SERVER_NAME", DEFAULT_DATA_SERVER_NAME))
     parser.add_argument("--data", type=Path, default=default_server_db_path())
+    parser.add_argument("--reset-data", action="store_true", help="Back up and clear all shared records in the server database before starting.")
     args = parser.parse_args(argv)
 
     db = Database(path=args.data)
+    if args.reset_data:
+        if args.data.exists():
+            backup = args.data.with_name(f"{args.data.stem}.backup.{datetime.now().strftime('%Y%m%d%H%M%S')}{args.data.suffix}")
+            backup.write_bytes(args.data.read_bytes())
+            print(f"Backed up server database to: {backup}")
+        db.clear_shared_data_cache()
     service = DataService(db, args.name, args.port)
     service.start_announcing()
     httpd = SZZXDataHTTPServer((args.host, args.port), DataServiceHandler, service)
