@@ -61,6 +61,7 @@ class DataService:
             self._stopped.wait(2.5)
 
     def _announce_once(self) -> None:
+        sync = self.db.sync_state()
         payload = {
             "protocol": APP_PROTOCOL,
             "kind": DISCOVERY_SERVER_KIND,
@@ -68,14 +69,18 @@ class DataService:
             "name": self.name,
             "data_port": self.port,
             "app_version": APP_VERSION,
-            "sync": self.db.sync_state(),
-            "record_counts": self.db.shared_record_counts(),
-            "project_fingerprints": self.db.shared_project_fingerprints(),
+            "sync": {
+                "revision": sync.get("revision", 0),
+                "updated_at": sync.get("updated_at", ""),
+            },
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
             udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            udp.sendto(data, ("255.255.255.255", LAN_PORT))
+            try:
+                udp.sendto(data, ("255.255.255.255", LAN_PORT))
+            except OSError:
+                return
 
 
 class DataServiceHandler(BaseHTTPRequestHandler):

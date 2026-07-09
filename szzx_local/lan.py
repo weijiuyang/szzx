@@ -132,9 +132,17 @@ class LanDiscovery(QObject):
             "sync": self.db.sync_state() if self.db is not None else {},
             "app_version": APP_VERSION,
             "platform": sys.platform,
-            "update_package": self._update_package_info(),
-            "record_counts": self.db.shared_record_counts() if self.db is not None else {},
-            "project_fingerprints": self.db.shared_project_fingerprints() if self.db is not None else {},
+            "update_package": self._update_package_info(compact=not self.peer_data_sync_enabled),
+            "record_counts": (
+                self.db.shared_record_counts()
+                if self.db is not None and self.peer_data_sync_enabled
+                else {}
+            ),
+            "project_fingerprints": (
+                self.db.shared_project_fingerprints()
+                if self.db is not None and self.peer_data_sync_enabled
+                else {}
+            ),
             "today_project_logs": self._today_project_logs(),
         }
         if kind == "presence":
@@ -352,7 +360,7 @@ class LanDiscovery(QObject):
                 return parent
         return None
 
-    def _update_package_info(self) -> dict[str, Any]:
+    def _update_package_info(self, compact: bool = False) -> dict[str, Any]:
         path = self.update_package_path
         if path is None:
             return {}
@@ -360,14 +368,16 @@ class LanDiscovery(QObject):
             stat = path.stat()
         except OSError:
             return {}
-        return {
+        info = {
             "name": path.name,
             "size": stat.st_size,
             "version": APP_VERSION,
             "platform": sys.platform,
             "notes": current_release_notes(),
-            "changelog": CHANGELOG,
         }
+        if not compact:
+            info["changelog"] = CHANGELOG
+        return info
 
     def _today_project_logs(self) -> list[dict[str, Any]]:
         if self.db is None:
