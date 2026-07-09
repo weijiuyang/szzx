@@ -440,6 +440,7 @@ def _path_exists_safely(path: Path | None) -> bool:
 
 DOCUMENT_TYPES = [
     "产品原型图",
+    "PRD",
     "项目汇报PPT",
     "设计图",
     "测试文档",
@@ -1405,8 +1406,6 @@ class ProjectMetricDialog(QDialog):
     def _daily_report_todo_text(self, report: DailyReport) -> str:
         if report.todo_id is None:
             return ""
-        if report.content.strip().startswith(("完成待办：", "完成代办：")):
-            return ""
         return f"关联代办 #{report.todo_id}"
 
 
@@ -1417,6 +1416,7 @@ class TodoDetailDialog(QDialog):
         project_name: str,
         reports: list[DailyReport],
         parent: QWidget | None = None,
+        highlight_report_id: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("代办详情")
@@ -1433,10 +1433,16 @@ class TodoDetailDialog(QDialog):
         detail = QTextEdit()
         detail.setReadOnly(True)
         detail.setMinimumHeight(420)
-        detail.setPlainText(self._detail_text(todo, project_name, reports))
+        detail.setHtml(self._detail_html(todo, project_name, reports, highlight_report_id))
         layout.addWidget(detail)
 
-    def _detail_text(self, todo: ProjectTodo, project_name: str, reports: list[DailyReport]) -> str:
+    def _detail_html(
+        self,
+        todo: ProjectTodo,
+        project_name: str,
+        reports: list[DailyReport],
+        highlight_report_id: int | None = None,
+    ) -> str:
         lines = [
             "基本信息",
             f"项目：{project_name}",
@@ -1472,17 +1478,20 @@ class TodoDetailDialog(QDialog):
             lines.extend(["", "流转记录", *flow_lines])
 
         lines.extend(["", "关联日报"])
+        parts = [f"<div style='white-space: pre-wrap;'>{escape(chr(10).join(lines))}</div>"]
         if not reports:
-            lines.append("暂无关联日报。")
+            parts.append("<p>暂无关联日报。</p>")
         for report in reports:
-            lines.extend(
-                [
-                    "",
-                    f"{report.created_at.strftime('%Y-%m-%d %H:%M')} · {report.member_name} · {report.role}",
-                    report.content,
-                ]
+            color = "#8f2d1f" if report.id == highlight_report_id else "#23241f"
+            weight = "600" if report.id == highlight_report_id else "400"
+            meta = f"{report.created_at.strftime('%Y-%m-%d %H:%M')} · {report.member_name} · {report.role}"
+            content = report.content.strip() or "空日报"
+            parts.append(
+                "<div style='white-space: pre-wrap; margin-top: 12px; "
+                f"color: {color}; font-weight: {weight};'>"
+                f"{escape(meta)}\n{escape(content)}</div>"
             )
-        return "\n".join(lines)
+        return "".join(parts)
 
     def _todo_status_text(self, todo: ProjectTodo) -> str:
         return {
@@ -1516,6 +1525,55 @@ class TodoDetailDialog(QDialog):
             handler_text = f" -> {handler}" if handler else ""
             lines.append(f"{time_text} · {actor} · {action}{handler_text}")
         return lines
+
+
+class DailyReportDetailDialog(QDialog):
+    def __init__(
+        self,
+        report: DailyReport,
+        linked_todo: ProjectTodo | None,
+        linked_text: str,
+        can_delete: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("日报详情")
+        self.setFixedWidth(620)
+        self.setStyleSheet(APP_STYLE)
+        self.delete_requested = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        layout.addWidget(_label("日报详情", "sectionTitle"))
+        layout.addWidget(_label(f"{report.created_at.strftime('%Y-%m-%d %H:%M')} · {report.member_name} · {report.role}", "muted"))
+
+        linked_label = _label(f"关联代办：{linked_text}" if linked_text else "未关联代办", "muted")
+        linked_label.setWordWrap(True)
+        layout.addWidget(linked_label)
+
+        content = QTextEdit()
+        content.setReadOnly(True)
+        content.setMinimumHeight(220)
+        content.setPlainText(report.content)
+        layout.addWidget(content)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        if can_delete:
+            delete_button = QPushButton("删除")
+            delete_button.setObjectName("dangerButton")
+            delete_button.clicked.connect(self._request_delete)
+            actions.addWidget(delete_button)
+        close = QPushButton("关闭")
+        close.clicked.connect(self.reject)
+        actions.addWidget(close)
+        layout.addLayout(actions)
+
+    def _request_delete(self) -> None:
+        self.delete_requested = True
+        self.accept()
 
 
 class TodoDailyReportDialog(QDialog):
@@ -1769,6 +1827,7 @@ class MainWindow(QMainWindow):
         self.calendar_mode = "rest"
         self.rest_calendar_month = date.today().replace(day=1)
         self.selected_rest_day: date | None = None
+        self._pending_project_refresh_id: int | None = None
 
         self.setWindowTitle(f"{self.db.display_name()} - 数智中心")
         self.resize(1360, 820)
@@ -2392,7 +2451,7 @@ class MainWindow(QMainWindow):
         self.member_name = QLineEdit()
         self.member_name.setPlaceholderText("姓名，例如 张三")
         self.member_role = QComboBox()
-        self.member_role.addItems(["前端开发", "后端开发", "数据开发", "UI/设计", "测试", "产品经理", "设计", "运维"])
+        self.member_role.addItems(["前端开发", "后端开发", "数据开发", "算法", "UI/设计", "测试", "产品经理", "运营", "设计", "运维"])
         self.add_member_button = QPushButton("添加成员")
         self.add_member_button.clicked.connect(self._add_project_member)
         member_form_layout.addWidget(self.member_name)
@@ -2705,6 +2764,7 @@ class MainWindow(QMainWindow):
     def _project_list_card(self, project: Project, active: bool = False) -> QWidget:
         card = QWidget()
         card.setObjectName("projectListCardActive" if active else "projectListCard")
+        card.setProperty("projectId", project.id)
         card.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -2729,6 +2789,19 @@ class MainWindow(QMainWindow):
         owner_row.addStretch()
         layout.addLayout(owner_row)
         return card
+
+    def _refresh_project_list_active_state(self) -> None:
+        if not hasattr(self, "project_list"):
+            return
+        for index in range(self.project_list.count()):
+            item = self.project_list.item(index)
+            widget = self.project_list.itemWidget(item)
+            if widget is None:
+                continue
+            active = item.data(Qt.ItemDataRole.UserRole) == self.current_project_id
+            widget.setObjectName("projectListCardActive" if active else "projectListCard")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     def _update_project_sync_hint(self, message: str | None = None) -> None:
         if not hasattr(self, "project_sync_hint"):
@@ -2952,17 +3025,35 @@ class MainWindow(QMainWindow):
         return f"开始 {todo.started_at.strftime('%m-%d %H:%M')} · 已开始 {self._days_since(todo.started_at)} 天"
 
     def _daily_report_todo_text(self, report: DailyReport) -> str:
-        if report.todo_id is None:
-            return ""
-        if report.content.strip().startswith(("完成待办：", "完成代办：")):
-            return ""
-        todo = self.db.get_project_todo(report.todo_id)
+        todo = self._todo_for_daily_report(report)
         if todo is None:
-            return "关联的代办已删除"
+            return "关联的代办已删除" if report.todo_id is not None else ""
         title = todo.title.strip()
         if len(title) > 36:
             title = f"{title[:36]}..."
         return title
+
+    def _todo_for_daily_report(self, report: DailyReport) -> ProjectTodo | None:
+        if report.todo_id is not None:
+            todo = self.db.get_project_todo(report.todo_id)
+            if todo is not None:
+                return todo
+        completed_title = self._completion_todo_title_from_report(report.content)
+        if not completed_title:
+            return None
+        target_title = " ".join(completed_title.split()).casefold()
+        for todo in self.db.list_project_todos(report.project_id, include_completed=True):
+            todo_title = " ".join(todo.title.strip().split()).casefold()
+            if todo_title == target_title:
+                return todo
+        return None
+
+    def _completion_todo_title_from_report(self, content: str) -> str:
+        text = content.strip()
+        for prefix in ("完成待办：", "完成代办：", "完成待办:", "完成代办:"):
+            if text.startswith(prefix):
+                return text[len(prefix):].strip()
+        return ""
 
     def _todo_progress_text(self, todo: ProjectTodo) -> str:
         reports = [
@@ -3272,12 +3363,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(_label(todo.title, "muted"))
         return card
 
-    def _open_todo_detail(self, todo: ProjectTodo) -> None:
+    def _open_todo_detail(self, todo: ProjectTodo, highlight_report_id: int | None = None) -> None:
         latest = self.db.get_project_todo(todo.id) or todo
         project = self.db.get_project(latest.project_id)
         project_name = project.name if project is not None else "未知项目"
         reports = self.db.list_daily_reports_for_todo(latest.id, limit=1000)
-        TodoDetailDialog(latest, project_name, reports, self).exec()
+        TodoDetailDialog(latest, project_name, reports, self, highlight_report_id=highlight_report_id).exec()
 
     def _open_todo_detail_by_id(self, todo_id: int) -> None:
         todo = self.db.get_project_todo(todo_id)
@@ -3290,8 +3381,16 @@ class MainWindow(QMainWindow):
         project_id = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(project_id, int):
             self.current_project_id = project_id
+            self._pending_project_refresh_id = project_id
+            self._refresh_project_list_active_state()
             self._show_project_overview()
-            self._refresh_project_workspace()
+            QTimer.singleShot(0, lambda selected=project_id: self._refresh_project_workspace_if_current(selected))
+
+    def _refresh_project_workspace_if_current(self, project_id: int) -> None:
+        if self.current_project_id != project_id or self._pending_project_refresh_id != project_id:
+            return
+        self._pending_project_refresh_id = None
+        self._refresh_project_workspace()
 
     def _select_project_mode(self, index: int) -> None:
         if index == 1:
@@ -3423,6 +3522,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "保存失败", "这个项目记录已经不存在。")
             self._load_projects()
             return
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is not None:
+            central_sync.mark_local_dirty()
+            central_sync.sync_now(push_first=True)
         self._refresh_project_workspace()
 
     def _delete_current_project(self) -> None:
@@ -3746,6 +3849,12 @@ class MainWindow(QMainWindow):
         project = self._current_project()
         if project is None:
             return
+        developer_scroll_value = 0
+        developer_was_at_bottom = False
+        if hasattr(self, "developer_feed"):
+            developer_scrollbar = self.developer_feed.verticalScrollBar()
+            developer_scroll_value = developer_scrollbar.value()
+            developer_was_at_bottom = developer_scrollbar.value() >= developer_scrollbar.maximum() - 2
         members = self.db.list_project_members(project.id)
         daily_reports = self.db.list_daily_reports(project.id)
         weekly_reports = self.db.list_project_weekly_reports(project.id)
@@ -3764,11 +3873,20 @@ class MainWindow(QMainWindow):
         self.project_backup_link_button.setVisible(bool(project.backup_project_link))
         self.project_backup_link_button.setToolTip(project.backup_project_link or "打开备用项目")
         self.project_description.setText(project.description)
-        self.config_project_description.setPlainText(project.description)
-        if hasattr(self, "config_project_link"):
-            self.config_project_link.setText(project.project_link)
-        if hasattr(self, "config_project_backup_link"):
-            self.config_project_backup_link.setText(project.backup_project_link)
+        editing_config = (
+            self.project_side_stack.currentIndex() == 1
+            and (
+                self.config_project_description.hasFocus()
+                or (hasattr(self, "config_project_link") and self.config_project_link.hasFocus())
+                or (hasattr(self, "config_project_backup_link") and self.config_project_backup_link.hasFocus())
+            )
+        )
+        if not editing_config:
+            self.config_project_description.setPlainText(project.description)
+            if hasattr(self, "config_project_link"):
+                self.config_project_link.setText(project.project_link)
+            if hasattr(self, "config_project_backup_link"):
+                self.config_project_backup_link.setText(project.backup_project_link)
         self._set_metric(self.metric_members, len(members))
         self._set_metric(self.metric_todos, len(open_todos))
         self._set_metric(self.metric_daily, len(daily_reports))
@@ -3953,7 +4071,20 @@ class MainWindow(QMainWindow):
             )
         for group in self._daily_report_groups(visible_daily_reports)[:5]:
             self._add_daily_report_group_card(self.developer_feed, group)
+        QTimer.singleShot(
+            0,
+            lambda value=developer_scroll_value, bottom=developer_was_at_bottom: self._restore_developer_feed_scroll(value, bottom),
+        )
         self._refresh_my_panel()
+
+    def _restore_developer_feed_scroll(self, value: int, was_at_bottom: bool) -> None:
+        if not hasattr(self, "developer_feed"):
+            return
+        scrollbar = self.developer_feed.verticalScrollBar()
+        if was_at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
+        else:
+            scrollbar.setValue(min(value, scrollbar.maximum()))
 
     def _clear_project_workspace(self) -> None:
         if not hasattr(self, "project_title"):
@@ -4655,7 +4786,7 @@ class MainWindow(QMainWindow):
             body.addWidget(meta)
         body.addWidget(text)
         layout.addLayout(body, 1)
-        linked_todo = self.db.get_project_todo(daily_report.todo_id) if daily_report is not None and daily_report.todo_id is not None else None
+        linked_todo = self._todo_for_daily_report(daily_report) if daily_report is not None else None
 
         if document is not None:
             actions = QHBoxLayout()
@@ -4746,8 +4877,6 @@ class MainWindow(QMainWindow):
         header.addStretch()
         layout.addLayout(header)
 
-        detail_widgets: list[QWidget] = []
-
         def visual_line_count(value: str, visual_chars_per_line: int = 46) -> int:
             normalized_value = " ".join(value.strip().split())
             if not normalized_value:
@@ -4760,7 +4889,7 @@ class MainWindow(QMainWindow):
 
         def refresh_height() -> None:
             row_height = sum(22 + visual_line_count(row_texts.get(report.id, "")) * 22 for report in reports)
-            height = 52 + row_height + sum(72 for detail in detail_widgets if detail.isVisible())
+            height = 52 + row_height
             item.setSizeHint(QSize(0, height))
             list_widget.doItemsLayout()
 
@@ -4772,6 +4901,7 @@ class MainWindow(QMainWindow):
             content = report.content.strip() or "空日报"
             row_text = f"{report.created_at.strftime('%H:%M')}  {content}"
             row_texts[report.id] = row_text
+            linked_todo = self._todo_for_daily_report(report)
             row_widget = QWidget()
             row_widget.setCursor(Qt.CursorShape.PointingHandCursor)
             row_widget.setStyleSheet("padding: 4px 0;")
@@ -4781,36 +4911,43 @@ class MainWindow(QMainWindow):
             row_label = _label(row_text)
             row_label.setWordWrap(True)
             row_layout.addWidget(row_label, 1)
-            row_box.addWidget(row_widget)
-
-            detail = QWidget()
-            detail.setVisible(False)
-            detail_layout = QHBoxLayout(detail)
-            detail_layout.setContentsMargins(10, 0, 0, 4)
-            detail_layout.setSpacing(8)
-            linked_todo = self.db.get_project_todo(report.todo_id) if report.todo_id is not None else None
-            linked_text = self._daily_report_todo_text(report)
-            detail_label = _label(f"关联代办：{linked_text}" if linked_text else "未关联代办", "muted")
-            detail_label.setWordWrap(True)
-            detail_layout.addWidget(detail_label, 1)
-            if linked_todo is not None:
-                todo_button = QPushButton("查看代办")
-                todo_button.setObjectName("smallButton")
-                todo_button.clicked.connect(lambda checked=False, selected=linked_todo: self._open_todo_detail(selected))
-                detail_layout.addWidget(todo_button)
             if self.db.is_current_user_name(report.member_name):
                 delete_button = QPushButton("删除")
                 delete_button.setObjectName("smallButton")
                 delete_button.clicked.connect(lambda checked=False, selected=report: self._delete_daily_report(selected))
-                detail_layout.addWidget(delete_button)
-            row_box.addWidget(detail)
-            detail_widgets.append(detail)
-            row_widget.mousePressEvent = lambda event, selected=detail: (selected.setVisible(not selected.isVisible()), refresh_height())  # type: ignore[method-assign]
+                row_layout.addWidget(delete_button)
+            row_box.addWidget(row_widget)
+            row_widget.mousePressEvent = lambda event, selected=report: self._handle_daily_report_click(selected)  # type: ignore[method-assign]
             layout.addLayout(row_box)
 
         refresh_height()
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
+
+    def _handle_daily_report_click(self, report: DailyReport) -> None:
+        linked_todo = self._todo_for_daily_report(report)
+        if linked_todo is not None:
+            self._open_todo_detail(linked_todo, highlight_report_id=report.id)
+            return
+        self._open_daily_report_detail(report)
+
+    def _open_daily_report_detail(self, report: DailyReport) -> None:
+        linked_todo = self._todo_for_daily_report(report)
+        linked_text = self._daily_report_todo_text(report)
+        dialog = DailyReportDetailDialog(
+            report,
+            linked_todo,
+            linked_text,
+            self.db.is_current_user_name(report.member_name),
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.delete_requested:
+            self._delete_daily_report(report)
+            return
+        if linked_todo is not None:
+            self._open_todo_detail(linked_todo)
 
     def _feed_card_height(
         self,
@@ -5458,6 +5595,10 @@ class MainWindow(QMainWindow):
             self.db.delete_rest_day(day)
         else:
             self.db.set_rest_day(day, note)
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is not None:
+            central_sync.mark_local_dirty()
+            central_sync.sync_now(push_first=True)
         self.selected_rest_day = day
         self.rest_calendar_month = day.replace(day=1)
         self._refresh_rest_calendar()

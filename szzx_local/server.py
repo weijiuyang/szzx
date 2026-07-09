@@ -40,12 +40,12 @@ class DataService:
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            return self.db.shared_snapshot(include_files=True)
+            return self.db.shared_snapshot(include_files=True, personalized=False)
 
     def merge_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             self.db.apply_shared_snapshot(snapshot, force=True)
-            return self.db.shared_snapshot(include_files=True)
+            return self.db.shared_snapshot(include_files=True, personalized=False)
 
     def health(self) -> dict[str, Any]:
         with self.lock:

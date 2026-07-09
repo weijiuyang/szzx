@@ -13,6 +13,9 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from .protocol import DEFAULT_DATA_SERVER_NAME, SERVER_AUTHORITATIVE_HEADER, SERVER_AUTHORITATIVE_VALUE
 
+PULL_INTERVAL_MS = 5000
+PULL_INTERVAL_SECONDS = PULL_INTERVAL_MS / 1000
+
 
 @dataclass(frozen=True)
 class CentralDataServer:
@@ -44,6 +47,7 @@ class CentralDataSync(QObject):
         self.current_server: CentralDataServer | None = None
         self._busy = False
         self._pending = False
+        self._pending_push = False
         self._server_ready = False
         self._local_dirty = False
         self._active_mode = "pull"
@@ -60,7 +64,7 @@ class CentralDataSync(QObject):
         self.db.add_after_save_callback(self._after_db_save)
 
     def start(self) -> None:
-        self.timer.start(7000)
+        self.timer.start(PULL_INTERVAL_MS)
         QTimer.singleShot(600, self.sync_now)
 
     def set_discovered_server(self, server: object) -> None:
@@ -78,10 +82,15 @@ class CentralDataSync(QObject):
         if not self.server_url:
             return
         if self._busy:
+            if push_first:
+                self._local_dirty = True
+                self._pending_push = True
             self._pending = True
             return
-        self._busy = True
         mode = "push" if self._server_ready and (push_first or self._local_dirty) else "pull"
+        if mode == "pull" and self._last_success and time.monotonic() - self._last_success < PULL_INTERVAL_SECONDS:
+            return
+        self._busy = True
         self._active_mode = mode
         snapshot = self.db.shared_snapshot(include_files=True) if mode == "push" else None
         thread = threading.Thread(target=self._sync_worker, args=(self.server_url, snapshot, mode), daemon=True)
@@ -92,6 +101,12 @@ class CentralDataSync(QObject):
             return
         self._local_dirty = True
         self.push_timer.start(800)
+
+    def mark_local_dirty(self) -> None:
+        if not self._server_ready:
+            return
+        self._local_dirty = True
+        self.push_timer.start(50)
 
     def _server_name_matches(self, name: str) -> bool:
         expected = self.server_name.strip()
@@ -129,8 +144,8 @@ class CentralDataSync(QObject):
         self._busy = False
         changed = False
         if isinstance(snapshot, dict):
-            changed = self.db.replace_shared_snapshot(snapshot)
             self._server_ready = True
+            changed = self.db.apply_shared_snapshot(snapshot, force=True)
             if not self._bootstrap_files_uploaded and self._post_bootstrap_files(snapshot):
                 self._bootstrap_files_uploaded = True
                 self._pending = True
@@ -140,14 +155,18 @@ class CentralDataSync(QObject):
         if changed:
             self.data_synced.emit()
         if self._pending:
+            pending_push = self._pending_push
             self._pending = False
-            self.sync_now(push_first=self._server_ready)
+            self._pending_push = False
+            self.sync_now(push_first=pending_push)
 
     def _handle_sync_failed(self, message: str) -> None:
         self._busy = False
         if self._pending:
+            pending_push = self._pending_push
             self._pending = False
-            self.sync_now(push_first=True)
+            self._pending_push = False
+            self.sync_now(push_first=pending_push)
 
     def _post_bootstrap_files(self, server_snapshot: dict[str, Any]) -> bool:
         bootstrap = self._bootstrap_snapshot

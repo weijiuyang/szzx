@@ -237,6 +237,7 @@ class Database:
         self._migrate_weekly_ids_to_timestamps()
         self._migrate_project_todo_scopes()
         self._repair_project_todo_completion_duplicates()
+        self._repair_daily_report_duplicates()
         self._claim_display_name(self.display_name(), save=False)
         self._apply_deleted_projects(self._active_deleted_project_keys(set()))
         self._apply_deleted_records(self._active_deleted_record_keys_by_table({}))
@@ -1020,6 +1021,8 @@ class Database:
         return personalized
 
     def _personalized_remote_tables(self, tables: dict[str, Any], sync: dict[str, Any]) -> dict[str, Any]:
+        if str(sync.get("scope", "")).strip() == "all":
+            return tables
         personalized = dict(tables)
         rest_days = personalized.get("rest_days")
         if isinstance(rest_days, list):
@@ -1225,6 +1228,7 @@ class Database:
     def list_daily_reports(self, project_id: int, limit: int = 50) -> list[DailyReport]:
         rows = [row for row in self.data["daily_reports"] if int(row["project_id"]) == project_id]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        rows = self._unique_daily_report_rows(rows)
         return [self._daily_from_row(row) for row in rows[:limit]]
 
     def list_member_daily_reports(self, project_id: int, member_name: str) -> list[DailyReport]:
@@ -1236,6 +1240,7 @@ class Database:
             and self._normalize_display_name(str(row.get("member_name", ""))) == target
         ]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        rows = self._unique_daily_report_rows(rows)
         return [self._daily_from_row(row) for row in rows]
 
     def list_daily_reports_for_todo(self, todo_id: int, limit: int = 10) -> list[DailyReport]:
@@ -1245,7 +1250,24 @@ class Database:
             if str(row.get("todo_id", "")).strip() == str(todo_id)
         ]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        rows = self._unique_daily_report_rows(rows)
         return [self._daily_from_row(row) for row in rows[:limit]]
+
+    def _unique_daily_report_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique: list[dict[str, Any]] = []
+        seen: set[tuple[str, ...]] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = self._daily_report_duplicate_key(row)
+            if key is None:
+                unique.append(row)
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+        return unique
 
     def daily_report_counts_by_day(self, mine_only: bool = True) -> dict[date, int]:
         counts: dict[date, int] = {}
@@ -2599,7 +2621,7 @@ class Database:
                 continue
         return files
 
-    def shared_snapshot(self, include_files: bool = False) -> dict[str, Any]:
+    def shared_snapshot(self, include_files: bool = False, personalized: bool = True) -> dict[str, Any]:
         tables: dict[str, Any] = {}
         for table in SHARED_TABLES:
             if table == "activity_events":
@@ -2607,12 +2629,14 @@ class Database:
                 continue
             value = self.data.get(table)
             tables[table] = value.copy() if isinstance(value, dict) else list(value or [])
-        tables = self._personalized_snapshot_tables(tables)
+        if personalized:
+            tables = self._personalized_snapshot_tables(tables)
         snapshot = {
             "sync": self.sync_state(),
             "owner": {
                 "actor": self.display_name(),
                 "origin": self.device_id(),
+                "scope": "personal" if personalized else "all",
             },
             "tables": tables,
         }
@@ -2705,6 +2729,8 @@ class Database:
             changed = True
         if self._repair_project_todo_completion_duplicates():
             changed = True
+        if self._repair_daily_report_duplicates():
+            changed = True
         self._sync_counters_to_rows()
         self.data["sync"] = {
             "revision": int(sync.get("revision", 0)),
@@ -2749,18 +2775,23 @@ class Database:
         if isinstance(files, dict):
             if self._restore_document_files(self.data, files):
                 changed = True
-        if self._prune_unreferenced_document_files():
+        if self._server_files_are_complete(self.data, files) and self._prune_unreferenced_document_files():
             changed = True
         self._sync_counters_to_rows()
         self._save(bump_sync=False)
         return changed
 
-    def clear_shared_data_cache(self, prune_documents: bool = True) -> bool:
+    def clear_shared_data_cache(
+        self,
+        prune_documents: bool = False,
+        preserve_current_user_records: bool = True,
+    ) -> bool:
+        preserved = self._current_user_records_to_preserve() if preserve_current_user_records else {}
         empty = self._empty_data()
         changed = False
         for table in SHARED_TABLES:
             empty_value = empty[table]
-            next_value = {} if isinstance(empty_value, dict) else []
+            next_value = {} if isinstance(empty_value, dict) else list(preserved.get(table, []))
             if self.data.get(table) != next_value:
                 self.data[table] = next_value
                 changed = True
@@ -2773,6 +2804,48 @@ class Database:
         if changed:
             self._save(bump_sync=False)
         return changed
+
+    def _current_user_records_to_preserve(self) -> dict[str, list[dict[str, Any]]]:
+        preserved: dict[str, list[dict[str, Any]]] = {}
+        for table in (
+            "weekly_reports",
+            "daily_reports",
+            "project_weekly_reports",
+            "project_todos",
+            "rest_days",
+            "deleted_records",
+        ):
+            rows = self.data.get(table)
+            if not isinstance(rows, list):
+                continue
+            current_rows = [
+                dict(row)
+                for row in rows
+                if isinstance(row, dict) and self._is_current_user_owned_record(table, row)
+            ]
+            if current_rows:
+                preserved[table] = current_rows
+        return preserved
+
+    def _is_current_user_owned_record(self, table: str, row: dict[str, Any]) -> bool:
+        if table in {"weekly_reports", "rest_days"}:
+            return self._is_current_user_row(row)
+        if table == "daily_reports":
+            return self._is_current_user_row(row) or self.is_current_user_name(str(row.get("member_name", "")))
+        if table == "project_weekly_reports":
+            return self._is_current_user_row(row) or self.is_current_user_name(str(row.get("author", "")))
+        if table == "project_todos":
+            names = (
+                row.get("creator", ""),
+                row.get("assignee", ""),
+                row.get("assigned_by", ""),
+                row.get("completed_by", ""),
+                row.get("current_handler", ""),
+            )
+            return self._is_current_user_row(row) or any(self.is_current_user_name(str(name)) for name in names)
+        if table == "deleted_records":
+            return self._is_local_deletion_marker(row)
+        return False
 
     def merge_missing_shared_snapshot(self, snapshot: dict[str, Any], honor_deletions: bool = True) -> bool:
         tables = snapshot.get("tables")
@@ -2829,6 +2902,8 @@ class Database:
             if self._apply_deleted_records(active_deleted_records):
                 changed = True
         if self._repair_project_todo_completion_duplicates():
+            changed = True
+        if self._repair_daily_report_duplicates():
             changed = True
         files = snapshot.get("files")
         if isinstance(files, dict) and self._restore_document_files(self.data, files):
@@ -3136,6 +3211,81 @@ class Database:
             changed = True
         return changed
 
+    def _repair_daily_report_duplicates(self) -> bool:
+        rows = self.data.get("daily_reports")
+        if not isinstance(rows, list):
+            return False
+        seen: dict[tuple[str, ...], dict[str, Any]] = {}
+        remove_ids: set[int] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = self._daily_report_duplicate_key(row)
+            if key is None:
+                continue
+            existing = seen.get(key)
+            if existing is None:
+                seen[key] = row
+                continue
+            keep, drop = self._preferred_daily_report_row(existing, row)
+            seen[key] = keep
+            self._merge_daily_report_duplicate_metadata(keep, drop)
+            remove_ids.add(id(drop))
+        if not remove_ids:
+            return False
+        rows[:] = [row for row in rows if not isinstance(row, dict) or id(row) not in remove_ids]
+        return True
+
+    def _daily_report_duplicate_key(self, row: dict[str, Any]) -> tuple[str, ...] | None:
+        try:
+            project_id = str(int(row.get("project_id", 0) or 0))
+        except (TypeError, ValueError):
+            return None
+        created_at = str(row.get("created_at", "")).strip()
+        if not created_at:
+            return None
+        try:
+            created_at = _parse_time(created_at).isoformat(timespec="seconds")
+        except ValueError:
+            created_at = created_at[:19]
+        content = " ".join(str(row.get("content", "")).strip().split())
+        if not content:
+            return None
+        return (
+            project_id,
+            self._normalize_display_name(str(row.get("member_name", ""))),
+            self._normalize_display_name(str(row.get("role", ""))),
+            created_at,
+            content,
+        )
+
+    def _preferred_daily_report_row(
+        self,
+        left: dict[str, Any],
+        right: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        left_score = self._daily_report_row_score(left)
+        right_score = self._daily_report_row_score(right)
+        if right_score > left_score:
+            return right, left
+        return left, right
+
+    def _daily_report_row_score(self, row: dict[str, Any]) -> tuple[int, int, int]:
+        has_source = 1 if self._row_source_key(row) is not None else 0
+        has_todo = 1 if str(row.get("todo_id", "")).strip() else 0
+        try:
+            row_id = int(row.get("id", 0) or 0)
+        except (TypeError, ValueError):
+            row_id = 0
+        return has_source, has_todo, row_id
+
+    def _merge_daily_report_duplicate_metadata(self, keep: dict[str, Any], drop: dict[str, Any]) -> None:
+        if not str(keep.get("todo_id", "")).strip() and str(drop.get("todo_id", "")).strip():
+            keep["todo_id"] = str(drop.get("todo_id", "")).strip()
+        for key in ("operator", "operator_device_id", "source_device_id", "source_id"):
+            if not str(keep.get(key, "")).strip() and str(drop.get(key, "")).strip():
+                keep[key] = str(drop.get(key, "")).strip()
+
     def _merge_deleted_projects(self, remote_value: Any) -> bool:
         if not isinstance(remote_value, list):
             return False
@@ -3259,7 +3409,7 @@ class Database:
                 table, source_device, source_id = key
                 deleted_by_table.setdefault(table, set()).add((source_device, source_id))
         for table in SHARED_TABLES:
-            if table in {"counters", "rest_days"} or isinstance(self._empty_data()[table], dict):
+            if table == "counters" or isinstance(self._empty_data()[table], dict):
                 continue
             remote_value = tables.get(table)
             local_value = self.data.get(table)
@@ -3552,6 +3702,21 @@ class Database:
                 row["file_path"] = str(target)
             changed = True
         return changed
+
+    def _server_files_are_complete(self, tables: dict[str, Any], files: Any) -> bool:
+        if not isinstance(files, dict):
+            return False
+        documents = tables.get("project_documents")
+        if not isinstance(documents, list):
+            return False
+        document_ids = {
+            str(row.get("id", "")).strip()
+            for row in documents
+            if isinstance(row, dict) and str(row.get("id", "")).strip()
+        }
+        if not document_ids:
+            return True
+        return document_ids.issubset(set(files.keys()))
 
     def _document_path_is_inside_library(self, path: Path) -> bool:
         try:
