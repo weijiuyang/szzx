@@ -220,7 +220,7 @@ class Database:
         seed_id = self._seed_snapshot_id(snapshot)
         if seed_id and self.get_setting("bundled_seed_applied") == seed_id:
             return
-        changed = self.merge_missing_shared_snapshot(snapshot, honor_deletions=False)
+        changed = self.merge_missing_shared_snapshot(snapshot, honor_deletions=True)
         if seed_id:
             self.set_setting("bundled_seed_applied", seed_id, save=False)
             self._save(bump_sync=False)
