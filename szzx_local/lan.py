@@ -484,6 +484,7 @@ class LanDiscovery(QObject):
             (not peer.sync or not self.db.remote_sync_is_newer(peer.sync))
             and not self._peer_may_have_missing_shared_rows(peer)
             and not self._peer_may_have_project_updates(peer)
+            and not self._peer_may_have_owner_project_deletions(peer)
         ):
             return
         self._start_snapshot_pull(peer, force=False)
@@ -502,6 +503,14 @@ class LanDiscovery(QObject):
                 if str(remote.get(field, "")) != str(local.get(field, "")):
                     return True
         return False
+
+    def _peer_may_have_owner_project_deletions(self, peer: LanPeer) -> bool:
+        if self.db is None:
+            return False
+        checker = getattr(self.db, "peer_may_have_owner_project_deletions", None)
+        if checker is None:
+            return False
+        return bool(checker(peer.name, peer.project_fingerprints))
 
     def _peer_may_have_missing_shared_rows(self, peer: LanPeer) -> bool:
         if self.db is None or not peer.record_counts:

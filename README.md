@@ -65,10 +65,15 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.1.125",
+  "version": "0.1.126",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "局域网同步减负：活动事件不再参与同步，自动快照不再携带文档文件内容，加快项目补齐和刷新速度。",
+  "notes": "修复旧删除记录会挡住远端仍存在项目的问题，避免 26 个项目的旧库无法从 28 个项目的同事处补齐。",
   "history": [
+    {
+      "version": "0.1.126",
+      "date": "2026-07-08",
+      "notes": "修复旧删除记录会挡住远端仍存在项目的问题，避免 26 个项目的旧库无法从 28 个项目的同事处补齐。"
+    },
     {
       "version": "0.1.125",
       "date": "2026-07-08",
