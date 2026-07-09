@@ -59,12 +59,11 @@ for path in build dist; do
   fi
 done
 rm -rf .packaging-assets
-mkdir -p .packaging-assets/assets .packaging-assets/seed
+mkdir -p .packaging-assets/assets
 rsync -a \
   --exclude '.DS_Store' \
   --exclude '*.mp4' \
   szzx_local/assets/ .packaging-assets/assets/
-.venv/bin/python scripts/create_seed.py .packaging-assets/seed
 .venv/bin/pyinstaller \
   --noconfirm \
   --windowed \
@@ -72,7 +71,6 @@ rsync -a \
   --osx-bundle-identifier com.szzx.localdesk \
   --target-architecture "$MACOS_TARGET_ARCH" \
   --add-data ".packaging-assets/assets:szzx_local/assets" \
-  --add-data ".packaging-assets/seed:szzx_local/seed" \
   --clean \
   run.py
 rm -rf .packaging-assets

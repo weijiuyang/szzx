@@ -37,6 +37,7 @@ def main() -> int:
 
     pet = DesktopPet()
     summarizer = LocalSummarizer()
+    db.clear_shared_data_cache()
     discovery = LanDiscovery(db.device_id(), db.display_name(), db=db, peer_data_sync_enabled=False)
     central_sync = CentralDataSync(db)
     discovery.data_server_seen.connect(central_sync.set_discovered_server)

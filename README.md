@@ -45,7 +45,8 @@ python -m szzx_local.server --name 尉久洋数据服务 --port 45456
 ```
 
 The desktop installer starts only the client app. The data service is a separate
-process and is not launched by the packaged desktop app.
+process and is not launched by the packaged desktop app. Packaged clients do not
+bundle shared project data; they load shared records from the LAN data service.
 
 The desktop clients discover the server by service name over UDP `45454`, then
 sync shared records through HTTP on the data service port. If the server IP
@@ -53,6 +54,10 @@ changes, clients can rediscover it by name. To override discovery, set
 `SZZX_DATA_SERVER_URL`, for example `http://192.168.1.23:45456`. The service
 database is separate from the client database by default and is stored under the
 platform application data directory in `DataServer/szzx_server.json`.
+
+On first connection, the server snapshot is authoritative: the client replaces
+its local shared project records with the server copy before it is allowed to
+push new local changes.
 
 ## Build A Desktop App
 

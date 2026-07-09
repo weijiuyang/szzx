@@ -38,6 +38,9 @@ class CentralDataSync(QObject):
         self.current_server: CentralDataServer | None = None
         self._busy = False
         self._pending = False
+        self._server_ready = False
+        self._local_dirty = False
+        self._active_mode = "pull"
         self._last_success = 0.0
         self._snapshot_received.connect(self._apply_server_snapshot)
         self._sync_failed.connect(self._handle_sync_failed)
@@ -70,13 +73,16 @@ class CentralDataSync(QObject):
             self._pending = True
             return
         self._busy = True
-        snapshot = self.db.shared_snapshot(include_files=False)
-        thread = threading.Thread(target=self._sync_worker, args=(self.server_url, snapshot, push_first), daemon=True)
+        mode = "push" if self._server_ready and (push_first or self._local_dirty) else "pull"
+        self._active_mode = mode
+        snapshot = self.db.shared_snapshot(include_files=False) if mode == "push" else None
+        thread = threading.Thread(target=self._sync_worker, args=(self.server_url, snapshot, mode), daemon=True)
         thread.start()
 
     def _after_db_save(self, bump_sync: bool) -> None:
-        if not bump_sync:
+        if not bump_sync or not self._server_ready:
             return
+        self._local_dirty = True
         self.push_timer.start(800)
 
     def _server_name_matches(self, name: str) -> bool:
@@ -86,15 +92,18 @@ class CentralDataSync(QObject):
             return True
         return expected == actual or expected in actual or actual in expected
 
-    def _sync_worker(self, server_url: str, snapshot: dict[str, Any], push_first: bool) -> None:
+    def _sync_worker(self, server_url: str, snapshot: dict[str, Any] | None, mode: str) -> None:
         try:
-            payload = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
-            request = Request(
-                f"{server_url}/snapshot",
-                data=payload,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                method="POST",
-            )
+            if mode == "push" and snapshot is not None:
+                payload = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
+                request = Request(
+                    f"{server_url}/snapshot",
+                    data=payload,
+                    headers={"Content-Type": "application/json; charset=utf-8"},
+                    method="POST",
+                )
+            else:
+                request = Request(f"{server_url}/snapshot", method="GET")
             with urlopen(request, timeout=8) as response:
                 body = response.read(120 * 1024 * 1024)
             server_snapshot = json.loads(body.decode("utf-8"))
@@ -109,16 +118,16 @@ class CentralDataSync(QObject):
         self._busy = False
         changed = False
         if isinstance(snapshot, dict):
-            if self.db.apply_shared_snapshot(snapshot):
-                changed = True
-            elif self.db.merge_missing_shared_snapshot(snapshot):
-                changed = True
+            changed = self.db.replace_shared_snapshot(snapshot)
+            self._server_ready = True
+            if self._active_mode == "push":
+                self._local_dirty = False
         self._last_success = time.monotonic()
         if changed:
             self.data_synced.emit()
         if self._pending:
             self._pending = False
-            self.sync_now(push_first=True)
+            self.sync_now(push_first=self._server_ready)
 
     def _handle_sync_failed(self, message: str) -> None:
         self._busy = False

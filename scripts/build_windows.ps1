@@ -34,15 +34,12 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 .\.venv\Scripts\python.exe -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org pyinstaller
 
 Remove-Item -Recurse -Force build, dist, .packaging-assets -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force .packaging-assets\seed | Out-Null
-.\.venv\Scripts\python.exe scripts\create_seed.py .packaging-assets\seed
 .\.venv\Scripts\pyinstaller.exe `
     --noconfirm `
     --windowed `
     --onefile `
     --name SZZXLocalDesk `
     --add-data "szzx_local/assets;szzx_local/assets" `
-    --add-data ".packaging-assets/seed;szzx_local/seed" `
     --clean `
     run.py
 Remove-Item -Recurse -Force .packaging-assets -ErrorAction SilentlyContinue

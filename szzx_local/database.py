@@ -32,7 +32,8 @@ def _default_app_dir() -> Path:
     if os.environ.get("SZZX_USE_PROJECT_LOCAL_DATA") == "1":
         return Path.cwd() / "local_data"
 
-    _seed_app_data_from_development(Path.cwd() / "local_data" / "szzx.json", platform_dir / "szzx.json")
+    if os.environ.get("SZZX_ALLOW_DEVELOPMENT_SEED") == "1":
+        _seed_app_data_from_development(Path.cwd() / "local_data" / "szzx.json", platform_dir / "szzx.json")
     return platform_dir
 
 
@@ -212,7 +213,8 @@ class Database:
         self._apply_deleted_records(self._active_deleted_record_keys_by_table({}))
         self._ensure_sync_state()
         self._save(bump_sync=False)
-        self._apply_bundled_seed_snapshot()
+        if os.environ.get("SZZX_ENABLE_BUNDLED_SEED") == "1":
+            self._apply_bundled_seed_snapshot()
 
     def _apply_bundled_seed_snapshot(self) -> None:
         snapshot = self._load_bundled_seed_snapshot()
@@ -2671,6 +2673,59 @@ class Database:
         self._claim_display_name(self.display_name(), save=False)
         self._save(bump_sync=local_has_missing_rows)
         return True
+
+    def replace_shared_snapshot(self, snapshot: dict[str, Any]) -> bool:
+        tables = snapshot.get("tables")
+        sync = snapshot.get("sync")
+        if not isinstance(tables, dict) or not isinstance(sync, dict):
+            return False
+        normalized_tables: dict[str, Any] = {}
+        empty = self._empty_data()
+        for table in SHARED_TABLES:
+            empty_value = empty[table]
+            remote_value = tables.get(table)
+            if isinstance(empty_value, dict):
+                normalized_tables[table] = dict(remote_value) if isinstance(remote_value, dict) else {}
+            else:
+                normalized_tables[table] = list(remote_value) if isinstance(remote_value, list) else []
+
+        changed = False
+        for table, value in normalized_tables.items():
+            if self.data.get(table) != value:
+                changed = True
+                self.data[table] = value
+        next_sync = {
+            "revision": int(sync.get("revision", 0) or 0),
+            "updated_at": str(sync.get("updated_at", "")),
+            "origin": str(sync.get("origin", "")),
+            "actor": str(sync.get("actor", "")),
+        }
+        if self.data.get("sync") != next_sync:
+            changed = True
+            self.data["sync"] = next_sync
+        files = snapshot.get("files")
+        if isinstance(files, dict):
+            self._restore_document_files(self.data, files)
+        self._sync_counters_to_rows()
+        self._save(bump_sync=False)
+        return changed
+
+    def clear_shared_data_cache(self) -> bool:
+        empty = self._empty_data()
+        changed = False
+        for table in SHARED_TABLES:
+            empty_value = empty[table]
+            next_value = {} if isinstance(empty_value, dict) else []
+            if self.data.get(table) != next_value:
+                self.data[table] = next_value
+                changed = True
+        next_sync = {"revision": 0, "updated_at": "", "origin": "", "actor": ""}
+        if self.data.get("sync") != next_sync:
+            self.data["sync"] = next_sync
+            changed = True
+        if changed:
+            self._save(bump_sync=False)
+        return changed
 
     def merge_missing_shared_snapshot(self, snapshot: dict[str, Any], honor_deletions: bool = True) -> bool:
         tables = snapshot.get("tables")
