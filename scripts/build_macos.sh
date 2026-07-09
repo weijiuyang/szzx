@@ -58,22 +58,15 @@ for path in build dist; do
     rm -rf "$path" 2>/dev/null || true
   fi
 done
-rm -rf .packaging-assets
-mkdir -p .packaging-assets/assets
-rsync -a \
-  --exclude '.DS_Store' \
-  --exclude '*.mp4' \
-  szzx_local/assets/ .packaging-assets/assets/
 .venv/bin/pyinstaller \
   --noconfirm \
   --windowed \
   --name SZZXLocalDesk \
   --osx-bundle-identifier com.szzx.localdesk \
   --target-architecture "$MACOS_TARGET_ARCH" \
-  --add-data ".packaging-assets/assets:szzx_local/assets" \
+  --add-data "szzx_local/assets:szzx_local/assets" \
   --clean \
   run.py
-rm -rf .packaging-assets
 
 APP_PLIST="dist/SZZXLocalDesk.app/Contents/Info.plist"
 if [ -f "$APP_PLIST" ]; then

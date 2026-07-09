@@ -20,6 +20,7 @@ from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QNetworkDatagram, Q
 from .changelog import CHANGELOG, current_release_notes
 from .central_sync import CentralDataServer
 from .protocol import APP_PROTOCOL, DISCOVERY_SERVER_KIND, LAN_PORT, SYNC_TCP_PORT
+from .updater import version_tuple
 from .version import APP_VERSION
 
 
@@ -101,7 +102,7 @@ class LanDiscovery(QObject):
         self._direct_peer_seen.connect(self._apply_direct_peer_seen)
 
     def start(self) -> None:
-        if self.peer_data_sync_enabled:
+        if self.peer_data_sync_enabled or self.update_package_path is not None:
             self._start_snapshot_server()
         self.announce_burst()
         self.announce_timer.start(3500)
@@ -248,7 +249,9 @@ class LanDiscovery(QObject):
         return QHostAddress(f"{values[0]}.{values[1]}.{values[2]}.255")
 
     def _start_snapshot_server(self) -> None:
-        if self.db is None or self.server_socket is not None:
+        if self.server_socket is not None:
+            return
+        if self.db is None and self.update_package_path is None:
             return
         try:
             server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -282,7 +285,7 @@ class LanDiscovery(QObject):
                     client.sendall(struct.pack("!I", len(data)))
                     client.sendall(data)
                     return
-                if request != SNAPSHOT_MAGIC or self.db is None:
+                if request != SNAPSHOT_MAGIC or self.db is None or not self.peer_data_sync_enabled:
                     return
                 data = zlib.compress(json.dumps(self.db.shared_snapshot(), ensure_ascii=False).encode("utf-8"))
                 client.sendall(struct.pack("!Q", len(data)))
@@ -652,6 +655,11 @@ class LanDiscovery(QObject):
             metadata = json.loads(self._recv_exact(client, metadata_size).decode("utf-8"))
             if not isinstance(metadata, dict):
                 raise ValueError("安装包信息格式不正确。")
+            package_version = str(metadata.get("version") or peer.app_version or "").strip()
+            if not package_version:
+                raise ValueError("安装包缺少版本信息。")
+            if version_tuple(package_version) <= version_tuple(APP_VERSION):
+                raise ValueError(f"不能下载 v{package_version} 安装包；本机已经是 v{APP_VERSION}。")
             package_size = struct.unpack("!Q", self._recv_exact(client, 8))[0]
             if package_size <= 0 or package_size > 500 * 1024 * 1024:
                 raise ValueError("安装包大小异常。")

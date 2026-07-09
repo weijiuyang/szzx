@@ -6406,10 +6406,9 @@ class MainWindow(QMainWindow):
         body.addWidget(_label(self._peer_list_text(peer, seen), "muted"))
         layout.addLayout(body, 1)
 
-        if self._peer_has_downloadable_package(peer):
-            is_update = version_tuple(peer.app_version) > version_tuple(APP_VERSION)
-            download = QPushButton("下载更新" if is_update else "下载安装包")
-            download.setObjectName("primaryButton" if is_update else "smallButton")
+        if self._peer_has_lan_update(peer):
+            download = QPushButton("下载更新")
+            download.setObjectName("primaryButton")
             download.clicked.connect(lambda checked=False, selected=peer: self._download_lan_update(selected))
             layout.addWidget(download)
         elif peer.platform == sys.platform and peer.app_version and version_tuple(peer.app_version) > version_tuple(APP_VERSION):
@@ -6432,6 +6431,7 @@ class MainWindow(QMainWindow):
             peer.platform == sys.platform
             and bool(peer.update_package)
             and bool(peer.app_version)
+            and version_tuple(peer.app_version) > version_tuple(APP_VERSION)
         )
 
     def _download_lan_update(self, peer: LanPeer) -> None:
@@ -6486,7 +6486,7 @@ class MainWindow(QMainWindow):
             elif version_tuple(peer.app_version) < version_tuple(APP_VERSION):
                 status = " · 对方版本较低"
             elif peer.update_package:
-                status = " · 可下载同版本安装包"
+                status = " · 本机已是同版本"
         elif peer.platform and peer.platform != sys.platform:
             status = " · 不同系统"
         package = peer.update_package
