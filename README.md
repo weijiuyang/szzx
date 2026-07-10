@@ -102,10 +102,15 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.2.4",
+  "version": "0.2.5",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "移除徽章墙徽章外层卡片框，只保留徽章图片和下方获得者姓名。",
+  "notes": "桌宠会在局域网发现同系统高版本且有可下载安装包时提醒下载更新，并按安装包版本判断可用性。",
   "history": [
+    {
+      "version": "0.2.5",
+      "date": "2026-07-10",
+      "notes": "桌宠会在局域网发现同系统高版本且有可下载安装包时提醒下载更新，并按安装包版本判断可用性。"
+    },
     {
       "version": "0.2.4",
       "date": "2026-07-10",

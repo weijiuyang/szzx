@@ -2217,9 +2217,10 @@ class MainWindow(QMainWindow):
         ):
             return
         self._last_lan_update_reminder_at = now
-        peer = max(peers, key=lambda item: version_tuple(item.app_version))
+        peer = max(peers, key=lambda item: version_tuple(self._peer_update_package_version(item)))
+        package_version = self._peer_update_package_version(peer)
         self.pet.move_to_bottom_right()
-        self.pet.speak(f"{peer.name} 那里有 v{peer.app_version} 更新包，可以去局域网下载更新。", mood="wave")
+        self.pet.speak(f"{peer.name} 那里有 v{package_version} 更新包，可以去局域网下载更新。", mood="wave")
 
     def _auto_check_update(self) -> None:
         if self._update_worker is not None and self._update_worker.isRunning():
@@ -6600,7 +6601,11 @@ class MainWindow(QMainWindow):
             download.setObjectName("primaryButton")
             download.clicked.connect(lambda checked=False, selected=peer: self._download_lan_update(selected))
             layout.addWidget(download)
-        elif peer.platform == sys.platform and peer.app_version and version_tuple(peer.app_version) > version_tuple(APP_VERSION):
+        elif (
+            peer.platform == sys.platform
+            and bool(peer.app_version)
+            and version_tuple(peer.app_version) > version_tuple(APP_VERSION)
+        ):
             unavailable = QPushButton("无安装包")
             unavailable.setEnabled(False)
             layout.addWidget(unavailable)
@@ -6610,18 +6615,27 @@ class MainWindow(QMainWindow):
         self.peer_list.setItemWidget(item, card)
 
     def _peer_has_lan_update(self, peer: LanPeer) -> bool:
-        return (
-            self._peer_has_downloadable_package(peer)
-            and version_tuple(peer.app_version) > version_tuple(APP_VERSION)
-        )
+        package_version = self._peer_update_package_version(peer)
+        return self._peer_has_downloadable_package(peer) and version_tuple(package_version) > version_tuple(APP_VERSION)
 
     def _peer_has_downloadable_package(self, peer: LanPeer) -> bool:
+        package = peer.update_package
+        try:
+            package_size = int(package.get("size", 0) or 0) if isinstance(package, dict) else 0
+        except (TypeError, ValueError):
+            package_size = 0
         return (
             peer.platform == sys.platform
-            and bool(peer.update_package)
-            and bool(peer.app_version)
-            and version_tuple(peer.app_version) > version_tuple(APP_VERSION)
+            and isinstance(package, dict)
+            and bool(package)
+            and package_size > 0
+            and bool(self._peer_update_package_version(peer))
         )
+
+    def _peer_update_package_version(self, peer: LanPeer) -> str:
+        if not isinstance(peer.update_package, dict):
+            return ""
+        return str(peer.update_package.get("version") or peer.app_version or "").strip()
 
     def _download_lan_update(self, peer: LanPeer) -> None:
         if self.discovery is None:
@@ -6643,6 +6657,7 @@ class MainWindow(QMainWindow):
 
     def _lan_update_message(self, peer: LanPeer) -> str:
         package = peer.update_package
+        package_version = self._peer_update_package_version(peer) or peer.app_version
         notes = str(package.get("notes", "")).strip()
         history = package.get("changelog")
         history_text = ""
@@ -6659,7 +6674,7 @@ class MainWindow(QMainWindow):
                 history_text = "\n\n全部历史记录：\n" + "\n".join(lines)
         notes_text = f"\n\n更新内容：\n{notes}" if notes else ""
         return (
-            f"从 {peer.name} 下载 v{peer.app_version} 安装包吗？"
+            f"从 {peer.name} 下载 v{package_version} 安装包吗？"
             f"{notes_text}"
             f"{history_text}"
             "\n\n下载后需要手动关闭当前程序并运行安装包。"
@@ -6669,12 +6684,14 @@ class MainWindow(QMainWindow):
         platform = self._platform_label(peer.platform)
         version = f"v{peer.app_version}" if peer.app_version else "版本未知"
         status = ""
-        if peer.platform == sys.platform and peer.app_version:
-            if version_tuple(peer.app_version) > version_tuple(APP_VERSION):
-                status = " · 可局域网更新" if peer.update_package else " · 高版本但未共享安装包"
-            elif version_tuple(peer.app_version) < version_tuple(APP_VERSION):
+        if peer.platform == sys.platform:
+            if self._peer_has_lan_update(peer):
+                status = " · 可局域网更新"
+            elif peer.app_version and version_tuple(peer.app_version) > version_tuple(APP_VERSION):
+                status = " · 高版本但未共享安装包"
+            elif peer.app_version and version_tuple(peer.app_version) < version_tuple(APP_VERSION):
                 status = " · 对方版本较低"
-            elif peer.update_package:
+            elif self._peer_has_downloadable_package(peer):
                 status = " · 本机已是同版本"
         elif peer.platform and peer.platform != sys.platform:
             status = " · 不同系统"
