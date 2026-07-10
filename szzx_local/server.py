@@ -11,6 +11,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from .database import Database, _platform_app_dir
 from .protocol import (
@@ -38,14 +39,23 @@ class DataService:
         thread = threading.Thread(target=self._announce_loop, daemon=True)
         thread.start()
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, actor: str = "", origin: str = "") -> dict[str, Any]:
         with self.lock:
-            return self.db.shared_snapshot(include_files=True, personalized=False)
+            return self.db.shared_snapshot(
+                include_files=True,
+                personalized=False,
+                project_notes_actor=actor,
+                redact_project_notes=True,
+            )
 
     def merge_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             self.db.apply_shared_snapshot(snapshot, force=True)
-            return self.db.shared_snapshot(include_files=True, personalized=False)
+            return {
+                "ok": True,
+                "sync": self.db.sync_state(),
+                "record_counts": self.db.shared_record_counts(),
+            }
 
     def health(self) -> dict[str, Any]:
         with self.lock:
@@ -94,7 +104,7 @@ class DataServiceHandler(BaseHTTPRequestHandler):
             self._send_json(self.service.health())
             return
         if self.path == "/snapshot":
-            self._send_json(self.service.snapshot())
+            self._send_json(self.service.snapshot(self._request_actor(), self._request_origin()))
             return
         self.send_error(404)
 
@@ -128,13 +138,22 @@ class DataServiceHandler(BaseHTTPRequestHandler):
     def service(self) -> DataService:
         return self.server.service  # type: ignore[attr-defined]
 
+    def _request_actor(self) -> str:
+        return unquote(self.headers.get("X-SZZX-Actor", "").strip())
+
+    def _request_origin(self) -> str:
+        return self.headers.get("X-SZZX-Origin", "").strip()
+
     def _send_json(self, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def log_message(self, format: str, *args: object) -> None:
         return

@@ -4,8 +4,8 @@ import math
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QMovie, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QMovie, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 
@@ -57,7 +57,8 @@ class DesktopPet(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("数智中心桌宠")
-        self.setFixedSize(240, 240)
+        self._base_size = (240, 240)
+        self.setFixedSize(*self._base_size)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -91,6 +92,7 @@ class DesktopPet(QWidget):
     def speak(self, text: str, mood: str = "wave", duration_ms: int = 16000, auto_hide: bool = True) -> None:
         self.speech_text = text.strip()
         self._auto_hide_after_speech = auto_hide
+        self._resize_for_speech()
         self.set_mood(mood)
         self.show()
         if self.speech_text:
@@ -98,6 +100,7 @@ class DesktopPet(QWidget):
 
     def _clear_speech(self) -> None:
         self.speech_text = ""
+        self._resize_for_speech()
         self.set_mood("calm")
         if self._auto_hide_after_speech:
             self._auto_hide_after_speech = False
@@ -106,6 +109,7 @@ class DesktopPet(QWidget):
     def show_manually(self) -> None:
         self._auto_hide_after_speech = False
         self.speech_timer.stop()
+        self._resize_for_speech()
         self.show()
 
     def set_kind(self, kind: str) -> None:
@@ -139,6 +143,7 @@ class DesktopPet(QWidget):
             self.speech_timer.stop()
             self.speech_text = ""
             self._auto_hide_after_speech = False
+            self._resize_for_speech()
             self.set_mood("calm")
             self.hide()
         self._drag_pos = None
@@ -149,6 +154,7 @@ class DesktopPet(QWidget):
             self.speech_timer.stop()
             self.speech_text = ""
             self._auto_hide_after_speech = False
+            self._resize_for_speech()
             self.set_mood("calm")
             self.hide()
 
@@ -186,34 +192,82 @@ class DesktopPet(QWidget):
         if self.speech_text:
             self._draw_speech_bubble(painter)
 
-        self._draw_shadow(painter, 0)
-        target = QRectF(24, 28, 192, 192)
+        pet_y = self._pet_top()
+        self._draw_shadow(painter, 0, pet_y + 179)
+        target = QRectF((self.width() - 192) / 2, pet_y, 192, 192)
         painter.drawPixmap(target, pet, QRectF(pet.rect()))
 
-    def _draw_shadow(self, painter: QPainter, jump: int) -> None:
+    def _draw_shadow(self, painter: QPainter, jump: int, y: int = 207) -> None:
         width = 116 - jump
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(32, 28, 24, max(16, 36 - jump)))
-        painter.drawEllipse(int((240 - width) / 2), 207, width, 16)
+        painter.drawEllipse(int((self.width() - width) / 2), y, width, 16)
 
     def _draw_speech_bubble(self, painter: QPainter) -> None:
-        rect = QRectF(16, 8, 208, 58)
+        bubble_height = self._speech_bubble_height()
+        rect = QRectF(12, 8, self.width() - 24, bubble_height)
         painter.setPen(QPen(QColor("#d7ddd3"), 1))
         painter.setBrush(QColor(255, 255, 250, 238))
         painter.drawRoundedRect(rect, 10, 10)
         tail = QPainterPath()
-        tail.moveTo(122, 65)
-        tail.lineTo(138, 80)
-        tail.lineTo(148, 64)
+        tail_x = self.width() / 2
+        tail_y = 8 + bubble_height - 1
+        tail.moveTo(tail_x - 12, tail_y)
+        tail.lineTo(tail_x + 4, tail_y + 15)
+        tail.lineTo(tail_x + 14, tail_y)
         tail.closeSubpath()
         painter.drawPath(tail)
         painter.setPen(QPen(QColor("#263126"), 1))
-        painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        font = self._speech_font()
+        painter.setFont(font)
         painter.drawText(
-            QRectF(28, 17, 184, 42),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap,
+            QRectF(24, 17, self.width() - 48, bubble_height - 18),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
             self.speech_text,
         )
+
+    def _speech_font(self) -> QFont:
+        return QFont("Arial", 10, QFont.Weight.Bold)
+
+    def _speech_bubble_height(self) -> int:
+        if not self.speech_text:
+            return 0
+        metrics = QFontMetrics(self._speech_font())
+        text_width = max(180, self.width() - 48)
+        rect = metrics.boundingRect(
+            QRect(0, 0, text_width, 1000),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
+            self.speech_text,
+        )
+        return max(58, min(180, rect.height() + 24))
+
+    def _pet_top(self) -> int:
+        if not self.speech_text:
+            return 28
+        return self._speech_bubble_height() + 24
+
+    def _resize_for_speech(self) -> None:
+        old_bottom_right = self.frameGeometry().bottomRight()
+        if self.speech_text:
+            width = 300
+            bubble_height = self._speech_bubble_height_for_width(width)
+            height = bubble_height + 230
+            self.setFixedSize(width, height)
+        else:
+            self.setFixedSize(*self._base_size)
+        if self._placed_once:
+            self.move(old_bottom_right.x() - self.width() + 1, old_bottom_right.y() - self.height() + 1)
+
+    def _speech_bubble_height_for_width(self, width: int) -> int:
+        if not self.speech_text:
+            return 0
+        metrics = QFontMetrics(self._speech_font())
+        rect = metrics.boundingRect(
+            QRect(0, 0, max(180, width - 48), 1000),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
+            self.speech_text,
+        )
+        return max(58, min(180, rect.height() + 24))
 
     def _pet_pixmap(self) -> QPixmap:
         self._load_movie()

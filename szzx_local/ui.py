@@ -63,6 +63,25 @@ from .updater import check_for_update, configured_update_url, version_tuple
 from .version import APP_VERSION
 
 
+class AutoHeightTextEdit(QTextEdit):
+    def __init__(self, minimum_height: int = 96, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._auto_minimum_height = minimum_height
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.document().contentsChanged.connect(self._update_auto_height)
+        QTimer.singleShot(0, self._update_auto_height)
+
+    def resizeEvent(self, event: object) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._update_auto_height()
+
+    def _update_auto_height(self) -> None:
+        self.document().setTextWidth(max(1, self.viewport().width()))
+        content_height = int(self.document().size().height()) + 28
+        self.setFixedHeight(max(self._auto_minimum_height, content_height))
+
+
 APP_STYLE = """
 * {
     font-family: "Songti SC", "Noto Serif CJK SC", "Yu Mincho", "Hiragino Mincho ProN", "Microsoft YaHei UI", serif;
@@ -164,7 +183,7 @@ QPushButton#chatButton {
 QPushButton#chatButton:hover {
     background: transparent;
 }
-QPushButton#projectPrimaryLinkButton, QPushButton#projectBackupLinkButton {
+QPushButton#projectTextButton, QPushButton#projectPrimaryLinkButton, QPushButton#projectBackupLinkButton {
     border: none;
     border-radius: 11px;
     padding: 0;
@@ -173,6 +192,9 @@ QPushButton#projectPrimaryLinkButton, QPushButton#projectBackupLinkButton {
     min-height: 22px;
     max-height: 22px;
     background: transparent;
+}
+QPushButton#projectTextButton:hover {
+    background: #dceee4;
 }
 QPushButton#projectPrimaryLinkButton {
     background: transparent;
@@ -441,9 +463,11 @@ def _path_exists_safely(path: Path | None) -> bool:
 DOCUMENT_TYPES = [
     "产品原型图",
     "PRD",
+    "需求文档",
     "项目汇报PPT",
     "设计图",
     "测试文档",
+    "对接文档",
     "交接文档",
     "调研/可行性报告",
     "竞品调研报告",
@@ -526,6 +550,46 @@ def _project_link_icon(kind: str) -> QIcon:
         painter.drawLine(21, 24, 27, 24)
     painter.end()
     return QIcon(pixmap)
+
+
+def _project_text_icon() -> QIcon:
+    pixmap = QPixmap(48, 48)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    color = QColor("#2f7557")
+    pen = QPen(color, 5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.drawRect(12, 9, 24, 30)
+    painter.drawLine(18, 18, 30, 18)
+    painter.drawLine(18, 25, 30, 25)
+    painter.drawLine(18, 32, 26, 32)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _show_project_notes_dialog(parent: QWidget, project_name: str, notes: str) -> None:
+    text = notes.strip()
+    if not text:
+        QMessageBox.information(parent, "项目资料为空", "这个项目还没有配置文本资料。")
+        return
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(f"{project_name} · 项目资料")
+    dialog.resize(560, 420)
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(18, 18, 18, 18)
+    layout.setSpacing(12)
+    viewer = AutoHeightTextEdit(120)
+    viewer.setReadOnly(True)
+    viewer.setPlainText(text)
+    layout.addWidget(viewer)
+    close_button = QPushButton("关闭")
+    close_button.setObjectName("smallButton")
+    close_button.clicked.connect(dialog.accept)
+    layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+    dialog.exec()
 
 
 def _try_click_dingtalk_send_message() -> None:
@@ -1076,6 +1140,8 @@ class ProjectLogHistoryDialog(QDialog):
         name = _label(str(project.get("project_name", "未知项目")), "memberName")
         name.setMaximumHeight(42)
         top.addWidget(name, 1)
+        if str(project.get("project_notes", "")).strip():
+            top.addWidget(self._project_notes_button(project), 0, Qt.AlignmentFlag.AlignTop)
         if str(project.get("project_link", "")).strip():
             top.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignTop)
         if str(project.get("backup_project_link", "")).strip():
@@ -1104,6 +1170,18 @@ class ProjectLogHistoryDialog(QDialog):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setToolTip(link or ("打开备用项目" if kind == "backup" else "打开主要项目"))
         button.clicked.connect(lambda checked=False, selected=link: self._open_project_link(selected))
+        return button
+
+    def _project_notes_button(self, project: dict[str, object]) -> QPushButton:
+        name = str(project.get("project_name", "未知项目")).strip() or "未知项目"
+        notes = str(project.get("project_notes", "")).strip()
+        button = QPushButton()
+        button.setObjectName("projectTextButton")
+        button.setIcon(_project_text_icon())
+        button.setIconSize(QSize(16, 16))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip("查看项目资料")
+        button.clicked.connect(lambda checked=False, title=name, text=notes: _show_project_notes_dialog(self, title, text))
         return button
 
     def _open_project_link(self, link: str) -> None:
@@ -2315,6 +2393,14 @@ class MainWindow(QMainWindow):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(8)
         self.project_title = _label("选择一个项目", "heroTitle")
+        self.project_notes_button = QPushButton()
+        self.project_notes_button.setObjectName("projectTextButton")
+        self.project_notes_button.setIcon(_project_text_icon())
+        self.project_notes_button.setIconSize(QSize(16, 16))
+        self.project_notes_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.project_notes_button.setToolTip("查看项目资料")
+        self.project_notes_button.clicked.connect(lambda checked=False: self._open_current_project_notes())
+        self.project_notes_button.setVisible(False)
         self.project_primary_link_button = QPushButton()
         self.project_primary_link_button.setObjectName("projectPrimaryLinkButton")
         self.project_primary_link_button.setIcon(_project_link_icon("primary"))
@@ -2332,6 +2418,7 @@ class MainWindow(QMainWindow):
         self.project_backup_link_button.clicked.connect(lambda checked=False: self._open_current_project_link("backup"))
         self.project_backup_link_button.setVisible(False)
         title_row.addWidget(self.project_title, 1)
+        title_row.addWidget(self.project_notes_button, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addWidget(self.project_primary_link_button, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addWidget(self.project_backup_link_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.project_description = _label("项目负责人可以在这里查看所有日报、维护项目周报，并归档项目文档。", "muted")
@@ -2400,7 +2487,7 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(developer_feed_panel)
 
         self.config_project_panel = _panel()
-        self.config_project_panel.setFixedHeight(378)
+        self.config_project_panel.setMinimumHeight(500)
         config_project_layout = QVBoxLayout(self.config_project_panel)
         config_project_layout.setContentsMargins(18, 18, 18, 18)
         config_project_layout.setSpacing(10)
@@ -2412,6 +2499,9 @@ class MainWindow(QMainWindow):
         self.config_project_link.setPlaceholderText("主要项目连接，例如 https://example.com")
         self.config_project_backup_link = QLineEdit()
         self.config_project_backup_link.setPlaceholderText("备用项目连接，例如 https://preview.example.com")
+        self.config_project_notes = AutoHeightTextEdit(96)
+        self.config_project_notes.setPlaceholderText("项目地址、启动命令、测试账号、部署说明等。")
+        self.config_project_notes_label = _label("项目文本资料", "eyebrow")
         self.save_project_description_button = QPushButton("保存项目简介")
         self.save_project_description_button.setObjectName("primaryButton")
         self.save_project_description_button.clicked.connect(self._save_project_description)
@@ -2420,6 +2510,8 @@ class MainWindow(QMainWindow):
         config_project_layout.addWidget(self.config_project_link)
         config_project_layout.addWidget(_label("备用项目连接", "eyebrow"))
         config_project_layout.addWidget(self.config_project_backup_link)
+        config_project_layout.addWidget(self.config_project_notes_label)
+        config_project_layout.addWidget(self.config_project_notes)
         config_project_layout.addWidget(self.save_project_description_button)
         self.config_project_panel.setVisible(False)
 
@@ -2755,6 +2847,26 @@ class MainWindow(QMainWindow):
         self._update_project_sync_hint()
         self._refresh_my_panel()
 
+    def _project_page_has_edit_focus(self) -> bool:
+        if not hasattr(self, "stack") or self.stack.currentIndex() != 1:
+            return False
+        focused = self.focusWidget()
+        if focused is None:
+            return False
+        containers = [
+            getattr(self, "project_content_stack", None),
+            getattr(self, "project_side_stack", None),
+            getattr(self, "project_list", None),
+        ]
+        if not any(container is not None and (focused is container or container.isAncestorOf(focused)) for container in containers):
+            return False
+        widget: QWidget | None = focused
+        while widget is not None:
+            if isinstance(widget, (QLineEdit, QTextEdit, QComboBox)):
+                return True
+            widget = widget.parentWidget()
+        return False
+
     def _restore_project_list_scroll(self, value: int) -> None:
         if not hasattr(self, "project_list"):
             return
@@ -2776,6 +2888,8 @@ class MainWindow(QMainWindow):
         title = _label(project.name, "memberName")
         title.setWordWrap(True)
         title_row.addWidget(title, 1)
+        if project.project_notes and self._can_view_project_notes(project):
+            title_row.addWidget(self._project_notes_button(project), 0, Qt.AlignmentFlag.AlignTop)
         if project.project_link:
             title_row.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignTop)
         if project.backup_project_link:
@@ -2845,6 +2959,23 @@ class MainWindow(QMainWindow):
             self.db.is_current_user_name(member.name)
             for member in self.db.list_project_members(project.id)
         )
+
+    def _can_view_project_notes(self, project: Project) -> bool:
+        return self._is_super_admin() or self._project_involves_current_user(project)
+
+    def _projects_with_notes_for_current_user(self, projects: list[dict[str, object]]) -> list[dict[str, object]]:
+        visible_projects: list[dict[str, object]] = []
+        for project in projects:
+            next_project = dict(project)
+            try:
+                project_id = int(next_project.get("project_id", 0) or 0)
+            except (TypeError, ValueError):
+                project_id = 0
+            stored_project = self.db.get_project(project_id) if project_id else None
+            if stored_project is None or not self._can_view_project_notes(stored_project):
+                next_project["project_notes"] = ""
+            visible_projects.append(next_project)
+        return visible_projects
 
     def _project_role_for_me(self, project: Project) -> str:
         if self.db.is_current_user_name(project.owner):
@@ -3102,6 +3233,8 @@ class MainWindow(QMainWindow):
 
         title_row = QHBoxLayout()
         title_row.addWidget(_label(project.name, "memberName"))
+        if project.project_notes and self._can_view_project_notes(project):
+            title_row.addWidget(self._project_notes_button(project), 0, Qt.AlignmentFlag.AlignVCenter)
         if project.project_link:
             title_row.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignVCenter)
         if project.backup_project_link:
@@ -3146,6 +3279,16 @@ class MainWindow(QMainWindow):
         button.clicked.connect(lambda checked=False, selected=project, selected_kind=kind: self._open_project_link(selected, selected_kind))
         return button
 
+    def _project_notes_button(self, project: Project) -> QPushButton:
+        button = QPushButton()
+        button.setObjectName("projectTextButton")
+        button.setIcon(_project_text_icon())
+        button.setIconSize(QSize(16, 16))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip("查看项目资料")
+        button.clicked.connect(lambda checked=False, selected=project: self._open_project_notes(selected))
+        return button
+
     def _open_project_link(self, project: Project, kind: str = "primary") -> None:
         link = project.backup_project_link if kind == "backup" else project.project_link
         if not link:
@@ -3155,6 +3298,18 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "项目连接无效", "这个项目还没有配置可打开的网页链接。")
             return
         QDesktopServices.openUrl(url)
+
+    def _open_project_notes(self, project: Project) -> None:
+        if not self._can_view_project_notes(project):
+            QMessageBox.warning(self, "不能查看", "只有参与这个项目的人可以查看项目文本资料。")
+            return
+        _show_project_notes_dialog(self, project.name, project.project_notes)
+
+    def _open_current_project_notes(self) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        self._open_project_notes(project)
 
     def _open_current_project_link(self, kind: str = "primary") -> None:
         project = self._current_project()
@@ -3172,7 +3327,7 @@ class MainWindow(QMainWindow):
 
     def _open_person_home(self, name: str) -> None:
         logs = self.db.project_logs_for_member(name)
-        projects = self.db.projects_for_member(name)
+        projects = self._projects_with_notes_for_current_user(self.db.projects_for_member(name))
         dialog = ProjectLogHistoryDialog(name, logs, projects, self)
         dialog.exec()
 
@@ -3500,9 +3655,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "不能保存", "只有这个项目的负责人或最高权限用户可以编辑项目简介。")
             return
         description = self.config_project_description.toPlainText().strip()
-        if not description:
-            QMessageBox.information(self, "简介为空", "先写一点项目简介。")
-            return
+        can_edit_project_notes = self._can_view_project_notes(project)
+        project_notes = (
+            self.config_project_notes.toPlainText().strip()
+            if can_edit_project_notes and hasattr(self, "config_project_notes")
+            else project.project_notes
+        )
         raw_link = self.config_project_link.text().strip() if hasattr(self, "config_project_link") else ""
         project_link = _normalize_project_link(raw_link)
         if raw_link and not project_link:
@@ -3517,7 +3675,10 @@ class MainWindow(QMainWindow):
         if raw_backup_link and not backup_project_link:
             QMessageBox.information(self, "备用项目连接无效", "请填写网页链接，例如 preview.example.com 或 https://preview.example.com。")
             return
-        updated = self.db.update_project_details(project.id, description, project_link, backup_project_link)
+        if not any((description, project_link, backup_project_link, project_notes)):
+            QMessageBox.information(self, "项目内容为空", "先写一点项目简介、项目链接或文本资料。")
+            return
+        updated = self.db.update_project_details(project.id, description, project_link, backup_project_link, project_notes)
         if updated is None:
             QMessageBox.warning(self, "保存失败", "这个项目记录已经不存在。")
             self._load_projects()
@@ -3610,14 +3771,12 @@ class MainWindow(QMainWindow):
             assignee_member = self._project_member_by_name(members, assignee)
             if self._member_is_developer(assignee_member) and (is_manager or self._member_is_product(current_member)):
                 tester_member = self._first_project_tester(members, exclude_name=assignee)
-                if tester_member is None:
-                    QMessageBox.information(self, "缺少测试", "项目里还没有测试成员，先添加测试后再创建开发流转代办。")
-                    return
+                fallback_tester = tester_member.name if tester_member is not None else self.db.display_name()
                 workflow = "dev_test_accept"
                 designer_member = self._first_project_designer(members, exclude_name=assignee)
                 designer = designer_member.name if designer_member is not None else ""
                 developer = assignee
-                tester = tester_member.name
+                tester = fallback_tester
                 acceptor = self.db.display_name()
             if self.assigned_todo_deadline_days is not None:
                 due_at = datetime.now() + timedelta(days=self.assigned_todo_deadline_days)
@@ -3865,9 +4024,15 @@ class MainWindow(QMainWindow):
             for todo in self.db.list_project_todos(project.id, include_completed=True, scope="project")
             if todo.status == "done" and todo.completed_at is not None
         ]
+        current_member = self._current_project_member(project, members)
+        is_manager = self._can_manage_project(project, current_member)
+        can_view_project_notes = self._can_view_project_notes(project)
+        can_edit_project_notes = is_manager and can_view_project_notes
 
         self.project_status.setText(f"{project.status} · 负责人 {project.owner}")
         self.project_title.setText(project.name)
+        self.project_notes_button.setVisible(can_view_project_notes and bool(project.project_notes))
+        self.project_notes_button.setToolTip("查看项目资料" if can_view_project_notes and project.project_notes else "项目资料")
         self.project_primary_link_button.setVisible(bool(project.project_link))
         self.project_primary_link_button.setToolTip(project.project_link or "打开主要项目")
         self.project_backup_link_button.setVisible(bool(project.backup_project_link))
@@ -3879,6 +4044,7 @@ class MainWindow(QMainWindow):
                 self.config_project_description.hasFocus()
                 or (hasattr(self, "config_project_link") and self.config_project_link.hasFocus())
                 or (hasattr(self, "config_project_backup_link") and self.config_project_backup_link.hasFocus())
+                or (hasattr(self, "config_project_notes") and self.config_project_notes.hasFocus())
             )
         )
         if not editing_config:
@@ -3887,6 +4053,8 @@ class MainWindow(QMainWindow):
                 self.config_project_link.setText(project.project_link)
             if hasattr(self, "config_project_backup_link"):
                 self.config_project_backup_link.setText(project.backup_project_link)
+            if hasattr(self, "config_project_notes"):
+                self.config_project_notes.setPlainText(project.project_notes if can_view_project_notes else "")
         self._set_metric(self.metric_members, len(members))
         self._set_metric(self.metric_todos, len(open_todos))
         self._set_metric(self.metric_daily, len(daily_reports))
@@ -3894,8 +4062,6 @@ class MainWindow(QMainWindow):
         self._set_metric(self.metric_decks, len(documents))
 
         self._clear_layout(self.member_cards_layout)
-        current_member = self._current_project_member(project, members)
-        is_manager = self._can_manage_project(project, current_member)
         can_assign_todos = self._can_assign_todo(project, current_member)
         if hasattr(self, "project_config_button"):
             self.project_config_button.setEnabled(is_manager)
@@ -3948,6 +4114,11 @@ class MainWindow(QMainWindow):
             self.config_project_link.setEnabled(is_manager)
         if hasattr(self, "config_project_backup_link"):
             self.config_project_backup_link.setEnabled(is_manager)
+        if hasattr(self, "config_project_notes"):
+            self.config_project_notes.setEnabled(can_edit_project_notes)
+            self.config_project_notes.setVisible(can_view_project_notes)
+        if hasattr(self, "config_project_notes_label"):
+            self.config_project_notes_label.setVisible(can_view_project_notes)
         self.save_project_description_button.setEnabled(is_manager)
         self.delete_project_button.setEnabled(is_manager)
         self.weekly_form.setVisible(is_manager or can_upload_project_document)
@@ -4091,6 +4262,8 @@ class MainWindow(QMainWindow):
             return
         self.project_status.setText("暂无项目")
         self.project_title.setText("创建一个项目")
+        if hasattr(self, "project_notes_button"):
+            self.project_notes_button.setVisible(False)
         if hasattr(self, "project_primary_link_button"):
             self.project_primary_link_button.setVisible(False)
         if hasattr(self, "project_backup_link_button"):
@@ -4149,6 +4322,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "config_project_backup_link"):
             self.config_project_backup_link.clear()
             self.config_project_backup_link.setEnabled(False)
+        if hasattr(self, "config_project_notes"):
+            self.config_project_notes.clear()
+            self.config_project_notes.setEnabled(False)
+            self.config_project_notes.setVisible(True)
+        if hasattr(self, "config_project_notes_label"):
+            self.config_project_notes_label.setVisible(True)
         self.save_project_description_button.setEnabled(False)
         self.config_project_panel.setVisible(False)
         self.delete_project_button.setEnabled(False)
@@ -4198,7 +4377,7 @@ class MainWindow(QMainWindow):
         if member is None:
             return False
         role = member.role.strip()
-        return any(keyword in role for keyword in ("开发", "前端", "后端", "数据", "运维"))
+        return any(keyword in role for keyword in ("开发", "前端", "后端", "数据", "运维", "算法"))
 
     def _member_is_designer(self, member: ProjectMember | None) -> bool:
         if member is None:
@@ -6159,7 +6338,11 @@ class MainWindow(QMainWindow):
             self.lan_subtitle.setText("刷新完成，没有发现比本机更新的数据。")
 
     def _refresh_after_lan_sync(self) -> None:
-        self._load_projects()
+        project_page_locked = self._project_page_has_edit_focus()
+        if project_page_locked:
+            self._update_project_sync_hint("服务器数据已同步，当前编辑页暂不刷新")
+        else:
+            self._load_projects()
         self._load_reports()
         self._refresh_rest_calendar()
         self._refresh_document_library()
@@ -6351,7 +6534,7 @@ class MainWindow(QMainWindow):
 
     def _open_lan_member_logs(self, member_name: str) -> None:
         logs = self.db.project_logs_for_member(member_name)
-        projects = self.db.projects_for_member(member_name)
+        projects = self._projects_with_notes_for_current_user(self.db.projects_for_member(member_name))
         dialog = ProjectLogHistoryDialog(member_name, logs, projects, self)
         dialog.exec()
 

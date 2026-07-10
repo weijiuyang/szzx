@@ -124,6 +124,7 @@ SHARED_TABLES = (
     "counters",
 )
 ACTIVITY_EVENT_SYNC_DAYS = 0
+PROJECT_NOTES_ADMIN_NAMES = {"尉久洋"}
 RECORD_TOMBSTONE_TABLES = {
     "project_members",
     "daily_reports",
@@ -236,6 +237,7 @@ class Database:
         self._migrate_weekly_report_owners()
         self._migrate_weekly_ids_to_timestamps()
         self._migrate_project_todo_scopes()
+        self._repair_workflow_todo_handlers()
         self._repair_project_todo_completion_duplicates()
         self._repair_daily_report_duplicates()
         self._claim_display_name(self.display_name(), save=False)
@@ -846,6 +848,7 @@ class Database:
         status: str = "推进中",
         project_link: str = "",
         backup_project_link: str = "",
+        project_notes: str = "",
     ) -> Project:
         created_at = datetime.now()
         row = self._with_operator({
@@ -856,6 +859,7 @@ class Database:
             "status": status.strip(),
             "project_link": project_link.strip(),
             "backup_project_link": backup_project_link.strip(),
+            "project_notes": project_notes.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
             "updated_at": created_at.isoformat(timespec="seconds"),
         })
@@ -1044,6 +1048,48 @@ class Database:
             ]
         return personalized
 
+    def _project_notes_visible_to_actor(self, project_row: dict[str, Any], actor: str) -> bool:
+        actor_key = self._normalize_display_name(actor)
+        if not actor_key:
+            return False
+        if actor_key in {self._normalize_display_name(name) for name in PROJECT_NOTES_ADMIN_NAMES}:
+            return True
+        if self._normalize_display_name(str(project_row.get("owner", ""))) == actor_key:
+            return True
+        try:
+            project_id = int(project_row.get("id", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        for member in self.data.get("project_members", []):
+            if not isinstance(member, dict):
+                continue
+            try:
+                member_project_id = int(member.get("project_id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if member_project_id != project_id:
+                continue
+            if self._normalize_display_name(str(member.get("name", ""))) == actor_key:
+                return True
+        return False
+
+    def _redact_project_notes_for_actor(self, tables: dict[str, Any], actor: str) -> dict[str, Any]:
+        redacted = dict(tables)
+        projects = redacted.get("projects")
+        if not isinstance(projects, list):
+            return redacted
+        next_projects: list[Any] = []
+        for row in projects:
+            if not isinstance(row, dict):
+                next_projects.append(row)
+                continue
+            next_row = dict(row)
+            if "project_notes" in next_row and not self._project_notes_visible_to_actor(next_row, actor):
+                next_row.pop("project_notes", None)
+            next_projects.append(next_row)
+        redacted["projects"] = next_projects
+        return redacted
+
     def update_project_description(self, project_id: int, description: str) -> Project | None:
         for row in self.data["projects"]:
             if int(row["id"]) != project_id:
@@ -1060,6 +1106,7 @@ class Database:
         description: str,
         project_link: str = "",
         backup_project_link: str = "",
+        project_notes: str = "",
     ) -> Project | None:
         for row in self.data["projects"]:
             if int(row["id"]) != project_id:
@@ -1067,6 +1114,7 @@ class Database:
             row["description"] = description.strip()
             row["project_link"] = project_link.strip()
             row["backup_project_link"] = backup_project_link.strip()
+            row["project_notes"] = project_notes.strip()
             row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
             self._save()
             return self._project_from_row(row)
@@ -1092,6 +1140,7 @@ class Database:
             created_at=_parse_time(str(row["created_at"])),
             project_link=str(row.get("project_link", "")),
             backup_project_link=str(row.get("backup_project_link", "")),
+            project_notes=str(row.get("project_notes", "")),
         )
 
     def add_project_member(self, project_id: int, name: str, role: str, dingtalk_id: str = "") -> ProjectMember:
@@ -1924,6 +1973,7 @@ class Database:
                 "description": str(row.get("description", "")),
                 "project_link": str(row.get("project_link", "")),
                 "backup_project_link": str(row.get("backup_project_link", "")),
+                "project_notes": str(row.get("project_notes", "")),
                 "joined_at": created_at.isoformat(timespec="seconds"),
                 "joined_days": max(1, (today - created_at.date()).days + 1),
             }
@@ -1954,6 +2004,7 @@ class Database:
                 "description": str(project.get("description", "")),
                 "project_link": str(project.get("project_link", "")),
                 "backup_project_link": str(project.get("backup_project_link", "")),
+                "project_notes": str(project.get("project_notes", "")),
                 "joined_at": joined_at.isoformat(timespec="seconds"),
                 "joined_days": max(1, (today - joined_at.date()).days + 1),
             }
@@ -2569,6 +2620,7 @@ class Database:
                 "description": str(row.get("description", "")),
                 "project_link": str(row.get("project_link", "")),
                 "backup_project_link": str(row.get("backup_project_link", "")),
+                "project_notes": str(row.get("project_notes", "")),
                 "updated_at": str(row.get("updated_at", "")),
             }
         return fingerprints
@@ -2621,7 +2673,13 @@ class Database:
                 continue
         return files
 
-    def shared_snapshot(self, include_files: bool = False, personalized: bool = True) -> dict[str, Any]:
+    def shared_snapshot(
+        self,
+        include_files: bool = False,
+        personalized: bool = True,
+        project_notes_actor: str | None = None,
+        redact_project_notes: bool = False,
+    ) -> dict[str, Any]:
         tables: dict[str, Any] = {}
         for table in SHARED_TABLES:
             if table == "activity_events":
@@ -2631,6 +2689,8 @@ class Database:
             tables[table] = value.copy() if isinstance(value, dict) else list(value or [])
         if personalized:
             tables = self._personalized_snapshot_tables(tables)
+        if redact_project_notes:
+            tables = self._redact_project_notes_for_actor(tables, project_notes_actor or "")
         snapshot = {
             "sync": self.sync_state(),
             "owner": {
@@ -2727,6 +2787,8 @@ class Database:
             changed = True
         if isinstance(files, dict) and self._restore_document_files(self.data, files):
             changed = True
+        if self._repair_workflow_todo_handlers():
+            changed = True
         if self._repair_project_todo_completion_duplicates():
             changed = True
         if self._repair_daily_report_duplicates():
@@ -2776,6 +2838,8 @@ class Database:
             if self._restore_document_files(self.data, files):
                 changed = True
         if self._server_files_are_complete(self.data, files) and self._prune_unreferenced_document_files():
+            changed = True
+        if self._repair_workflow_todo_handlers():
             changed = True
         self._sync_counters_to_rows()
         self._save(bump_sync=False)
@@ -2901,6 +2965,8 @@ class Database:
                 changed = True
             if self._apply_deleted_records(active_deleted_records):
                 changed = True
+        if self._repair_workflow_todo_handlers():
+            changed = True
         if self._repair_project_todo_completion_duplicates():
             changed = True
         if self._repair_daily_report_duplicates():
@@ -2978,7 +3044,7 @@ class Database:
         if not self._remote_project_is_newer(existing, remote, allow_untimestamped_updates):
             return False
         changed = False
-        for key in ("name", "owner", "description", "status", "project_link", "backup_project_link", "updated_at"):
+        for key in ("name", "owner", "description", "status", "project_link", "backup_project_link", "project_notes", "updated_at"):
             if key not in remote:
                 continue
             value = remote.get(key)
@@ -3210,6 +3276,51 @@ class Database:
             rows[:] = [row for row in rows if not isinstance(row, dict) or id(row) not in rows_to_remove]
             changed = True
         return changed
+
+    def _repair_workflow_todo_handlers(self) -> bool:
+        rows = self.data.get("project_todos")
+        if not isinstance(rows, list):
+            return False
+        changed = False
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("workflow", "")) != "dev_test_accept":
+                continue
+            status = str(row.get("status", "todo"))
+            if status == "done":
+                if str(row.get("current_handler", "")).strip():
+                    row["current_handler"] = ""
+                    changed = True
+                continue
+
+            fallback_tester = self._workflow_todo_fallback_tester(row)
+            if fallback_tester and not str(row.get("tester", "")).strip():
+                row["tester"] = fallback_tester
+                changed = True
+
+            desired_handler = self._workflow_todo_expected_handler(row)
+            if desired_handler and str(row.get("current_handler", "")).strip() != desired_handler:
+                row["current_handler"] = desired_handler
+                changed = True
+        return changed
+
+    def _workflow_todo_fallback_tester(self, row: dict[str, Any]) -> str:
+        for key in ("tester", "acceptor", "assigned_by", "creator"):
+            value = str(row.get(key, "")).strip()
+            if value:
+                return value
+        return ""
+
+    def _workflow_todo_expected_handler(self, row: dict[str, Any]) -> str:
+        status = str(row.get("status", "todo"))
+        if status == "ui_todo":
+            return str(row.get("designer", "")).strip() or str(row.get("developer", "")).strip()
+        if status in {"dev_todo", "dev_doing"}:
+            return str(row.get("developer", "")).strip() or str(row.get("assignee", "")).strip()
+        if status == "test_todo":
+            return self._workflow_todo_fallback_tester(row)
+        if status == "accept_todo":
+            return str(row.get("acceptor", "")).strip() or str(row.get("assigned_by", "")).strip()
+        return str(row.get("current_handler", "")).strip()
 
     def _repair_daily_report_duplicates(self) -> bool:
         rows = self.data.get("daily_reports")

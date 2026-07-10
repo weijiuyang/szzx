@@ -6,6 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -125,11 +126,20 @@ class CentralDataSync(QObject):
                     headers={
                         "Content-Type": "application/json; charset=utf-8",
                         SERVER_AUTHORITATIVE_HEADER: SERVER_AUTHORITATIVE_VALUE,
+                        "X-SZZX-Actor": quote(str(self.db.display_name()), safe=""),
+                        "X-SZZX-Origin": str(self.db.device_id()),
                     },
                     method="POST",
                 )
             else:
-                request = Request(f"{server_url}/snapshot", method="GET")
+                request = Request(
+                    f"{server_url}/snapshot",
+                    headers={
+                        "X-SZZX-Actor": quote(str(self.db.display_name()), safe=""),
+                        "X-SZZX-Origin": str(self.db.device_id()),
+                    },
+                    method="GET",
+                )
             with urlopen(request, timeout=30) as response:
                 body = response.read(500 * 1024 * 1024)
             server_snapshot = json.loads(body.decode("utf-8"))
@@ -145,10 +155,12 @@ class CentralDataSync(QObject):
         changed = False
         if isinstance(snapshot, dict):
             self._server_ready = True
-            changed = self.db.apply_shared_snapshot(snapshot, force=True)
-            if not self._bootstrap_files_uploaded and self._post_bootstrap_files(snapshot):
-                self._bootstrap_files_uploaded = True
-                self._pending = True
+            is_ack = snapshot.get("ok") is True and "tables" not in snapshot
+            if not is_ack:
+                changed = self.db.apply_shared_snapshot(snapshot, force=True)
+                if not self._bootstrap_files_uploaded and self._post_bootstrap_files(snapshot):
+                    self._bootstrap_files_uploaded = True
+                    self._pending = True
             if self._active_mode == "push":
                 self._local_dirty = False
         self._last_success = time.monotonic()

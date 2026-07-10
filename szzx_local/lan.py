@@ -25,6 +25,7 @@ from .version import APP_VERSION
 
 
 SNAPSHOT_MAGIC = b"SZZXSNAP1\n"
+SNAPSHOT_MAGIC_V2 = b"SZZXSNAP2\n"
 PEER_MAGIC = b"SZZXPEER1\n"
 PACKAGE_MAGIC = b"SZZXPKG01\n"
 PACKAGE_ENV = "SZZX_UPDATE_PACKAGE"
@@ -285,13 +286,35 @@ class LanDiscovery(QObject):
                     client.sendall(struct.pack("!I", len(data)))
                     client.sendall(data)
                     return
-                if request != SNAPSHOT_MAGIC or self.db is None or not self.peer_data_sync_enabled:
+                if request not in {SNAPSHOT_MAGIC, SNAPSHOT_MAGIC_V2} or self.db is None or not self.peer_data_sync_enabled:
                     return
-                data = zlib.compress(json.dumps(self.db.shared_snapshot(), ensure_ascii=False).encode("utf-8"))
+                requester = self._snapshot_requester(client) if request == SNAPSHOT_MAGIC_V2 else ""
+                data = zlib.compress(
+                    json.dumps(
+                        self.db.shared_snapshot(
+                            project_notes_actor=requester,
+                            redact_project_notes=True,
+                        ),
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                )
                 client.sendall(struct.pack("!Q", len(data)))
                 client.sendall(data)
             except OSError:
                 return
+
+    def _snapshot_requester(self, client: socket.socket) -> str:
+        try:
+            header = self._recv_exact(client, 4)
+            size = struct.unpack("!I", header)[0]
+            if size <= 0 or size > 4096:
+                return ""
+            payload = json.loads(self._recv_exact(client, size).decode("utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("actor", "")).strip()
 
     def _find_update_package(self) -> Path | None:
         override = os.environ.get(PACKAGE_ENV, "").strip()
@@ -634,9 +657,27 @@ class LanDiscovery(QObject):
         return self.db.merge_missing_shared_snapshot(snapshot)
 
     def _fetch_snapshot(self, peer: LanPeer) -> dict[str, Any]:
+        try:
+            return self._fetch_snapshot_with_protocol(peer, SNAPSHOT_MAGIC_V2, include_requester=True)
+        except (OSError, ValueError, json.JSONDecodeError, zlib.error):
+            return self._fetch_snapshot_with_protocol(peer, SNAPSHOT_MAGIC, include_requester=False)
+
+    def _fetch_snapshot_with_protocol(
+        self,
+        peer: LanPeer,
+        magic: bytes,
+        include_requester: bool,
+    ) -> dict[str, Any]:
         with socket.create_connection((peer.address, peer.sync_port), timeout=1.5) as client:
             client.settimeout(8)
-            client.sendall(SNAPSHOT_MAGIC)
+            client.sendall(magic)
+            if include_requester:
+                requester = json.dumps(
+                    {"actor": self.display_name, "origin": self.device_id},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                client.sendall(struct.pack("!I", len(requester)))
+                client.sendall(requester)
             header = self._recv_exact(client, 8)
             size = struct.unpack("!Q", header)[0]
             if size > 100 * 1024 * 1024:
