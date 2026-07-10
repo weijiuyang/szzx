@@ -416,20 +416,24 @@ QWidget#badgeWallPage QLabel#sectionTitle {
 QWidget#badgeWallPage QLabel#muted {
     color: #66756a;
 }
-QWidget#badgeCard {
-    background: #f8f8f2;
-    border: 1px solid #d8dfd4;
-    border-radius: 8px;
-}
-QWidget#badgeCard:hover {
-    background: #fbfaf4;
-    border: 1px solid #c6d1c5;
+QWidget#badgeItem {
+    background: transparent;
+    border: none;
 }
 QLabel#badgeIcon {
     font-size: 38px;
     color: #596d5b;
+    background: transparent;
+    border: none;
 }
-QLabel#badgeWinner, QLabel#badgeRule {
+QLabel#badgeWinner {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1d1e1b;
+    background: transparent;
+    border: none;
+}
+QLabel#badgeRule {
     font-size: 18px;
     font-weight: 700;
     color: #1d1e1b;
@@ -2063,18 +2067,19 @@ class MainWindow(QMainWindow):
         detail: str,
         badge_key: str,
     ) -> None:
-        card = QWidget()
-        card.setObjectName("badgeCard")
-        card.setFixedSize(260, 318)
-        card.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
+        item = QWidget()
+        item.setObjectName("badgeItem")
+        item.setFixedSize(260, 318)
+        item.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout = QVBoxLayout(item)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
 
         icon = QLabel()
         icon.setObjectName("badgeIcon")
-        self._set_badge_pixmap(icon, _asset_path("badges", image_name), 210)
-        icon.setFixedHeight(216)
+        icon.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._set_badge_pixmap(icon, _asset_path("badges", image_name), 240)
+        icon.setFixedHeight(260)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(icon)
 
@@ -2083,17 +2088,18 @@ class MainWindow(QMainWindow):
         holder.setFixedHeight(30)
         setattr(self, holder_name, holder)
         layout.addWidget(holder)
-        layout.addStretch()
 
         image_path = _asset_path("badges", image_name)
-        card.mousePressEvent = lambda event, badge_title=title, path=image_path, badge_rule=rule, badge_detail=detail, key=badge_key: self._open_badge_dialog(
+        open_badge = lambda event, badge_title=title, path=image_path, badge_rule=rule, badge_detail=detail, key=badge_key: self._open_badge_dialog(
             badge_title,
             path,
             badge_rule,
             badge_detail,
             key,
         )
-        self.badge_grid.addWidget(card, row, column)
+        item.mousePressEvent = open_badge
+        icon.mousePressEvent = open_badge
+        self.badge_grid.addWidget(item, row, column)
 
     def _set_badge_pixmap(self, label: QLabel, path: Path, logical_size: int) -> None:
         source = QPixmap(str(path))

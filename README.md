@@ -102,10 +102,20 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.2.2",
+  "version": "0.2.4",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "项目文本资料随内容自适应高度，仅项目参与者和最高权限用户可查看；文档类型新增需求文档、对接文档。",
+  "notes": "移除徽章墙徽章外层卡片框，只保留徽章图片和下方获得者姓名。",
   "history": [
+    {
+      "version": "0.2.4",
+      "date": "2026-07-10",
+      "notes": "移除徽章墙徽章外层卡片框，只保留徽章图片和下方获得者姓名。"
+    },
+    {
+      "version": "0.2.3",
+      "date": "2026-07-10",
+      "notes": "优化徽章墙展示：徽章图片和获得者姓名分离，避免名字被包在徽章卡片框内。"
+    },
     {
       "version": "0.2.2",
       "date": "2026-07-10",
