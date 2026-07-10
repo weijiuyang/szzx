@@ -5063,19 +5063,27 @@ class MainWindow(QMainWindow):
         header.addStretch()
         layout.addLayout(header)
 
-        def visual_line_count(value: str, visual_chars_per_line: int = 46) -> int:
-            normalized_value = " ".join(value.strip().split())
-            if not normalized_value:
-                return 1
-            explicit = len([line for line in value.splitlines() if line.strip()])
-            width = sum(1 if ord(char) < 128 else 2 for char in normalized_value)
-            return max(explicit, max(1, (width + visual_chars_per_line - 1) // visual_chars_per_line))
+        row_widgets: list[QWidget] = []
+        row_labels: list[QLabel] = []
 
-        row_texts: dict[int, str] = {}
+        def measured_text_height(label: QLabel, width: int) -> int:
+            document = QTextDocument()
+            document.setDefaultFont(label.font())
+            document.setPlainText(label.text())
+            document.setTextWidth(max(120, width))
+            return int(document.size().height()) + 10
 
         def refresh_height() -> None:
-            row_height = sum(22 + visual_line_count(row_texts.get(report.id, "")) * 22 for report in reports)
-            height = 52 + row_height
+            content_width = max(260, list_widget.viewport().width() - 72)
+            row_height = 0
+            for row_widget, row_label in zip(row_widgets, row_labels):
+                label_width = content_width - 88 if row_widget.findChildren(QPushButton) else content_width
+                next_height = max(32, measured_text_height(row_label, label_width))
+                row_label.setMinimumHeight(next_height)
+                row_widget.setMinimumHeight(next_height + 8)
+                row_height += next_height + 12
+            height = 54 + row_height
+            card.setMinimumHeight(height)
             item.setSizeHint(QSize(0, height))
             list_widget.doItemsLayout()
 
@@ -5086,7 +5094,6 @@ class MainWindow(QMainWindow):
 
             content = report.content.strip() or "空日报"
             row_text = f"{report.created_at.strftime('%H:%M')}  {content}"
-            row_texts[report.id] = row_text
             linked_todo = self._todo_for_daily_report(report)
             row_widget = QWidget()
             row_widget.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -5097,6 +5104,8 @@ class MainWindow(QMainWindow):
             row_label = _label(row_text)
             row_label.setWordWrap(True)
             row_layout.addWidget(row_label, 1)
+            row_widgets.append(row_widget)
+            row_labels.append(row_label)
             if self.db.is_current_user_name(report.member_name):
                 delete_button = QPushButton("删除")
                 delete_button.setObjectName("smallButton")
@@ -5109,6 +5118,7 @@ class MainWindow(QMainWindow):
         refresh_height()
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
+        QTimer.singleShot(0, refresh_height)
 
     def _handle_daily_report_click(self, report: DailyReport) -> None:
         linked_todo = self._todo_for_daily_report(report)
