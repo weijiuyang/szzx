@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from .ai import LocalSummarizer
 from .autostart import autostart_registered, is_supported as autostart_supported, set_autostart
@@ -80,6 +81,13 @@ class AutoHeightTextEdit(QTextEdit):
         self.document().setTextWidth(max(1, self.viewport().width()))
         content_height = int(self.document().size().height()) + 28
         self.setFixedHeight(max(self._auto_minimum_height, content_height))
+
+
+def _is_qt_object_alive(obj: object) -> bool:
+    try:
+        return isValid(obj)
+    except RuntimeError:
+        return False
 
 
 APP_STYLE = """
@@ -152,6 +160,21 @@ QPushButton#dangerButton:hover {
 QPushButton#smallButton {
     padding: 7px 12px;
     min-width: 58px;
+}
+QPushButton#projectSearchButton {
+    padding: 2px;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+}
+QLineEdit#projectSearchInput {
+    padding: 6px 8px;
+    min-height: 18px;
+}
+QPushButton#dailyReportDeleteButton {
+    padding: 7px 18px;
+    min-width: 82px;
 }
 QPushButton#nameLink {
     border: none;
@@ -276,6 +299,18 @@ QListWidget::item {
 QListWidget::item:selected {
     background: #ecefe9;
     color: #23241f;
+}
+QListWidget#dailyReportFeed {
+    padding: 8px 12px;
+}
+QListWidget#dailyReportFeed::item {
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+}
+QListWidget#dailyReportFeed::item:selected {
+    background: transparent;
 }
 QListWidget#projectList {
     padding: 6px;
@@ -1692,7 +1727,147 @@ class TodoDailyReportDialog(QDialog):
         return self.editor.toPlainText().strip()
 
 
+class RosterBlockedNamesDialog(QDialog):
+    def __init__(self, names: list[str], blocked_names: set[str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("配置屏蔽人员")
+        self.resize(460, 520)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        layout.addWidget(_label("屏蔽人员", "sectionTitle"))
+        layout.addWidget(_label("勾选后不会出现在“全员下周”表格和 Excel 中。名字含 @ 的机器账号会自动屏蔽。", "muted"))
+
+        self.name_list = QListWidget()
+        self.name_list.setAlternatingRowColors(True)
+        blocked_keys = {self._name_key(name) for name in blocked_names}
+        for name in names:
+            if "@" in name:
+                continue
+            item = QListWidgetItem(name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if self._name_key(name) in blocked_keys else Qt.CheckState.Unchecked)
+            self.name_list.addItem(item)
+        layout.addWidget(self.name_list, 1)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("保存")
+        save.setObjectName("primaryButton")
+        save.clicked.connect(self.accept)
+        actions.addWidget(cancel)
+        actions.addWidget(save)
+        layout.addLayout(actions)
+
+    @staticmethod
+    def _name_key(name: str) -> str:
+        return " ".join(name.strip().split()).casefold()
+
+    def blocked_names(self) -> list[str]:
+        return [
+            self.name_list.item(index).text().strip()
+            for index in range(self.name_list.count())
+            if self.name_list.item(index).checkState() == Qt.CheckState.Checked
+        ]
+
+
+class ServerBackupDialog(QDialog):
+    def __init__(self, central_sync: object, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.central_sync = central_sync
+        self.setWindowTitle("服务器数据回滚")
+        self.resize(620, 520)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        layout.addWidget(_label("服务器数据回滚", "sectionTitle"))
+        layout.addWidget(_label("每日自动备份包含数据库和文档附件。恢复前会自动保存当前状态。", "muted"))
+        self.backup_list = QListWidget()
+        self.backup_list.itemClicked.connect(self._select_backup)
+        layout.addWidget(self.backup_list, 1)
+
+        actions = QHBoxLayout()
+        refresh = QPushButton("刷新")
+        refresh.clicked.connect(self._load_backups)
+        self.restore_button = QPushButton("恢复所选备份")
+        self.restore_button.setObjectName("dangerButton")
+        self.restore_button.setEnabled(False)
+        self.restore_button.clicked.connect(self._restore_selected)
+        actions.addWidget(refresh)
+        actions.addStretch()
+        actions.addWidget(self.restore_button)
+        layout.addLayout(actions)
+        QTimer.singleShot(0, self._load_backups)
+
+    def _load_backups(self) -> None:
+        self.backup_list.clear()
+        self.restore_button.setEnabled(False)
+        try:
+            backups = self.central_sync.list_server_backups()  # type: ignore[attr-defined]
+        except Exception as exc:
+            QMessageBox.warning(self, "读取失败", f"无法读取服务器备份：{exc}")
+            return
+        for backup in backups:
+            name = str(backup.get("name", ""))
+            created_at = str(backup.get("created_at", "")).replace("T", " ")
+            kind = str(backup.get("kind", "备份"))
+            size_mb = int(backup.get("size", 0) or 0) / (1024 * 1024)
+            item = QListWidgetItem(f"{created_at}  ·  {kind}  ·  {size_mb:.1f} MB")
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setToolTip(name)
+            self.backup_list.addItem(item)
+        self.backup_list.setCurrentRow(-1)
+        self.restore_button.setEnabled(False)
+        if not backups:
+            item = QListWidgetItem("服务器还没有可用备份。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.backup_list.addItem(item)
+
+    def _select_backup(self, item: QListWidgetItem) -> None:
+        self.restore_button.setEnabled(bool(item.data(Qt.ItemDataRole.UserRole)))
+
+    def _restore_selected(self) -> None:
+        item = self.backup_list.currentItem()
+        if item is None:
+            return
+        backup_name = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not backup_name:
+            return
+        message = (
+            "确定把服务器恢复到所选备份吗？\n\n"
+            "恢复前会自动备份当前状态；恢复完成后，所有客户端将重新同步服务器数据。"
+        )
+        if QMessageBox.warning(
+            self,
+            "确认数据回滚",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            result = self.central_sync.restore_server_backup(backup_name)  # type: ignore[attr-defined]
+        except Exception as exc:
+            QMessageBox.warning(self, "回滚失败", f"服务器没有完成恢复：{exc}")
+            return
+        self.central_sync.sync_now()  # type: ignore[attr-defined]
+        QMessageBox.information(
+            self,
+            "回滚完成",
+            f"服务器已恢复到：{result.get('restored', backup_name)}\n当前状态已另存为保护备份。",
+        )
+        self.accept()
+
+
 class NextWeekRosterDialog(QDialog):
+    BLOCKED_NAMES_SETTING = "rest_roster_blocked_names"
+
     def __init__(self, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.db = db
@@ -1712,6 +1887,9 @@ class NextWeekRosterDialog(QDialog):
         title_box.addWidget(_label(f"{self.days[0].strftime('%Y-%m-%d')} 至 {self.days[-1].strftime('%Y-%m-%d')}", "muted"))
         header.addLayout(title_box)
         header.addStretch()
+        self.blocked_names_button = QPushButton()
+        self.blocked_names_button.clicked.connect(self._configure_blocked_names)
+        header.addWidget(self.blocked_names_button)
         export_button = QPushButton("导出 Excel")
         export_button.setObjectName("primaryButton")
         export_button.clicked.connect(self._export_excel)
@@ -1728,6 +1906,7 @@ class NextWeekRosterDialog(QDialog):
         self.table.horizontalHeader().setMinimumHeight(38)
         self.table.verticalHeader().setDefaultSectionSize(36)
         layout.addWidget(self.table)
+        self._refresh_blocked_names_button()
         self._fill_table()
 
     def _fill_table(self) -> None:
@@ -1745,7 +1924,12 @@ class NextWeekRosterDialog(QDialog):
         self.table.setColumnWidth(0, 120)
 
     def _roster_rows(self) -> list[list[str]]:
-        names = self.db.known_display_names()
+        blocked_keys = {self._name_key(name) for name in self._blocked_names()}
+        names = [
+            name
+            for name in self.db.known_display_names()
+            if "@" not in name and self._name_key(name) not in blocked_keys
+        ]
         rest_days = self.db.list_rest_days(mine_only=False)
         rest_lookup = {(item.author, item.day) for item in rest_days}
         rows: list[list[str]] = []
@@ -1755,6 +1939,39 @@ class NextWeekRosterDialog(QDialog):
                 row.append("休" if (name, day) in rest_lookup else "早班")
             rows.append(row)
         return rows
+
+    @staticmethod
+    def _name_key(name: str) -> str:
+        return " ".join(name.strip().split()).casefold()
+
+    def _blocked_names(self) -> list[str]:
+        raw = self.db.get_setting(self.BLOCKED_NAMES_SETTING) or ""
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(loaded, list):
+            return []
+        return [str(name).strip() for name in loaded if str(name).strip()]
+
+    def _refresh_blocked_names_button(self) -> None:
+        count = len(self._blocked_names())
+        self.blocked_names_button.setText(f"屏蔽人员（{count}）" if count else "屏蔽人员")
+
+    def _configure_blocked_names(self) -> None:
+        dialog = RosterBlockedNamesDialog(
+            self.db.known_display_names(),
+            set(self._blocked_names()),
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.db.set_setting(
+            self.BLOCKED_NAMES_SETTING,
+            json.dumps(dialog.blocked_names(), ensure_ascii=False),
+        )
+        self._refresh_blocked_names_button()
+        self._fill_table()
 
     def _export_excel(self) -> None:
         default_name = f"下周休息安排-{self.days[0].strftime('%Y%m%d')}.xlsx"
@@ -1982,6 +2199,10 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
 
         layout.addStretch()
+        if any(self.db.is_current_user_name(name) for name in SUPER_ADMIN_NAMES):
+            rollback_button = QPushButton("数据回滚")
+            rollback_button.clicked.connect(self._open_server_backup_dialog)
+            layout.addWidget(rollback_button)
         pet_button = QPushButton("桌宠")
         pet_button.clicked.connect(self._open_pet)
         version = QPushButton("版本")
@@ -1992,6 +2213,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(version)
         layout.addWidget(settings)
         return sidebar
+
+    def _open_server_backup_dialog(self) -> None:
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is None or not getattr(central_sync, "server_url", ""):
+            QMessageBox.information(self, "服务器未连接", "尚未发现中央数据服务器，请稍后再试。")
+            return
+        ServerBackupDialog(central_sync, self).exec()
 
     def _badge_wall_tab(self) -> QWidget:
         page = QWidget()
@@ -2263,10 +2491,16 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(42, 38, 42, 38)
         outer.setSpacing(22)
 
-        header = QVBoxLayout()
-        header.setSpacing(4)
-        header.addWidget(_label("我的面板", "sectionTitle"))
-        header.addWidget(_label("集中查看参与项目、分配代办和完成提醒。", "muted"))
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+        title_box.addWidget(_label("我的面板", "sectionTitle"))
+        title_box.addWidget(_label("集中查看参与项目、分配代办和完成提醒。", "muted"))
+        header.addLayout(title_box)
+        header.addStretch()
+        export_week = QPushButton("导出近一周")
+        export_week.clicked.connect(self._export_owned_projects_recent_week)
+        header.addWidget(export_week, 0, Qt.AlignmentFlag.AlignTop)
         outer.addLayout(header)
 
         projects_panel = _panel()
@@ -2306,6 +2540,89 @@ class MainWindow(QMainWindow):
         outer.addWidget(messages_panel)
         outer.addStretch()
         return scroll
+
+    def _export_owned_projects_recent_week(self) -> None:
+        end_day = date.today()
+        start_day = end_day - timedelta(days=6)
+        start_at = datetime.combine(start_day, datetime.min.time())
+        end_at = datetime.combine(end_day, datetime.max.time())
+        owned_projects = [project for project in self.db.list_projects() if self.db.is_current_user_name(project.owner)]
+        project_exports: list[dict[str, object]] = []
+
+        for project in owned_projects:
+            activities: list[dict[str, str]] = []
+
+            def add_activity(created_at: datetime, kind: str, actor: str, content: str) -> None:
+                if created_at < start_at or created_at > end_at:
+                    return
+                activities.append({
+                    "sort_time": created_at.isoformat(timespec="microseconds"),
+                    "day": created_at.strftime("%Y-%m-%d 周") + "一二三四五六日"[created_at.weekday()],
+                    "time": created_at.strftime("%m-%d %H:%M"),
+                    "type": kind,
+                    "actor": actor.strip() or "未记录",
+                    "content": " ".join(content.strip().split()) or "无内容",
+                })
+
+            for report in self.db.list_daily_reports(project.id, limit=1000):
+                add_activity(report.created_at, "日报", report.member_name, report.content)
+            for report in self.db.list_project_weekly_reports(project.id, limit=1000):
+                add_activity(report.created_at, "项目周报", report.author, report.content)
+            for member in self.db.list_project_members(project.id):
+                add_activity(member.created_at, "成员记录", member.name, f"加入项目，角色：{member.role}")
+            for document in self.db.list_project_documents(project.id, limit=1000):
+                add_activity(document.created_at, "文档记录", document.uploader, f"上传 {document.doc_type}：{document.title}")
+            for todo in self.db.list_project_todos(project.id, include_completed=True):
+                add_activity(todo.created_at, "代办记录", todo.creator, f"创建代办：{todo.title}")
+                try:
+                    flow_entries = json.loads(todo.flow_history) if todo.flow_history.strip() else []
+                except json.JSONDecodeError:
+                    flow_entries = []
+                if isinstance(flow_entries, list):
+                    for entry in flow_entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        try:
+                            happened_at = datetime.fromisoformat(str(entry.get("time", "")))
+                        except ValueError:
+                            continue
+                        action = str(entry.get("action", "项目流转"))
+                        handler = str(entry.get("handler", "")).strip()
+                        suffix = f" → {handler}" if handler else ""
+                        add_activity(happened_at, "项目进展流", str(entry.get("actor", "")), f"{todo.title}：{action}{suffix}")
+                if todo.completed_at is not None and not todo.flow_history.strip():
+                    add_activity(todo.completed_at, "完成代办", todo.completed_by, todo.title)
+
+            activities.sort(key=lambda item: item["sort_time"])
+            project_exports.append({
+                "name": project.name,
+                "owner": project.owner,
+                "status": project.status,
+                "description": project.description,
+                "activities": activities,
+            })
+
+        default_name = str(Path.home() / "Downloads" / f"负责项目近一周进展-{end_day:%Y%m%d}.md")
+        target, _ = QFileDialog.getSaveFileName(self, "导出近一周项目进展", default_name, "Markdown 文档 (*.md)")
+        if not target:
+            return
+        target_path = Path(target)
+        if target_path.suffix.lower() != ".md":
+            target_path = target_path.with_suffix(".md")
+        try:
+            from .markdown_export import write_owned_projects_weekly_markdown
+
+            write_owned_projects_weekly_markdown(
+                target_path,
+                self.db.display_name(),
+                start_day,
+                end_day,
+                project_exports,
+            )
+        except (ImportError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "导出失败", f"生成 Markdown 文档失败：{exc}")
+            return
+        QMessageBox.information(self, "导出完成", f"已导出：\n{target_path}")
 
     def _project_tab(self) -> QWidget:
         scroll = QScrollArea()
@@ -2355,7 +2672,20 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(18, 18, 18, 18)
         left_layout.setSpacing(12)
 
-        left_layout.addWidget(_label("项目", "eyebrow"))
+        project_list_header = QHBoxLayout()
+        project_list_header.setContentsMargins(0, 0, 0, 0)
+        project_list_header.setSpacing(6)
+        self.project_search_input = QLineEdit()
+        self.project_search_input.setObjectName("projectSearchInput")
+        self.project_search_input.setPlaceholderText("搜索项目")
+        self.project_search_input.returnPressed.connect(self._search_projects)
+        project_list_header.addWidget(self.project_search_input, 1)
+        clear_project_search = QPushButton("×")
+        clear_project_search.setObjectName("projectSearchButton")
+        clear_project_search.setToolTip("清空搜索")
+        clear_project_search.clicked.connect(self._clear_project_search)
+        project_list_header.addWidget(clear_project_search)
+        left_layout.addLayout(project_list_header)
         self.project_list = QListWidget()
         self.project_list.setObjectName("projectList")
         self.project_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -2487,7 +2817,9 @@ class MainWindow(QMainWindow):
         developer_feed_layout.setSpacing(8)
         developer_feed_layout.addWidget(_label("日报流", "eyebrow"))
         self.developer_feed = QListWidget()
+        self.developer_feed.setObjectName("dailyReportFeed")
         self.developer_feed.setMinimumHeight(0)
+        self.developer_feed.setSpacing(8)
         developer_feed_layout.addWidget(self.developer_feed, 1)
 
         progress_layout.addWidget(product_feed_panel)
@@ -2498,6 +2830,10 @@ class MainWindow(QMainWindow):
         config_project_layout = QVBoxLayout(self.config_project_panel)
         config_project_layout.setContentsMargins(18, 18, 18, 18)
         config_project_layout.setSpacing(10)
+        config_project_layout.addWidget(_label("项目名称", "eyebrow"))
+        self.config_project_name = QLineEdit()
+        self.config_project_name.setPlaceholderText("项目名称")
+        config_project_layout.addWidget(self.config_project_name)
         config_project_layout.addWidget(_label("项目简介", "eyebrow"))
         self.config_project_description = QTextEdit()
         self.config_project_description.setPlaceholderText("项目目标、范围、当前进展或代办。")
@@ -2509,7 +2845,7 @@ class MainWindow(QMainWindow):
         self.config_project_notes = AutoHeightTextEdit(96)
         self.config_project_notes.setPlaceholderText("项目地址、启动命令、测试账号、部署说明等。")
         self.config_project_notes_label = _label("项目文本资料", "eyebrow")
-        self.save_project_description_button = QPushButton("保存项目简介")
+        self.save_project_description_button = QPushButton("保存项目配置")
         self.save_project_description_button.setObjectName("primaryButton")
         self.save_project_description_button.clicked.connect(self._save_project_description)
         config_project_layout.addWidget(self.config_project_description)
@@ -2955,9 +3291,24 @@ class MainWindow(QMainWindow):
 
     def _visible_projects(self) -> list[Project]:
         projects = self.db.list_projects()
-        if getattr(self, "project_scope_value", "mine") == "all":
-            return projects
-        return [project for project in projects if self._project_involves_current_user(project)]
+        if getattr(self, "project_scope_value", "mine") != "all":
+            projects = [project for project in projects if self._project_involves_current_user(project)]
+        keyword = getattr(self, "project_search_keyword", "").strip().casefold()
+        if keyword:
+            projects = [
+                project for project in projects
+                if keyword in project.name.casefold() or keyword in project.owner.casefold()
+            ]
+        return projects
+
+    def _search_projects(self) -> None:
+        self.project_search_keyword = self.project_search_input.text()
+        self._load_projects()
+
+    def _clear_project_search(self) -> None:
+        self.project_search_input.clear()
+        self.project_search_keyword = ""
+        self._load_projects()
 
     def _project_involves_current_user(self, project: Project) -> bool:
         if self.db.is_current_user_name(project.owner):
@@ -3048,6 +3399,8 @@ class MainWindow(QMainWindow):
             project = projects_by_id.get(todo.project_id)
             self.my_messages_layout.addWidget(self._my_message_card(todo, project.name if project is not None else "未知项目"))
         self.my_messages_layout.addStretch()
+        if self._check_project_membership_pet_notifications(projects_by_id):
+            return
         self._check_todo_pet_notifications(all_assigned, projects_by_id)
 
     def _group_todos_by_project(self, todos: list[ProjectTodo]) -> dict[int, list[ProjectTodo]]:
@@ -3077,6 +3430,43 @@ class MainWindow(QMainWindow):
     def _store_notification_ids(self, key: str, values: set[int]) -> None:
         trimmed = sorted(values)[-300:]
         self.db.set_setting(key, json.dumps(trimmed), save=True)
+
+    def _current_user_project_memberships(self, projects_by_id: dict[int, Project]) -> list[ProjectMember]:
+        memberships: list[ProjectMember] = []
+        for project in projects_by_id.values():
+            if self.db.is_current_user_name(project.owner):
+                continue
+            for member in self.db.list_project_members(project.id):
+                if self.db.is_current_user_name(member.name):
+                    memberships.append(member)
+                    break
+        return memberships
+
+    def _check_project_membership_pet_notifications(self, projects_by_id: dict[int, Project]) -> bool:
+        key = "notified_project_membership_ids"
+        memberships = self._current_user_project_memberships(projects_by_id)
+        membership_ids = {member.id for member in memberships}
+        if self.db.get_setting(key) is None:
+            self._store_notification_ids(key, membership_ids)
+            return False
+
+        seen = self._seen_notification_ids(key)
+        new_memberships = [member for member in memberships if member.id not in seen]
+        if not new_memberships:
+            return False
+
+        member = max(new_memberships, key=lambda item: item.created_at)
+        project = projects_by_id.get(member.project_id)
+        if project is None:
+            seen.update(member.id for member in new_memberships)
+            self._store_notification_ids(key, seen)
+            return False
+
+        self.pet.move_to_bottom_right()
+        self.pet.speak(f"你被加入项目「{project.name}」，当前身份：{member.role}。", mood="wave")
+        seen.update(member.id for member in new_memberships)
+        self._store_notification_ids(key, seen)
+        return True
 
     def _check_todo_pet_notifications(self, todos: list[ProjectTodo], projects_by_id: dict[int, Project]) -> None:
         assigned_seen = self._seen_notification_ids("notified_assigned_todo_ids")
@@ -3163,6 +3553,8 @@ class MainWindow(QMainWindow):
         return f"开始 {todo.started_at.strftime('%m-%d %H:%M')} · 已开始 {self._days_since(todo.started_at)} 天"
 
     def _daily_report_todo_text(self, report: DailyReport) -> str:
+        if self._completion_todo_title_from_report(report.content):
+            return ""
         todo = self._todo_for_daily_report(report)
         if todo is None:
             return "关联的代办已删除" if report.todo_id is not None else ""
@@ -3630,6 +4022,9 @@ class MainWindow(QMainWindow):
         if not name:
             QMessageBox.information(self, "项目名称为空", "先写项目名称。")
             return
+        if self._project_name_exists(name):
+            QMessageBox.information(self, "项目名称重复", "已经有同名项目，请换一个名称。")
+            return
         project = self.db.add_project(name, owner, description or "这个项目还没有填写说明。")
         self.db.add_project_member(project.id, owner, "产品经理")
         self.project_name.clear()
@@ -3659,7 +4054,14 @@ class MainWindow(QMainWindow):
         if project is None:
             return
         if not self._can_manage_project(project, None):
-            QMessageBox.warning(self, "不能保存", "只有这个项目的负责人或最高权限用户可以编辑项目简介。")
+            QMessageBox.warning(self, "不能保存", "只有这个项目的负责人或最高权限用户可以编辑项目配置。")
+            return
+        name = self.config_project_name.text().strip()
+        if not name:
+            QMessageBox.information(self, "项目名称为空", "项目名称不能为空。")
+            return
+        if self._project_name_exists(name, exclude_project_id=project.id):
+            QMessageBox.information(self, "项目名称重复", "已经有同名项目，请换一个名称。")
             return
         description = self.config_project_description.toPlainText().strip()
         can_edit_project_notes = self._can_view_project_notes(project)
@@ -3682,10 +4084,14 @@ class MainWindow(QMainWindow):
         if raw_backup_link and not backup_project_link:
             QMessageBox.information(self, "备用项目连接无效", "请填写网页链接，例如 preview.example.com 或 https://preview.example.com。")
             return
-        if not any((description, project_link, backup_project_link, project_notes)):
-            QMessageBox.information(self, "项目内容为空", "先写一点项目简介、项目链接或文本资料。")
-            return
-        updated = self.db.update_project_details(project.id, description, project_link, backup_project_link, project_notes)
+        updated = self.db.update_project_details(
+            project.id,
+            name,
+            description,
+            project_link,
+            backup_project_link,
+            project_notes,
+        )
         if updated is None:
             QMessageBox.warning(self, "保存失败", "这个项目记录已经不存在。")
             self._load_projects()
@@ -3694,7 +4100,15 @@ class MainWindow(QMainWindow):
         if central_sync is not None:
             central_sync.mark_local_dirty()
             central_sync.sync_now(push_first=True)
-        self._refresh_project_workspace()
+        self._load_projects()
+        self._refresh_document_library()
+
+    def _project_name_exists(self, name: str, exclude_project_id: int | None = None) -> bool:
+        normalized = " ".join(name.split()).casefold()
+        return any(
+            project.id != exclude_project_id and " ".join(project.name.split()).casefold() == normalized
+            for project in self.db.list_projects()
+        )
 
     def _delete_current_project(self) -> None:
         project = self._current_project()
@@ -3778,12 +4192,11 @@ class MainWindow(QMainWindow):
             assignee_member = self._project_member_by_name(members, assignee)
             if self._member_is_developer(assignee_member) and (is_manager or self._member_is_product(current_member)):
                 tester_member = self._first_project_tester(members, exclude_name=assignee)
-                fallback_tester = tester_member.name if tester_member is not None else self.db.display_name()
                 workflow = "dev_test_accept"
                 designer_member = self._first_project_designer(members, exclude_name=assignee)
                 designer = designer_member.name if designer_member is not None else ""
                 developer = assignee
-                tester = fallback_tester
+                tester = tester_member.name if tester_member is not None else ""
                 acceptor = self.db.display_name()
             if self.assigned_todo_deadline_days is not None:
                 due_at = datetime.now() + timedelta(days=self.assigned_todo_deadline_days)
@@ -4049,12 +4462,14 @@ class MainWindow(QMainWindow):
             self.project_side_stack.currentIndex() == 1
             and (
                 self.config_project_description.hasFocus()
+                or self.config_project_name.hasFocus()
                 or (hasattr(self, "config_project_link") and self.config_project_link.hasFocus())
                 or (hasattr(self, "config_project_backup_link") and self.config_project_backup_link.hasFocus())
                 or (hasattr(self, "config_project_notes") and self.config_project_notes.hasFocus())
             )
         )
         if not editing_config:
+            self.config_project_name.setText(project.name)
             self.config_project_description.setPlainText(project.description)
             if hasattr(self, "config_project_link"):
                 self.config_project_link.setText(project.project_link)
@@ -4117,6 +4532,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "project_owner_select"):
             self._refresh_project_owner_options(project, members, is_manager)
         self.config_project_description.setEnabled(is_manager)
+        self.config_project_name.setEnabled(is_manager)
         if hasattr(self, "config_project_link"):
             self.config_project_link.setEnabled(is_manager)
         if hasattr(self, "config_project_backup_link"):
@@ -4323,6 +4739,8 @@ class MainWindow(QMainWindow):
             self.save_project_owner_button.setEnabled(False)
         self.config_project_description.clear()
         self.config_project_description.setEnabled(False)
+        self.config_project_name.clear()
+        self.config_project_name.setEnabled(False)
         if hasattr(self, "config_project_link"):
             self.config_project_link.clear()
             self.config_project_link.setEnabled(False)
@@ -4544,10 +4962,11 @@ class MainWindow(QMainWindow):
     def _todo_primary_action_text(self, todo: ProjectTodo) -> str:
         if todo.workflow != "dev_test_accept":
             return "完成"
+        has_tester = self._first_project_tester(self.db.list_project_members(todo.project_id)) is not None
         return {
             "ui_todo": "提交开发",
-            "dev_todo": "提交测试",
-            "dev_doing": "提交测试",
+            "dev_todo": "提交测试" if has_tester else "提交验收",
+            "dev_doing": "提交测试" if has_tester else "提交验收",
             "test_todo": "测试通过",
             "accept_todo": "验收通过",
         }.get(todo.status, "完成")
@@ -5052,8 +5471,8 @@ class MainWindow(QMainWindow):
         card = QWidget()
         card.setObjectName("feedCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -5069,38 +5488,45 @@ class MainWindow(QMainWindow):
         def measured_text_height(label: QLabel, width: int) -> int:
             document = QTextDocument()
             document.setDefaultFont(label.font())
+            document.setDocumentMargin(0)
             document.setPlainText(label.text())
             document.setTextWidth(max(120, width))
-            return int(document.size().height()) + 10
+            return int(document.size().height()) + 2
 
         def refresh_height() -> None:
-            content_width = max(260, list_widget.viewport().width() - 72)
-            row_height = 0
-            for row_widget, row_label in zip(row_widgets, row_labels):
-                label_width = content_width - 88 if row_widget.findChildren(QPushButton) else content_width
-                next_height = max(32, measured_text_height(row_label, label_width))
-                row_label.setMinimumHeight(next_height)
-                row_widget.setMinimumHeight(next_height + 8)
-                row_height += next_height + 12
-            height = 54 + row_height
-            card.setMinimumHeight(height)
-            item.setSizeHint(QSize(0, height))
-            list_widget.doItemsLayout()
+            if not all(_is_qt_object_alive(obj) for obj in (list_widget, card, item)):
+                return
+            try:
+                content_width = max(260, list_widget.viewport().width() - 64)
+                for row_widget, row_label in zip(row_widgets, row_labels):
+                    if not all(_is_qt_object_alive(obj) for obj in (row_widget, row_label)):
+                        return
+                    buttons = [button for button in row_widget.findChildren(QPushButton) if _is_qt_object_alive(button)]
+                    button_width = sum(button.sizeHint().width() for button in buttons)
+                    label_width = content_width - button_width - (12 if buttons else 0)
+                    next_height = max(row_label.fontMetrics().height(), measured_text_height(row_label, label_width))
+                    row_label.setFixedHeight(next_height)
+                    row_widget.setFixedHeight(next_height + 12)
+                height = card.sizeHint().height() + 2
+                card.setFixedHeight(height)
+                item.setSizeHint(QSize(0, height))
+                list_widget.doItemsLayout()
+            except RuntimeError:
+                return
 
         for report in reports:
             row_box = QVBoxLayout()
             row_box.setContentsMargins(0, 0, 0, 0)
-            row_box.setSpacing(4)
+            row_box.setSpacing(0)
 
             content = report.content.strip() or "空日报"
             row_text = f"{report.created_at.strftime('%H:%M')}  {content}"
             linked_todo = self._todo_for_daily_report(report)
             row_widget = QWidget()
             row_widget.setCursor(Qt.CursorShape.PointingHandCursor)
-            row_widget.setStyleSheet("padding: 4px 0;")
             row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(0)
+            row_layout.setContentsMargins(0, 2, 0, 2)
+            row_layout.setSpacing(12)
             row_label = _label(row_text)
             row_label.setWordWrap(True)
             row_layout.addWidget(row_label, 1)
@@ -5108,7 +5534,7 @@ class MainWindow(QMainWindow):
             row_labels.append(row_label)
             if self.db.is_current_user_name(report.member_name):
                 delete_button = QPushButton("删除")
-                delete_button.setObjectName("smallButton")
+                delete_button.setObjectName("dailyReportDeleteButton")
                 delete_button.clicked.connect(lambda checked=False, selected=report: self._delete_daily_report(selected))
                 row_layout.addWidget(delete_button)
             row_box.addWidget(row_widget)

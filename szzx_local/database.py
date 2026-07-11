@@ -1103,6 +1103,7 @@ class Database:
     def update_project_details(
         self,
         project_id: int,
+        name: str,
         description: str,
         project_link: str = "",
         backup_project_link: str = "",
@@ -1111,6 +1112,7 @@ class Database:
         for row in self.data["projects"]:
             if int(row["id"]) != project_id:
                 continue
+            row["name"] = name.strip()
             row["description"] = description.strip()
             row["project_link"] = project_link.strip()
             row["backup_project_link"] = backup_project_link.strip()
@@ -2233,14 +2235,38 @@ class Database:
                 )
                 return report
             if status == "dev_doing":
-                tester = str(row.get("tester", "")).strip()
+                project_id = int(row["project_id"])
+                configured_tester = str(row.get("tester", "")).strip()
+                tester = ""
+                for member in self.list_project_members(project_id):
+                    if "测试" not in member.role.strip():
+                        continue
+                    if not tester:
+                        tester = member.name.strip()
+                    if self._normalize_display_name(member.name) == self._normalize_display_name(configured_tester):
+                        tester = member.name.strip()
+                        break
                 if not tester:
-                    return None
+                    acceptor = str(row.get("acceptor", "")).strip() or str(row.get("assigned_by", "")).strip()
+                    if not acceptor:
+                        return None
+                    row["status"] = "accept_todo"
+                    row["current_handler"] = acceptor
+                    self._append_todo_flow(row, member_name, "开发完成，提交验收", "accept_todo", acceptor, now)
+                    report = self.add_daily_report(
+                        project_id,
+                        member_name,
+                        role,
+                        f"开发完成，提交验收：{str(row.get('title', '')).strip()}",
+                        todo_id=todo_id,
+                    )
+                    return report
                 row["status"] = "test_todo"
                 row["current_handler"] = tester
+                row["tester"] = tester
                 self._append_todo_flow(row, member_name, "开发完成，提交测试", "test_todo", tester, now)
                 report = self.add_daily_report(
-                    int(row["project_id"]),
+                    project_id,
                     member_name,
                     role,
                     f"开发完成，提交测试：{str(row.get('title', '')).strip()}",
@@ -3304,10 +3330,21 @@ class Database:
         return changed
 
     def _workflow_todo_fallback_tester(self, row: dict[str, Any]) -> str:
-        for key in ("tester", "acceptor", "assigned_by", "creator"):
-            value = str(row.get(key, "")).strip()
-            if value:
-                return value
+        try:
+            project_id = int(row.get("project_id", 0))
+        except (TypeError, ValueError):
+            return ""
+        configured = str(row.get("tester", "")).strip()
+        fallback = ""
+        for member in self.list_project_members(project_id):
+            if "测试" not in member.role.strip():
+                continue
+            if not fallback:
+                fallback = member.name.strip()
+            if self._normalize_display_name(member.name) == self._normalize_display_name(configured):
+                return member.name.strip()
+        if fallback:
+            return fallback
         return ""
 
     def _workflow_todo_expected_handler(self, row: dict[str, Any]) -> str:

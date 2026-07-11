@@ -109,6 +109,39 @@ class CentralDataSync(QObject):
         self._local_dirty = True
         self.push_timer.start(50)
 
+    def list_server_backups(self) -> list[dict[str, Any]]:
+        payload = self._admin_request("/backups")
+        backups = payload.get("backups")
+        return [item for item in backups if isinstance(item, dict)] if isinstance(backups, list) else []
+
+    def restore_server_backup(self, backup_name: str) -> dict[str, Any]:
+        payload = json.dumps({"backup": backup_name}, ensure_ascii=False).encode("utf-8")
+        result = self._admin_request("/restore", data=payload)
+        self._server_ready = False
+        self._local_dirty = False
+        self._last_success = 0.0
+        return result
+
+    def _admin_request(self, path: str, data: bytes | None = None) -> dict[str, Any]:
+        if not self.server_url:
+            raise ValueError("尚未发现数据服务器")
+        request = Request(
+            f"{self.server_url}{path}",
+            data=data,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "X-SZZX-Actor": quote(str(self.db.display_name()), safe=""),
+                "X-SZZX-Origin": str(self.db.device_id()),
+            },
+            method="POST" if data is not None else "GET",
+        )
+        with urlopen(request, timeout=10) as response:
+            body = response.read(10 * 1024 * 1024)
+        result = json.loads(body.decode("utf-8"))
+        if not isinstance(result, dict):
+            raise ValueError("服务器返回的数据无效")
+        return result
+
     def _server_name_matches(self, name: str) -> bool:
         expected = self.server_name.strip()
         actual = name.strip()
