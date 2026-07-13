@@ -208,7 +208,12 @@ class CentralDataSync(QObject):
             self._server_ready = True
             is_ack = snapshot.get("ok") is True and "tables" not in snapshot
             if not is_ack:
+                needs_public_link_backfill = self.db.snapshot_missing_local_public_project_links(snapshot)
                 changed = self.db.apply_shared_snapshot(snapshot, force=True)
+                if needs_public_link_backfill:
+                    self._local_dirty = True
+                    self._pending = True
+                    self._pending_push = True
                 if not self._bootstrap_files_uploaded and self._post_bootstrap_files(snapshot):
                     self._bootstrap_files_uploaded = True
                     self._pending = True

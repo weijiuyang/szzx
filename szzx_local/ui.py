@@ -7311,6 +7311,20 @@ class MainWindow(QMainWindow):
         was_at_bottom = scrollbar.maximum() > 0 and scroll_value >= scrollbar.maximum() - 4
         self._lan_peer_scroll_generation += 1
         scroll_generation = self._lan_peer_scroll_generation
+        existing_peer_ids = [
+            str(self.peer_list.item(index).data(Qt.ItemDataRole.UserRole) or "")
+            for index in range(self.peer_list.count())
+        ]
+        next_peer_ids = [peer.device_id for peer in peers]
+        if peers and existing_peer_ids == next_peer_ids:
+            self.lan_panel_title.setText("在线同事")
+            self.lan_subtitle.setText(f"我的名字：{self.db.display_name()}。发现 {len(peers)} 位在线同事。")
+            self.peer_list.setUpdatesEnabled(False)
+            for index, peer in enumerate(peers):
+                self._add_peer_card(peer, peer.last_seen.strftime("%H:%M:%S"), self.peer_list.item(index))
+            self.peer_list.setUpdatesEnabled(True)
+            scrollbar.setValue(scroll_value)
+            return
         self.peer_list.setUpdatesEnabled(False)
         self.peer_list.clear()
         self.lan_panel_title.setText("在线同事")
@@ -7525,9 +7539,12 @@ class MainWindow(QMainWindow):
         except ValueError:
             return ""
 
-    def _add_peer_card(self, peer: LanPeer, seen: str) -> None:
-        item = QListWidgetItem()
-        item.setFlags(Qt.ItemFlag.NoItemFlags)
+    def _add_peer_card(self, peer: LanPeer, seen: str, item: QListWidgetItem | None = None) -> None:
+        is_new_item = item is None
+        if item is None:
+            item = QListWidgetItem()
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+        item.setData(Qt.ItemDataRole.UserRole, peer.device_id)
         card = QWidget()
         card.setObjectName("feedCard")
         layout = QHBoxLayout(card)
@@ -7555,7 +7572,8 @@ class MainWindow(QMainWindow):
             layout.addWidget(unavailable)
 
         item.setSizeHint(QSize(0, 92))
-        self.peer_list.addItem(item)
+        if is_new_item:
+            self.peer_list.addItem(item)
         self.peer_list.setItemWidget(item, card)
 
     def _peer_has_lan_update(self, peer: LanPeer) -> bool:

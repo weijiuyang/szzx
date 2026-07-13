@@ -3115,9 +3115,19 @@ class Database:
         remote: dict[str, Any],
         allow_untimestamped_updates: bool = False,
     ) -> bool:
-        if not self._remote_project_is_newer(existing, remote, allow_untimestamped_updates):
-            return False
         changed = False
+        # Older servers stored the project's new timestamp before they knew
+        # about these fields. Backfill non-empty public links even when the
+        # timestamps are equal, without letting an older empty value erase one.
+        for key in ("development_group_link", "coordination_group_link"):
+            remote_value = str(remote.get(key, "")).strip()
+            if remote_value and not str(existing.get(key, "")).strip():
+                existing[key] = remote_value
+                changed = True
+        if not self._remote_project_is_newer(existing, remote, allow_untimestamped_updates):
+            if changed:
+                self._remember_row_source(existing, remote)
+            return changed
         for key in ("name", "owner", "description", "status", "project_link", "backup_project_link", "development_group_link", "coordination_group_link", "project_notes", "updated_at"):
             if key not in remote:
                 continue
@@ -3128,6 +3138,36 @@ class Database:
             changed = True
         self._remember_row_source(existing, remote)
         return changed
+
+    def snapshot_missing_local_public_project_links(self, snapshot: dict[str, Any]) -> bool:
+        tables = snapshot.get("tables")
+        remote_projects = tables.get("projects") if isinstance(tables, dict) else None
+        local_projects = self.data.get("projects")
+        if not isinstance(remote_projects, list) or not isinstance(local_projects, list):
+            return False
+        remote_by_source = {
+            source: row
+            for row in remote_projects
+            if isinstance(row, dict) and (source := self._row_source_key(row)) is not None
+        }
+        remote_by_id = {
+            str(row.get("id", "")): row
+            for row in remote_projects
+            if isinstance(row, dict)
+        }
+        for local in local_projects:
+            if not isinstance(local, dict):
+                continue
+            source = self._row_source_key(local)
+            remote = remote_by_source.get(source) if source is not None else None
+            if remote is None:
+                remote = remote_by_id.get(str(local.get("id", "")))
+            if not isinstance(remote, dict):
+                continue
+            for key in ("development_group_link", "coordination_group_link"):
+                if str(local.get(key, "")).strip() and not str(remote.get(key, "")).strip():
+                    return True
+        return False
 
     def _remote_project_is_newer(
         self,
