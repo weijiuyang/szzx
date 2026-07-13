@@ -3,6 +3,11 @@ from __future__ import annotations
 
 CHANGELOG = [
     {
+        "version": "0.2.22",
+        "date": "2026-07-13",
+        "notes": "Windows 新增右下角系统托盘：关闭主窗口后继续后台运行，可双击托盘恢复或从菜单退出；打包前会校验并嵌入无边框图标。",
+    },
+    {
         "version": "0.2.21",
         "date": "2026-07-13",
         "notes": "Windows 可执行文件、任务栏和窗口统一改用无边框版应用图标；macOS 继续使用原版图标。",

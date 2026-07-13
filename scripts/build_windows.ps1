@@ -34,12 +34,16 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 .\.venv\Scripts\python.exe -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org pyinstaller
 
 Remove-Item -Recurse -Force build, dist, .packaging-assets -ErrorAction SilentlyContinue
+$WindowsIcon = Join-Path $Root "szzx_local\assets\icon\unframed_logo.ico"
+if (-not (Test-Path $WindowsIcon)) {
+    throw "Windows icon not found: $WindowsIcon"
+}
 .\.venv\Scripts\pyinstaller.exe `
     --noconfirm `
     --windowed `
     --onefile `
     --name SZZXLocalDesk `
-    --icon "szzx_local/assets/icon/unframed_logo.ico" `
+    --icon $WindowsIcon `
     --add-data "szzx_local/assets;szzx_local/assets" `
     --clean `
     run.py
