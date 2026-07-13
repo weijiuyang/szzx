@@ -122,7 +122,25 @@ class CentralDataSync(QObject):
         self._last_success = 0.0
         return result
 
-    def _admin_request(self, path: str, data: bytes | None = None) -> dict[str, Any]:
+    def preview_server_backup(self, backup_name: str) -> dict[str, Any]:
+        payload = json.dumps({"backup": backup_name}, ensure_ascii=False).encode("utf-8")
+        return self._admin_request("/backup-preview", data=payload, timeout=30, max_bytes=100 * 1024 * 1024)
+
+    def summarize_weekly(self, content: str) -> str:
+        payload = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
+        result = self._admin_request("/ai/weekly-summary", data=payload, timeout=90)
+        summary = str(result.get("summary", "")).strip()
+        if not summary:
+            raise ValueError("服务器没有返回整理结果")
+        return summary
+
+    def _admin_request(
+        self,
+        path: str,
+        data: bytes | None = None,
+        timeout: int = 10,
+        max_bytes: int = 10 * 1024 * 1024,
+    ) -> dict[str, Any]:
         if not self.server_url:
             raise ValueError("尚未发现数据服务器")
         request = Request(
@@ -135,8 +153,8 @@ class CentralDataSync(QObject):
             },
             method="POST" if data is not None else "GET",
         )
-        with urlopen(request, timeout=10) as response:
-            body = response.read(10 * 1024 * 1024)
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read(max_bytes)
         result = json.loads(body.decode("utf-8"))
         if not isinstance(result, dict):
             raise ValueError("服务器返回的数据无效")

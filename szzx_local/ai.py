@@ -27,6 +27,9 @@ class LocalSummarizer:
 
         return SummaryResult(self._fallback_summary(content), self._infer_mood(content, content))
 
+    def infer_mood(self, content: str) -> str:
+        return self._infer_mood(content, content)
+
     def _try_external_summary(self, content: str) -> str | None:
         try:
             result = subprocess.run(
@@ -74,4 +77,3 @@ class LocalSummarizer:
         if happy_score > 0:
             return "happy"
         return "calm"
-

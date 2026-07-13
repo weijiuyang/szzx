@@ -21,6 +21,8 @@ from .version import APP_VERSION
 
 BUNDLED_SEED_ENV = "SZZX_BUNDLED_SEED_PATH"
 MAX_DOCUMENT_FILENAME_LENGTH = 120
+BEFORE_SYNC_BACKUP_INTERVAL = timedelta(hours=1)
+BEFORE_SYNC_BACKUP_LIMIT = 24
 
 
 def _default_app_dir() -> Path:
@@ -172,8 +174,9 @@ def unique_document_path(target_dir: Path, filename: str, unique_id: str = "") -
 
 
 class Database:
-    def __init__(self, path: Path = DB_PATH) -> None:
+    def __init__(self, path: Path = DB_PATH, *, enable_before_sync_backup: bool = False) -> None:
         self.path = path
+        self.enable_before_sync_backup = enable_before_sync_backup
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._save_lock = threading.RLock()
         self._after_save_callbacks: list[Callable[[bool], None]] = []
@@ -959,6 +962,13 @@ class Database:
             "deleted_by_device_id": self.device_id(),
             "deleted_at": datetime.now().isoformat(timespec="microseconds"),
         }
+        if table == "project_todos" and str(row.get("scope", "")) == "assigned":
+            tombstone.update({
+                "scope": "assigned",
+                "assignee": str(row.get("assignee", "")),
+                "assigned_by": str(row.get("assigned_by", "")),
+                "assigned_by_pet": str(row.get("assigned_by_pet", "penguin")) or "penguin",
+            })
         key = self._deleted_record_key(tombstone)
         if key is None:
             return
@@ -2058,6 +2068,7 @@ class Database:
         developer: str = "",
         tester: str = "",
         acceptor: str = "",
+        assigned_by_pet: str = "penguin",
     ) -> ProjectTodo:
         created_at = datetime.now()
         todo_scope = scope if scope in {"personal", "project", "assigned"} else "personal"
@@ -2084,6 +2095,7 @@ class Database:
             "assigned_by": assigned_by.strip(),
             "status": initial_status,
             "completed_by": "",
+            "completed_by_pet": "penguin",
             "created_at": created_at.isoformat(timespec="seconds"),
             "completed_at": "",
             "due_at": due_at.isoformat(timespec="seconds") if due_at is not None else "",
@@ -2095,6 +2107,7 @@ class Database:
             "acceptor": acceptor.strip(),
             "current_handler": initial_handler,
             "flow_history": json.dumps(flow_history, ensure_ascii=False) if flow_history else "",
+            "assigned_by_pet": assigned_by_pet.strip() or "penguin",
         })
         self.data["project_todos"].append(row)
         self._save()
@@ -2144,6 +2157,16 @@ class Database:
             return True
         return False
 
+    def list_deleted_assigned_todos(self) -> list[dict[str, Any]]:
+        rows = self.data.get("deleted_records", [])
+        return [
+            dict(row)
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("table", "")) == "project_todos"
+            and str(row.get("scope", "")) == "assigned"
+        ]
+
     def start_project_todo(self, todo_id: int, member_name: str) -> ProjectTodo | None:
         for row in self.data["project_todos"]:
             if int(row["id"]) != todo_id:
@@ -2176,6 +2199,7 @@ class Database:
         member_name: str,
         role: str,
         progress_prefix: str = "完成代办",
+        completed_by_pet: str = "penguin",
     ) -> DailyReport | ProjectTodo | None:
         for row in self.data["project_todos"]:
             if int(row["id"]) != todo_id:
@@ -2183,10 +2207,11 @@ class Database:
             if str(row.get("status", "todo")) == "done":
                 return None
             if str(row.get("workflow", "")) == "dev_test_accept":
-                return self.advance_project_todo(todo_id, member_name, role, "pass")
+                return self.advance_project_todo(todo_id, member_name, role, "pass", completed_by_pet)
             completed_at = datetime.now()
             row["status"] = "done"
             row["completed_by"] = member_name.strip()
+            row["completed_by_pet"] = completed_by_pet.strip() or "penguin"
             row["completed_at"] = completed_at.isoformat(timespec="seconds")
             self._mark_overlapping_project_todos_done(row, member_name, completed_at)
             if str(row.get("scope", "personal")) == "project":
@@ -2208,6 +2233,7 @@ class Database:
         member_name: str,
         role: str,
         action: str = "pass",
+        completed_by_pet: str = "penguin",
     ) -> DailyReport | ProjectTodo | None:
         for row in self.data["project_todos"]:
             if int(row["id"]) != todo_id:
@@ -2302,6 +2328,7 @@ class Database:
             if status == "accept_todo":
                 row["status"] = "done"
                 row["completed_by"] = member_name.strip()
+                row["completed_by_pet"] = completed_by_pet.strip() or "penguin"
                 row["completed_at"] = now.isoformat(timespec="seconds")
                 row["current_handler"] = ""
                 self._append_todo_flow(row, member_name, "验收通过，完成代办", "done", "", now)
@@ -2355,6 +2382,8 @@ class Database:
             acceptor=str(row.get("acceptor", "")),
             current_handler=str(row.get("current_handler", "")),
             flow_history=str(row.get("flow_history", "")),
+            assigned_by_pet=str(row.get("assigned_by_pet", "penguin")) or "penguin",
+            completed_by_pet=str(row.get("completed_by_pet", "penguin")) or "penguin",
         )
 
     def _todo_current_handler(self, row: dict[str, Any]) -> str:
@@ -2419,6 +2448,7 @@ class Database:
                 continue
             row["status"] = "done"
             row["completed_by"] = completed_by.strip()
+            row["completed_by_pet"] = str(completed_row.get("completed_by_pet", "penguin")) or "penguin"
             row["completed_at"] = completed_at.isoformat(timespec="seconds")
             changed = True
         return changed
@@ -3229,6 +3259,7 @@ class Database:
             for key in (
                 "status",
                 "completed_by",
+                "completed_by_pet",
                 "completed_at",
                 "started_at",
                 "workflow",
@@ -3245,7 +3276,7 @@ class Database:
             return changed
         if existing_status == "done" and remote_completed_at <= existing_completed_at:
             return changed
-        for key in ("status", "completed_by", "completed_at", "current_handler", "flow_history"):
+        for key in ("status", "completed_by", "completed_by_pet", "completed_at", "current_handler", "flow_history"):
             existing[key] = str(remote.get(key, ""))
         return True
 
@@ -3277,7 +3308,7 @@ class Database:
             completed = completed_by_source.get(source)
             if completed is None:
                 continue
-            for key in ("status", "completed_by", "completed_at"):
+            for key in ("status", "completed_by", "completed_by_pet", "completed_at"):
                 row[key] = str(completed.get(key, ""))
             rows_to_remove.add(id(completed))
             changed = True
@@ -3294,6 +3325,7 @@ class Database:
                     continue
                 row["status"] = "done"
                 row["completed_by"] = str(completed.get("completed_by", ""))
+                row["completed_by_pet"] = str(completed.get("completed_by_pet", "penguin")) or "penguin"
                 row["completed_at"] = str(completed.get("completed_at", ""))
                 changed = True
                 break
@@ -3796,8 +3828,28 @@ class Database:
         return (table, json.dumps(row, ensure_ascii=False, sort_keys=True))
 
     def _backup_before_sync(self) -> None:
+        if not self.enable_before_sync_backup:
+            return
         backup_dir = self.path.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
+        backups = sorted(
+            backup_dir.glob("szzx-before-sync-*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for expired in backups[BEFORE_SYNC_BACKUP_LIMIT:]:
+            try:
+                expired.unlink()
+            except OSError:
+                continue
+        backups = backups[:BEFORE_SYNC_BACKUP_LIMIT]
+        if backups:
+            try:
+                newest_created_at = datetime.fromtimestamp(backups[0].stat().st_mtime)
+            except OSError:
+                newest_created_at = datetime.min
+            if datetime.now() - newest_created_at < BEFORE_SYNC_BACKUP_INTERVAL:
+                return
         backup_path = backup_dir / f"szzx-before-sync-{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
         try:
             with backup_path.open("w", encoding="utf-8") as file:

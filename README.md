@@ -44,6 +44,22 @@ Run this only on the computer that should hold the central LAN data, for example
 python -m szzx_local.server --name 尉久洋数据服务 --port 45456
 ```
 
+### Server AI configuration
+
+Weekly-report AI editing runs only on the central server. Configure the service
+process with an OpenAI-compatible Chat Completions endpoint; the API key is never
+included in snapshots or returned to desktop clients.
+
+```bash
+export SZZX_AI_API_KEY="your-api-key"
+python -m szzx_local.server --name 尉久洋数据服务 --port 45456
+```
+
+Copy `ai_config.example.json` to `ai_config.json` beside the server database
+(`szzx_server.json`), then edit the API URL, model, and prompt in that file. Only
+the secret API key is stored in an environment variable. Restart the server after
+changing the configuration file or API key.
+
 If the server database was polluted by an old client, stop the service and start
 once with `--reset-data`; it creates a timestamped backup and clears shared
 records before listening:
@@ -102,10 +118,25 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 
 ```json
 {
-  "version": "0.2.11",
+  "version": "0.2.14",
   "download_url": "https://example.com/SZZXLocalDesk.exe",
-  "notes": "日报流改为低频高度计算，仅在卡片生成和布局稳定后按文字行数自适应，避免持续重算。",
+  "notes": "服务器数据回滚仅尉久洋可见和操作；新增历史备份 JSON 与当前服务器 JSON 双栏对比，必须先预览并经过两次确认才能执行回滚。",
   "history": [
+    {
+      "version": "0.2.14",
+      "date": "2026-07-11",
+      "notes": "服务器数据回滚仅尉久洋可见和操作；新增历史备份 JSON 与当前服务器 JSON 双栏对比，必须先预览并经过两次确认才能执行回滚。"
+    },
+    {
+      "version": "0.2.13",
+      "date": "2026-07-11",
+      "notes": "个人周报 AI 整理增加服务器端每人每周 5 次额度；根据本人休息日历计算本周最后一个工作日，并在当天 17:00 提醒尚未保存周报的用户。"
+    },
+    {
+      "version": "0.2.12",
+      "date": "2026-07-11",
+      "notes": "项目列表新增搜索与清空，项目负责人可改名且禁止重名；个人周报支持按项目一键导入本周记录、服务器 AI 整理、独立保存及 Markdown 摘要渲染。"
+    },
     {
       "version": "0.2.11",
       "date": "2026-07-10",

@@ -28,6 +28,8 @@ PET_ACTIONS = {
     "sleepy": "困困",
     "wave": "挥手",
     "jump": "跳跳",
+    "enter": "进门",
+    "leave": "出门",
 }
 
 
@@ -44,6 +46,8 @@ PET_ACTION_GIFS = {
     "sleepy": ("困困.gif",),
     "wave": ("挥手.gif", "招手.gif"),
     "jump": ("跳跳.gif", "跳跳 .gif"),
+    "enter": ("进门.gif", "开门.gif"),
+    "leave": ("出门.gif",),
 }
 
 
@@ -75,6 +79,7 @@ class DesktopPet(QWidget):
         self._auto_hide_after_speech = False
         self._movie: QMovie | None = None
         self._movie_key: tuple[str, str] | None = None
+        self._kind_to_restore: str | None = None
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
@@ -98,6 +103,15 @@ class DesktopPet(QWidget):
         if self.speech_text:
             self.speech_timer.start(duration_ms)
 
+    def enter_and_speak(self, kind: str, text: str, duration_ms: int = 16000) -> None:
+        self.speech_timer.stop()
+        self._kind_to_restore = self.kind
+        self.set_kind(kind)
+        self.move_to_bottom_right()
+        self.set_mood("enter")
+        self.show()
+        QTimer.singleShot(1800, lambda: self.speak(text, mood="wave", duration_ms=duration_ms))
+
     def _clear_speech(self) -> None:
         self.speech_text = ""
         self._resize_for_speech()
@@ -105,6 +119,10 @@ class DesktopPet(QWidget):
         if self._auto_hide_after_speech:
             self._auto_hide_after_speech = False
             self.hide()
+        if self._kind_to_restore is not None:
+            kind = self._kind_to_restore
+            self._kind_to_restore = None
+            self.set_kind(kind)
 
     def show_manually(self) -> None:
         self._auto_hide_after_speech = False

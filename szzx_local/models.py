@@ -81,6 +81,8 @@ class ProjectTodo:
     acceptor: str = ""
     current_handler: str = ""
     flow_history: str = ""
+    assigned_by_pet: str = "penguin"
+    completed_by_pet: str = "penguin"
 
 
 ProjectDeck = ProjectDocument

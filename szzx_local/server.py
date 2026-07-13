@@ -12,11 +12,13 @@ import threading
 import time
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .database import Database, _platform_app_dir
 from .protocol import (
@@ -98,6 +100,112 @@ class DataService:
         self.device_id = f"server-{uuid.uuid4().hex}"
         self.lock = threading.RLock()
         self._stopped = threading.Event()
+        self._ai_lock = threading.Lock()
+        self._ensure_ai_config()
+
+    @property
+    def ai_config_path(self) -> Path:
+        return self.db.path.parent / "ai_config.json"
+
+    def _ensure_ai_config(self) -> None:
+        if self.ai_config_path.exists():
+            return
+        self.ai_config_path.parent.mkdir(parents=True, exist_ok=True)
+        config = {
+            "api_url": "https://api.openai.com/v1/chat/completions",
+            "model": "your-model-name",
+            "prompt": (
+                "你是一名中文工作周报编辑。请整理用户提供的本周记录，保留事实和项目分组，"
+                "合并重复内容，突出完成事项、推进情况、问题风险和后续计划。不要编造信息，"
+                "不要添加日期或时间，直接输出可继续编辑和保存的周报正文。"
+            ),
+        }
+        self.ai_config_path.write_text(
+            json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def summarize_weekly(self, content: str, actor: str) -> dict[str, Any]:
+        api_key = os.environ.get("SZZX_AI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("server AI API key is not configured")
+        actor_key = " ".join(actor.strip().split()).casefold()
+        if not actor_key:
+            raise ValueError("AI request actor is required")
+        content = content.strip()
+        if not content or len(content) > 100_000:
+            raise ValueError("invalid weekly content")
+        config_path = self.ai_config_path
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"server AI config does not exist: {config_path}") from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"server AI config is invalid: {config_path}") from exc
+        if not isinstance(config, dict):
+            raise RuntimeError("server AI config must be a JSON object")
+        prompt = str(config.get("prompt", "")).strip()
+        api_url = str(config.get("api_url", "")).strip()
+        model = str(config.get("model", "")).strip()
+        if not api_url:
+            raise RuntimeError("server AI API URL is not configured")
+        if not model:
+            raise RuntimeError("server AI model is not configured")
+        if not prompt:
+            raise RuntimeError("server AI prompt is not configured")
+        payload = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": content},
+            ],
+        }, ensure_ascii=False).encode("utf-8")
+        request = Request(
+            api_url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            method="POST",
+        )
+        if not self._ai_lock.acquire(blocking=False):
+            raise RuntimeError("server AI is busy")
+        try:
+            week_key = (datetime.now().date() - timedelta(days=datetime.now().weekday())).isoformat()
+            usage_setting = "weekly_ai_usage"
+            try:
+                usage = json.loads(self.db.get_setting(usage_setting) or "{}")
+            except json.JSONDecodeError:
+                usage = {}
+            if not isinstance(usage, dict):
+                usage = {}
+            actor_usage = usage.get(actor_key)
+            if not isinstance(actor_usage, dict) or actor_usage.get("week") != week_key:
+                actor_usage = {"week": week_key, "count": 0}
+            count = int(actor_usage.get("count", 0) or 0)
+            if count >= 5:
+                raise PermissionError("weekly AI limit reached (5/5)")
+            with urlopen(request, timeout=75) as response:
+                raw = response.read(10 * 1024 * 1024)
+            result = json.loads(raw.decode("utf-8"))
+            choices = result.get("choices") if isinstance(result, dict) else None
+            if not isinstance(choices, list) or not choices:
+                raise RuntimeError("AI response has no choices")
+            message = choices[0].get("message") if isinstance(choices[0], dict) else None
+            summary = str(message.get("content", "")).strip() if isinstance(message, dict) else ""
+            if not summary:
+                raise RuntimeError("AI response is empty")
+            actor_usage["count"] = count + 1
+            usage[actor_key] = actor_usage
+            self.db.set_setting(usage_setting, json.dumps(usage, ensure_ascii=False))
+            return {"ok": True, "summary": summary, "remaining": 4 - count}
+        except PermissionError:
+            raise
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"AI request failed: {exc}") from exc
+        finally:
+            self._ai_lock.release()
 
     def start_announcing(self) -> None:
         thread = threading.Thread(target=self._announce_loop, daemon=True)
@@ -188,6 +296,30 @@ class DataService:
                 "safety_backup": safety.name,
                 "sync": self.db.sync_state(),
                 "record_counts": self.db.shared_record_counts(),
+            }
+
+    def preview_backup(self, backup_name: str, actor: str, origin: str) -> dict[str, Any]:
+        if not self._is_restore_admin(actor, origin):
+            raise PermissionError("restore access denied")
+        safe_name = Path(backup_name).name
+        if safe_name != backup_name or not safe_name.endswith(".zip"):
+            raise ValueError("invalid backup name")
+        with self.lock:
+            source = self.backup_dir / safe_name
+            if not source.is_file():
+                raise FileNotFoundError("backup not found")
+            try:
+                with zipfile.ZipFile(source) as archive:
+                    backup_data = json.loads(archive.read("database.json").decode("utf-8"))
+            except (KeyError, UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+                raise ValueError("backup database is invalid") from exc
+            if not isinstance(backup_data, dict):
+                raise ValueError("backup database is invalid")
+            return {
+                "ok": True,
+                "backup": safe_name,
+                "backup_json": backup_data,
+                "current_json": self.db.data,
             }
 
     def _create_backup(self, target: Path) -> None:
@@ -327,6 +459,24 @@ class DataServiceHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
+        if self.path == "/ai/weekly-summary":
+            try:
+                payload = self._read_json_body(max_length=200 * 1024)
+                result = self.service.summarize_weekly(
+                    str(payload.get("content", "")),
+                    self._request_actor(),
+                )
+            except ValueError:
+                self.send_error(400, "invalid weekly content")
+                return
+            except PermissionError:
+                self.send_error(429, "weekly AI limit reached (5/5)")
+                return
+            except RuntimeError as exc:
+                self.send_error(503, str(exc))
+                return
+            self._send_json(result)
+            return
         if self.path == "/restore":
             try:
                 payload = self._read_json_body(max_length=1024 * 1024)
@@ -339,6 +489,25 @@ class DataServiceHandler(BaseHTTPRequestHandler):
                 self.send_error(404, "backup not found")
                 return
             except (ValueError, OSError, zipfile.BadZipFile):
+                self.send_error(400, "invalid backup")
+                return
+            self._send_json(result)
+            return
+        if self.path == "/backup-preview":
+            try:
+                payload = self._read_json_body(max_length=1024 * 1024)
+                result = self.service.preview_backup(
+                    str(payload.get("backup", "")),
+                    self._request_actor(),
+                    self._request_origin(),
+                )
+            except PermissionError:
+                self.send_error(403, "restore access denied")
+                return
+            except FileNotFoundError:
+                self.send_error(404, "backup not found")
+                return
+            except ValueError:
                 self.send_error(400, "invalid backup")
                 return
             self._send_json(result)
@@ -421,7 +590,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reset-data", action="store_true", help="Back up and clear all shared records in the server database before starting.")
     args = parser.parse_args(argv)
 
-    db = Database(path=args.data)
+    db = Database(path=args.data, enable_before_sync_backup=True)
     if args.reset_data:
         if args.data.exists():
             backup = args.data.with_name(f"{args.data.stem}.backup.{datetime.now().strftime('%Y%m%d%H%M%S')}{args.data.suffix}")

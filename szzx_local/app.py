@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from .ai import LocalSummarizer
@@ -14,10 +16,16 @@ from .ui import MainWindow, PinDialog
 from .version import APP_NAME, APP_VERSION
 
 
+def _app_icon_path() -> Path:
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return bundle_root / "szzx_local" / "assets" / "icon" / "logo.png"
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    app.setWindowIcon(QIcon(str(_app_icon_path())))
 
     db = Database()
     if "--smoke-test" in sys.argv:

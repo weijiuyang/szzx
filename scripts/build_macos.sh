@@ -62,6 +62,7 @@ done
   --noconfirm \
   --windowed \
   --name SZZXLocalDesk \
+  --icon "szzx_local/assets/icon/logo.icns" \
   --osx-bundle-identifier com.szzx.localdesk \
   --target-architecture "$MACOS_TARGET_ARCH" \
   --add-data "szzx_local/assets:szzx_local/assets" \

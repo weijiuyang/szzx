@@ -13,7 +13,7 @@ from urllib.parse import quote
 from xml.sax.saxutils import escape
 
 from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextDocument
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextCursor, QTextDocument
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHeaderView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -1780,26 +1781,54 @@ class ServerBackupDialog(QDialog):
         super().__init__(parent)
         self.central_sync = central_sync
         self.setWindowTitle("服务器数据回滚")
-        self.resize(620, 520)
+        self.resize(1180, 760)
         self.setStyleSheet(APP_STYLE)
+        self.previewed_backup = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
         layout.addWidget(_label("服务器数据回滚", "sectionTitle"))
-        layout.addWidget(_label("每日自动备份包含数据库和文档附件。恢复前会自动保存当前状态。", "muted"))
+        layout.addWidget(_label("仅尉久洋可查看和操作。必须先对比备份 JSON 与当前 JSON，完成两次确认后才能回滚。", "muted"))
         self.backup_list = QListWidget()
         self.backup_list.itemClicked.connect(self._select_backup)
-        layout.addWidget(self.backup_list, 1)
+        self.backup_list.setMaximumHeight(180)
+        layout.addWidget(self.backup_list)
+
+        comparison = QSplitter()
+        backup_panel = QWidget()
+        backup_layout = QVBoxLayout(backup_panel)
+        backup_layout.setContentsMargins(0, 0, 0, 0)
+        backup_layout.addWidget(_label("所选备份 JSON", "eyebrow"))
+        self.backup_json = QTextEdit()
+        self.backup_json.setReadOnly(True)
+        self.backup_json.setPlaceholderText("选择备份后点击“加载并对比”。")
+        backup_layout.addWidget(self.backup_json)
+        current_panel = QWidget()
+        current_layout = QVBoxLayout(current_panel)
+        current_layout.setContentsMargins(0, 0, 0, 0)
+        current_layout.addWidget(_label("当前服务器 JSON", "eyebrow"))
+        self.current_json = QTextEdit()
+        self.current_json.setReadOnly(True)
+        self.current_json.setPlaceholderText("这里会展示当前服务器数据。")
+        current_layout.addWidget(self.current_json)
+        comparison.addWidget(backup_panel)
+        comparison.addWidget(current_panel)
+        comparison.setSizes([560, 560])
+        layout.addWidget(comparison, 1)
 
         actions = QHBoxLayout()
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self._load_backups)
+        self.preview_button = QPushButton("加载并对比")
+        self.preview_button.setEnabled(False)
+        self.preview_button.clicked.connect(self._preview_selected)
         self.restore_button = QPushButton("恢复所选备份")
         self.restore_button.setObjectName("dangerButton")
         self.restore_button.setEnabled(False)
         self.restore_button.clicked.connect(self._restore_selected)
         actions.addWidget(refresh)
+        actions.addWidget(self.preview_button)
         actions.addStretch()
         actions.addWidget(self.restore_button)
         layout.addLayout(actions)
@@ -1807,6 +1836,10 @@ class ServerBackupDialog(QDialog):
 
     def _load_backups(self) -> None:
         self.backup_list.clear()
+        self.previewed_backup = ""
+        self.backup_json.clear()
+        self.current_json.clear()
+        self.preview_button.setEnabled(False)
         self.restore_button.setEnabled(False)
         try:
             backups = self.central_sync.list_server_backups()  # type: ignore[attr-defined]
@@ -1830,7 +1863,27 @@ class ServerBackupDialog(QDialog):
             self.backup_list.addItem(item)
 
     def _select_backup(self, item: QListWidgetItem) -> None:
-        self.restore_button.setEnabled(bool(item.data(Qt.ItemDataRole.UserRole)))
+        backup_name = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        self.previewed_backup = ""
+        self.backup_json.clear()
+        self.current_json.clear()
+        self.preview_button.setEnabled(bool(backup_name))
+        self.restore_button.setEnabled(False)
+
+    def _preview_selected(self) -> None:
+        item = self.backup_list.currentItem()
+        backup_name = str(item.data(Qt.ItemDataRole.UserRole) or "") if item is not None else ""
+        if not backup_name:
+            return
+        try:
+            result = self.central_sync.preview_server_backup(backup_name)  # type: ignore[attr-defined]
+        except Exception as exc:
+            QMessageBox.warning(self, "对比失败", f"无法读取服务器 JSON：{exc}")
+            return
+        self.backup_json.setPlainText(json.dumps(result.get("backup_json", {}), ensure_ascii=False, indent=2))
+        self.current_json.setPlainText(json.dumps(result.get("current_json", {}), ensure_ascii=False, indent=2))
+        self.previewed_backup = backup_name
+        self.restore_button.setEnabled(True)
 
     def _restore_selected(self) -> None:
         item = self.backup_list.currentItem()
@@ -1839,9 +1892,12 @@ class ServerBackupDialog(QDialog):
         backup_name = str(item.data(Qt.ItemDataRole.UserRole) or "")
         if not backup_name:
             return
+        if self.previewed_backup != backup_name:
+            QMessageBox.information(self, "需要先对比", "请先加载并核对所选备份与当前服务器 JSON。")
+            return
         message = (
-            "确定把服务器恢复到所选备份吗？\n\n"
-            "恢复前会自动备份当前状态；恢复完成后，所有客户端将重新同步服务器数据。"
+            f"第一次确认：你是否已经逐项核对「{backup_name}」与当前服务器 JSON？\n\n"
+            "继续后还需要手动输入备份文件名。恢复前会自动保存当前状态。"
         )
         if QMessageBox.warning(
             self,
@@ -1850,6 +1906,16 @@ class ServerBackupDialog(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         ) != QMessageBox.StandardButton.Yes:
+            return
+        typed_name, accepted = QInputDialog.getText(
+            self,
+            "最终确认数据回滚",
+            f"第二次确认：请输入完整备份文件名：\n{backup_name}",
+        )
+        if not accepted:
+            return
+        if typed_name.strip() != backup_name:
+            QMessageBox.warning(self, "确认失败", "输入的备份文件名不一致，已取消回滚。")
             return
         try:
             result = self.central_sync.restore_server_backup(backup_name)  # type: ignore[attr-defined]
@@ -2096,6 +2162,24 @@ class UpdateCheckWorker(QThread):
             self.no_update.emit()
 
 
+class WeeklyAIWorker(QThread):
+    completed = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, central_sync: object, content: str) -> None:
+        super().__init__()
+        self.central_sync = central_sync
+        self.content = content
+
+    def run(self) -> None:
+        try:
+            summary = self.central_sync.summarize_weekly(self.content)  # type: ignore[attr-defined]
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.completed.emit(summary)
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -2114,10 +2198,12 @@ class MainWindow(QMainWindow):
         self.selected_document_id: int | None = None
         self._metric_labels: dict[str, QLabel] = {}
         self._update_worker: UpdateCheckWorker | None = None
+        self._weekly_ai_worker: WeeklyAIWorker | None = None
         self._notified_update_version: str | None = None
         self._last_daily_reminder_date: date | None = None
         self._last_lan_update_reminder_at: datetime | None = None
         self._last_dingtalk_id_reminder_date: date | None = None
+        self._last_task_pet_animation_at: datetime | None = None
         self.lan_view_mode = "peers"
         self.todo_view_mode = "personal"
         self.current_lan_peers: list[LanPeer] = []
@@ -2172,6 +2258,7 @@ class MainWindow(QMainWindow):
         self._refresh_document_library()
         self._start_update_timer()
         self._start_daily_report_reminder()
+        self._start_weekly_report_reminder()
         self._start_lan_update_reminder()
         self._start_dingtalk_id_reminder()
 
@@ -2199,7 +2286,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
 
         layout.addStretch()
-        if any(self.db.is_current_user_name(name) for name in SUPER_ADMIN_NAMES):
+        if self.db.is_current_user_name("尉久洋"):
             rollback_button = QPushButton("数据回滚")
             rollback_button.clicked.connect(self._open_server_backup_dialog)
             layout.addWidget(rollback_button)
@@ -2215,6 +2302,9 @@ class MainWindow(QMainWindow):
         return sidebar
 
     def _open_server_backup_dialog(self) -> None:
+        if not self.db.is_current_user_name("尉久洋"):
+            QMessageBox.warning(self, "无权访问", "只有尉久洋可以查看和执行服务器数据回滚。")
+            return
         central_sync = getattr(self, "central_sync", None)
         if central_sync is None or not getattr(central_sync, "server_url", ""):
             QMessageBox.information(self, "服务器未连接", "尚未发现中央数据服务器，请稍后再试。")
@@ -2386,6 +2476,35 @@ class MainWindow(QMainWindow):
         self.daily_reminder_timer.timeout.connect(self._check_daily_report_reminder)
         self.daily_reminder_timer.start()
         QTimer.singleShot(5 * 1000, self._check_daily_report_reminder)
+
+    def _start_weekly_report_reminder(self) -> None:
+        self.weekly_reminder_timer = QTimer(self)
+        self.weekly_reminder_timer.setInterval(5 * 60 * 1000)
+        self.weekly_reminder_timer.timeout.connect(self._check_weekly_report_reminder)
+        self.weekly_reminder_timer.start()
+        QTimer.singleShot(12 * 1000, self._check_weekly_report_reminder)
+
+    def _check_weekly_report_reminder(self) -> None:
+        now = datetime.now()
+        today = now.date()
+        week_start = today - timedelta(days=today.weekday())
+        week_days = [week_start + timedelta(days=offset) for offset in range(7)]
+        rest_days = {
+            item.day for item in self.db.list_rest_days()
+            if week_start <= item.day <= week_days[-1]
+        }
+        work_days = [day for day in week_days if day not in rest_days]
+        if not work_days or today != work_days[-1] or now.hour < 17:
+            return
+        reminder_key = "last_weekly_report_reminder_week"
+        if self.db.get_setting(reminder_key) == week_start.isoformat():
+            return
+        if any(week_start <= report.created_at.date() <= today for report in self.db.list_weekly_reports()):
+            self.db.set_setting(reminder_key, week_start.isoformat())
+            return
+        self.db.set_setting(reminder_key, week_start.isoformat())
+        self.pet.move_to_bottom_right()
+        self.pet.speak("今天是你本周最后一个工作日，17:00 到啦，记得整理并保存本周周报。", mood="wave")
 
     def _start_dingtalk_id_reminder(self) -> None:
         self.dingtalk_id_reminder_timer = QTimer(self)
@@ -3491,6 +3610,8 @@ class MainWindow(QMainWindow):
             and todo.id not in completed_seen
         ]
 
+        self._check_cancelled_todo_pet_notifications()
+
         todo_by_id = {todo.id: todo for todo in todos if todo.scope == "assigned"}
         new_reports: list[tuple[DailyReport, ProjectTodo]] = []
         for report in self.db.daily_reports_between(date.today() - timedelta(days=30), date.today(), mine_only=False):
@@ -3509,18 +3630,26 @@ class MainWindow(QMainWindow):
         if new_assigned:
             todo = max(new_assigned, key=lambda item: item.created_at)
             project = projects_by_id.get(todo.project_id)
-            self.pet.move_to_bottom_right()
-            self.pet.speak(f"你收到新的分配代办：{todo.title}。{project.name if project else ''}", mood="wave")
             assigned_seen.update(item.id for item in new_assigned)
             self._store_notification_ids("notified_assigned_todo_ids", assigned_seen)
+            if self._claim_task_pet_animation():
+                project_text = f"，是「{project.name}」里的任务" if project else ""
+                self.pet.enter_and_speak(
+                    todo.assigned_by_pet,
+                    f"你好，{todo.assigned_by or todo.creator}有一个任务需要这边做一下{project_text}：{todo.title}。",
+                )
             return
 
         if new_completed:
             todo = max(new_completed, key=lambda item: item.completed_at or item.created_at)
-            self.pet.move_to_bottom_right()
-            self.pet.speak(f"{todo.completed_by or todo.assignee} 完成了你分配的代办：{todo.title}", mood="happy")
             completed_seen.update(item.id for item in new_completed)
             self._store_notification_ids("notified_completed_todo_ids", completed_seen)
+            if self._claim_task_pet_animation():
+                completed_by = todo.completed_by or todo.assignee
+                self.pet.enter_and_speak(
+                    todo.completed_by_pet,
+                    f"你好，{todo.assigned_by or todo.creator}交给我的任务被我完成了：{todo.title}。我是{completed_by}。",
+                )
             return
 
         if new_reports:
@@ -3529,6 +3658,49 @@ class MainWindow(QMainWindow):
             self.pet.speak(f"{report.member_name} 给代办「{todo.title}」新增了一条记录。", mood="wave")
             report_seen.update(report.id for report, _todo in new_reports)
             self._store_notification_ids("notified_todo_report_ids", report_seen)
+
+    def _claim_task_pet_animation(self) -> bool:
+        now = datetime.now()
+        if (
+            self._last_task_pet_animation_at is not None
+            and (now - self._last_task_pet_animation_at).total_seconds() < 60
+        ):
+            return False
+        self._last_task_pet_animation_at = now
+        return True
+
+    def _check_cancelled_todo_pet_notifications(self) -> None:
+        key = "notified_cancelled_assigned_todo_keys"
+        cancellations = self.db.list_deleted_assigned_todos()
+        cancellation_keys = {
+            f"{row.get('source_device_id', '')}:{row.get('source_id', '')}"
+            for row in cancellations
+        }
+        raw = self.db.get_setting(key)
+        if raw is None:
+            self.db.set_setting(key, json.dumps(sorted(cancellation_keys)), save=True)
+            return
+        try:
+            seen = {str(value) for value in json.loads(raw)}
+        except (json.JSONDecodeError, TypeError):
+            seen = set()
+        new_rows = [
+            row for row in cancellations
+            if f"{row.get('source_device_id', '')}:{row.get('source_id', '')}" not in seen
+            and self.db.is_current_user_name(str(row.get("assignee", "")))
+        ]
+        seen.update(cancellation_keys)
+        self.db.set_setting(key, json.dumps(sorted(seen)[-300:]), save=True)
+        if not new_rows or not self._claim_task_pet_animation():
+            return
+        row = max(new_rows, key=lambda item: str(item.get("deleted_at", "")))
+        assigned_by = str(row.get("assigned_by", "")).strip() or "分配人"
+        title = str(row.get("title", "")).strip()
+        suffix = f"，原任务是：{title}" if title else ""
+        self.pet.enter_and_speak(
+            str(row.get("assigned_by_pet", "penguin")),
+            f"你好，{assigned_by}的任务先取消了{suffix}。",
+        )
 
     def _days_since(self, value: datetime) -> int:
         return max(1, (date.today() - value.date()).days + 1)
@@ -4215,12 +4387,16 @@ class MainWindow(QMainWindow):
             developer=developer,
             tester=tester,
             acceptor=acceptor,
+            assigned_by_pet=self.db.pet_kind(),
         )
         self.project_todo_input.clear()
         self.assigned_todo_deadline_days = None
         self._refresh_assigned_deadline_buttons()
         self._refresh_project_workspace()
         self._refresh_my_panel()
+        if self.todo_view_mode == "assigned" and self._claim_task_pet_animation():
+            self.pet.move_to_bottom_right()
+            self.pet.speak(f"我给{assignee}分配任务了。", mood="leave")
 
     def _assignee_version_supports_todo(self, assignee: str, workflow: str) -> bool:
         peer = self._peer_for_display_name(assignee)
@@ -4284,11 +4460,25 @@ class MainWindow(QMainWindow):
         if todo.scope == "assigned" and not self._todo_visible_to_current_user(todo):
             QMessageBox.information(self, "不能流转", "只有当前处理人可以处理这条代办。")
             return
-        report = self.db.complete_project_todo(todo.id, current_member.name, current_member.role)
+        report = self.db.complete_project_todo(
+            todo.id,
+            current_member.name,
+            current_member.role,
+            completed_by_pet=self.db.pet_kind(),
+        )
         if report is None:
             QMessageBox.information(self, "不能流转", "这个代办已经完成、状态不匹配，或已经不存在。")
         else:
             self._nudge_after_late_record()
+            completed = self.db.get_project_todo(todo.id)
+            if (
+                completed is not None
+                and completed.scope == "assigned"
+                and completed.status == "done"
+                and self._claim_task_pet_animation()
+            ):
+                self.pet.move_to_bottom_right()
+                self.pet.speak(f"我去通知{completed.assigned_by or completed.creator}，任务完成了。", mood="leave")
         self._refresh_project_workspace()
         self._refresh_my_panel()
         self._refresh_badge_wall()
@@ -4352,6 +4542,10 @@ class MainWindow(QMainWindow):
             return
         if not self.db.delete_project_todo(todo.id):
             QMessageBox.warning(self, "删除失败", "这条代办已经不存在。")
+            return
+        if self._claim_task_pet_animation():
+            self.pet.move_to_bottom_right()
+            self.pet.speak(f"我去通知{todo.assignee}任务取消。", mood="leave")
         self._refresh_project_workspace()
         self._refresh_my_panel()
         self._announce_presence()
@@ -5705,14 +5899,27 @@ class MainWindow(QMainWindow):
         editor_layout = QVBoxLayout(editor_panel)
         editor_layout.setContentsMargins(20, 20, 20, 20)
         editor_layout.setSpacing(14)
-        editor_layout.addWidget(_label("本周记录", "eyebrow"))
+        weekly_record_header = QHBoxLayout()
+        weekly_record_header.addWidget(_label("本周记录", "eyebrow"))
+        weekly_record_header.addStretch()
+        import_weekly_content = QPushButton("一键导入")
+        import_weekly_content.setObjectName("smallButton")
+        import_weekly_content.setToolTip("导入本周一至今天的项目内容")
+        import_weekly_content.clicked.connect(self._import_current_week_project_content)
+        weekly_record_header.addWidget(import_weekly_content)
+        editor_layout.addLayout(weekly_record_header)
         self.editor = QTextEdit()
         self.editor.setPlaceholderText("完成、变化、阻塞、下周。")
-        submit = QPushButton("整理并保存")
-        submit.setObjectName("primaryButton")
-        submit.clicked.connect(self._summarize_and_save)
+        weekly_actions = QHBoxLayout()
+        self.weekly_ai_button = QPushButton("AI 整理")
+        self.weekly_ai_button.clicked.connect(self._summarize_weekly_with_server)
+        self.weekly_save_button = QPushButton("保存")
+        self.weekly_save_button.setObjectName("primaryButton")
+        self.weekly_save_button.clicked.connect(self._save_weekly_report)
         editor_layout.addWidget(self.editor)
-        editor_layout.addWidget(submit)
+        weekly_actions.addWidget(self.weekly_ai_button)
+        weekly_actions.addWidget(self.weekly_save_button)
+        editor_layout.addLayout(weekly_actions)
 
         result_panel = _panel()
         result_layout = QVBoxLayout(result_panel)
@@ -5745,6 +5952,94 @@ class MainWindow(QMainWindow):
         splitter.addWidget(result_panel)
         splitter.setSizes([600, 420])
         return page
+
+    def _import_current_week_project_content(self) -> None:
+        now = datetime.now()
+        week_start = datetime.combine(now.date() - timedelta(days=now.weekday()), datetime.min.time())
+        projects = {project.id: project for project in self.db.list_projects()}
+        grouped: dict[int, dict[str, list[str]]] = {}
+
+        def add(project_id: int, category: str, content: str) -> None:
+            text = " ".join(content.strip().split())
+            if not text or project_id not in projects:
+                return
+            categories = grouped.setdefault(project_id, {})
+            values = categories.setdefault(category, [])
+            if text not in values:
+                values.append(text)
+
+        for project_id in projects:
+            for report in self.db.list_daily_reports(project_id, limit=1000):
+                if week_start <= report.created_at <= now and self.db.is_current_user_name(report.member_name):
+                    add(project_id, "日报", report.content)
+            for report in self.db.list_project_weekly_reports(project_id, limit=1000):
+                if week_start <= report.created_at <= now and self.db.is_current_user_name(report.author):
+                    add(project_id, "记录", report.content)
+
+        for todo in self.db.list_all_project_todos(include_completed=True):
+            if (
+                todo.completed_at is not None
+                and week_start <= todo.completed_at <= now
+                and self.db.is_current_user_name(todo.completed_by)
+            ):
+                add(todo.project_id, "完成代办", todo.title)
+            if (
+                week_start <= todo.created_at <= now
+                and todo.scope == "assigned"
+                and (
+                    self.db.is_current_user_name(todo.assigned_by)
+                    or self.db.is_current_user_name(todo.creator)
+                )
+            ):
+                assignee = f"（安排给 {todo.assignee}）" if todo.assignee.strip() else ""
+                add(todo.project_id, "安排代办", f"{todo.title}{assignee}")
+            if not todo.flow_history.strip():
+                continue
+            try:
+                flow_entries = json.loads(todo.flow_history)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(flow_entries, list):
+                continue
+            for entry in flow_entries:
+                if not isinstance(entry, dict) or not self.db.is_current_user_name(str(entry.get("actor", ""))):
+                    continue
+                try:
+                    happened_at = datetime.fromisoformat(str(entry.get("time", "")))
+                except ValueError:
+                    continue
+                if not week_start <= happened_at <= now:
+                    continue
+                action = str(entry.get("action", "记录")).strip() or "记录"
+                handler = str(entry.get("handler", "")).strip()
+                suffix = f" → {handler}" if handler else ""
+                add(todo.project_id, "记录", f"{todo.title}：{action}{suffix}")
+
+        category_order = ("日报", "记录", "完成代办", "安排代办")
+        sections: list[str] = []
+        for project in self.db.list_projects():
+            categories = grouped.get(project.id)
+            if not categories:
+                continue
+            lines = [f"【{project.name}】"]
+            for category in category_order:
+                values = categories.get(category, [])
+                if not values:
+                    continue
+                lines.append(f"{category}：")
+                lines.extend(f"- {value}" for value in values)
+            sections.append("\n".join(lines))
+
+        if not sections:
+            QMessageBox.information(self, "没有可导入内容", "本周一到今天还没有找到你的项目内容。")
+            return
+        imported = "\n\n".join(sections)
+        current = self.editor.toPlainText().strip()
+        if imported in current:
+            QMessageBox.information(self, "已经导入", "这些项目内容已经在本周记录中。")
+            return
+        self.editor.setPlainText(f"{current}\n\n{imported}" if current else imported)
+        self.editor.moveCursor(QTextCursor.MoveOperation.End)
 
     def _rest_calendar_tab(self) -> QWidget:
         page = QWidget()
@@ -6588,16 +6883,55 @@ class MainWindow(QMainWindow):
         self.docs_list.addItem(item)
         self.docs_list.setItemWidget(item, card)
 
-    def _summarize_and_save(self) -> None:
+    def _summarize_weekly_with_server(self) -> None:
+        content = self.editor.toPlainText().strip()
+        if not content:
+            QMessageBox.information(self, "还没写", "先写一点周报内容。")
+            return
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is None or not getattr(central_sync, "server_url", ""):
+            QMessageBox.information(self, "服务器未连接", "尚未发现中央数据服务器，暂时不能使用 AI 整理。")
+            return
+        if self._weekly_ai_worker is not None and self._weekly_ai_worker.isRunning():
+            return
+        self.editor.setReadOnly(True)
+        self.weekly_ai_button.setEnabled(False)
+        self.weekly_save_button.setEnabled(False)
+        self.weekly_ai_button.setText("AI 整理中…")
+        worker = WeeklyAIWorker(central_sync, content)
+        self._weekly_ai_worker = worker
+        worker.completed.connect(self._weekly_ai_completed)
+        worker.failed.connect(self._weekly_ai_failed)
+        worker.finished.connect(self._weekly_ai_finished)
+        worker.start()
+
+    def _weekly_ai_completed(self, content: str) -> None:
+        self.editor.setPlainText(content)
+        self.editor.setReadOnly(False)
+        self.weekly_ai_button.setEnabled(True)
+        self.weekly_save_button.setEnabled(True)
+        self.weekly_ai_button.setText("AI 整理")
+
+    def _weekly_ai_failed(self, message: str) -> None:
+        self.editor.setReadOnly(False)
+        self.weekly_ai_button.setEnabled(True)
+        self.weekly_save_button.setEnabled(True)
+        self.weekly_ai_button.setText("AI 整理")
+        QMessageBox.warning(self, "AI 整理失败", f"服务器没有完成整理：{message}")
+
+    def _weekly_ai_finished(self) -> None:
+        self._weekly_ai_worker = None
+
+    def _save_weekly_report(self) -> None:
         content = self.editor.toPlainText().strip()
         if not content:
             QMessageBox.information(self, "还没写", "先写一点周报内容。")
             return
 
-        result = self.summarizer.summarize(content)
-        report = self.db.add_weekly_report(content, result.summary, result.mood)
-        self.summary.setPlainText(result.summary)
-        self.pet.set_mood(result.mood)
+        mood = self.summarizer.infer_mood(content)
+        report = self.db.add_weekly_report(content, content, mood)
+        self.summary.setMarkdown(content)
+        self.pet.set_mood(mood)
         self.editor.clear()
         self._prepend_report(report)
         self._refresh_home()
@@ -6626,7 +6960,7 @@ class MainWindow(QMainWindow):
     def _show_history_item(self, item: QListWidgetItem) -> None:
         report = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(report, WeeklyReport):
-            self.summary.setPlainText(report.summary)
+            self.summary.setMarkdown(report.summary)
             self.pet.set_mood(report.mood)
 
     def _update_delete_weekly_enabled(self, *_args: object) -> None:
