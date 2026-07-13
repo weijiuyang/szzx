@@ -3,6 +3,11 @@ from __future__ import annotations
 
 CHANGELOG = [
     {
+        "version": "0.2.21",
+        "date": "2026-07-13",
+        "notes": "Windows 可执行文件、任务栏和窗口统一改用无边框版应用图标；macOS 继续使用原版图标。",
+    },
+    {
         "version": "0.2.20",
         "date": "2026-07-13",
         "notes": "修复开发群和对接群按钮错误回落到主要项目链接的问题，四种项目快捷入口现在分别打开各自配置的链接。",

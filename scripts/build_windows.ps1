@@ -39,7 +39,7 @@ Remove-Item -Recurse -Force build, dist, .packaging-assets -ErrorAction Silently
     --windowed `
     --onefile `
     --name SZZXLocalDesk `
-    --icon "szzx_local/assets/icon/logo.ico" `
+    --icon "szzx_local/assets/icon/unframed_logo.ico" `
     --add-data "szzx_local/assets;szzx_local/assets" `
     --clean `
     run.py

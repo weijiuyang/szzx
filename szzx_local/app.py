@@ -18,7 +18,8 @@ from .version import APP_NAME, APP_VERSION
 
 def _app_icon_path() -> Path:
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-    return bundle_root / "szzx_local" / "assets" / "icon" / "logo.png"
+    filename = "unframed_logo.png" if sys.platform == "win32" else "logo.png"
+    return bundle_root / "szzx_local" / "assets" / "icon" / filename
 
 
 def main() -> int:
