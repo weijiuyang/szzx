@@ -1,8 +1,13 @@
 {
-  "version": "0.2.23",
+  "version": "0.2.24",
   "download_url": "",
-  "notes": "Windows 程序改名为数智中心，并修复可执行文件图标兼容性。",
+  "notes": "修复 Windows 打包输出文件名乱码的问题。",
   "history": [
+    {
+      "version": "0.2.24",
+      "date": "2026-07-13",
+      "notes": "修复 Windows PowerShell 5 按旧编码读取中文应用名导致输出文件名乱码的问题，改用 Unicode 字符码生成「数智中心」。"
+    },
     {
       "version": "0.2.23",
       "date": "2026-07-13",

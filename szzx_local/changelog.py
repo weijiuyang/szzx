@@ -3,6 +3,11 @@ from __future__ import annotations
 
 CHANGELOG = [
     {
+        "version": "0.2.24",
+        "date": "2026-07-13",
+        "notes": "修复 Windows PowerShell 5 按旧编码读取中文应用名导致输出文件名乱码的问题，改用 Unicode 字符码生成「数智中心」。",
+    },
+    {
         "version": "0.2.23",
         "date": "2026-07-13",
         "notes": "Windows 输出文件改名为「数智中心.exe」；图标改用兼容性更高的 BMP 格式多尺寸 ICO，并设置独立任务栏应用标识。",

@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
 $env:PYINSTALLER_CONFIG_DIR = Join-Path $Root ".pyinstaller-cache"
+$AppName = -join ([char[]](0x6570, 0x667A, 0x4E2D, 0x5FC3))
 
 $PythonLauncher = $null
 foreach ($Version in @("3.12", "3.11", "3.10")) {
@@ -42,13 +43,13 @@ if (-not (Test-Path $WindowsIcon)) {
     --noconfirm `
     --windowed `
     --onefile `
-    --name "数智中心" `
+    --name $AppName `
     --icon $WindowsIcon `
     --add-data "szzx_local/assets;szzx_local/assets" `
     --clean `
     run.py
 Remove-Item -Recurse -Force .packaging-assets -ErrorAction SilentlyContinue
-$OutputExe = Join-Path $Root "dist\数智中心.exe"
+$OutputExe = Join-Path $Root ("dist\" + $AppName + ".exe")
 if (-not (Test-Path $OutputExe)) {
     throw "Windows executable was not created: $OutputExe"
 }
@@ -60,4 +61,4 @@ if ($env:SKIP_SMOKE_TEST -ne "1") {
     Write-Host "Skipping packaged smoke test."
 }
 
-Write-Host "Built dist\数智中心.exe"
+Write-Host ("Built dist\" + $AppName + ".exe")
