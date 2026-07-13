@@ -39,8 +39,8 @@ jobs:
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
-          name: SZZXLocalDesk-windows
-          path: dist/SZZXLocalDesk.exe
+          name: 数智中心-windows
+          path: dist/数智中心.exe
 
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
@@ -50,4 +50,4 @@ jobs:
           name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', inputs.release_version) }}
           body: ${{ github.event_name == 'workflow_dispatch' && inputs.release_notes || '' }}
           make_latest: true
-          files: dist/SZZXLocalDesk.exe
+          files: dist/数智中心.exe

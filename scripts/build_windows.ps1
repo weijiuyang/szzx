@@ -42,18 +42,22 @@ if (-not (Test-Path $WindowsIcon)) {
     --noconfirm `
     --windowed `
     --onefile `
-    --name SZZXLocalDesk `
+    --name "数智中心" `
     --icon $WindowsIcon `
     --add-data "szzx_local/assets;szzx_local/assets" `
     --clean `
     run.py
 Remove-Item -Recurse -Force .packaging-assets -ErrorAction SilentlyContinue
+$OutputExe = Join-Path $Root "dist\数智中心.exe"
+if (-not (Test-Path $OutputExe)) {
+    throw "Windows executable was not created: $OutputExe"
+}
 
 if ($env:SKIP_SMOKE_TEST -ne "1") {
     $env:SZZX_LOCAL_DATA_DIR = Join-Path $Root ".smoke-data"
-    .\dist\SZZXLocalDesk.exe --smoke-test
+    & $OutputExe --smoke-test
 } else {
     Write-Host "Skipping packaged smoke test."
 }
 
-Write-Host "Built dist\SZZXLocalDesk.exe"
+Write-Host "Built dist\数智中心.exe"

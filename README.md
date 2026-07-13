@@ -119,7 +119,7 @@ Set `SZZX_UPDATE_URL` to a JSON file like `update.example.json`:
 ```json
 {
   "version": "0.2.14",
-  "download_url": "https://example.com/SZZXLocalDesk.exe",
+  "download_url": "https://example.com/%E6%95%B0%E6%99%BA%E4%B8%AD%E5%BF%83.exe",
   "notes": "服务器数据回滚仅尉久洋可见和操作；新增历史备份 JSON 与当前服务器 JSON 双栏对比，必须先预览并经过两次确认才能执行回滚。",
   "history": [
     {
@@ -504,7 +504,7 @@ Windows, run on a Windows machine:
 Output:
 
 ```text
-dist\SZZXLocalDesk.exe
+dist\数智中心.exe
 ```
 
 GitHub Actions can also build and publish the Windows exe to GitHub Releases.
@@ -515,17 +515,17 @@ release_version: 0.1.1
 release_notes: 本次更新说明
 ```
 
-The workflow creates release tag `v0.1.1` and uploads `SZZXLocalDesk.exe`.
+The workflow creates release tag `v0.1.1` and uploads `数智中心.exe`.
 Pushing a git tag like `v0.1.1` also publishes a release automatically.
 
-For local Windows distribution, build `dist\SZZXLocalDesk.exe` on one Windows
+For local Windows distribution, build `dist\数智中心.exe` on one Windows
 machine, then share that exe inside the LAN. The app shows peer versions in the
 LAN page. When a same-OS peer has a newer version and an update package, users
 can click `下载更新` to pull the installer from that peer into their Downloads
 folder.
 
-By default, Windows packaged builds share the running `SZZXLocalDesk.exe`.
-Development builds look for `dist/SZZXLocalDesk.exe` on Windows and
+By default, Windows packaged builds share the running `数智中心.exe`.
+Development builds look for `dist/数智中心.exe` on Windows and
 `dist/SZZXLocalDesk-mac.dmg` on macOS. To force a specific package path, start
 the app with `SZZX_UPDATE_PACKAGE=/path/to/installer`.
 
@@ -534,7 +534,7 @@ the app with `SZZX_UPDATE_PACKAGE=/path/to/installer`.
 macOS users can open `dist/SZZXLocalDesk-mac.dmg` and drag the app into Applications.
 If macOS blocks the app because it is unsigned, right-click the app and choose Open once.
 
-Windows users should receive the `dist\SZZXLocalDesk.exe` built on a Windows machine.
+Windows users should receive the `dist\数智中心.exe` built on a Windows machine.
 For a more formal Windows installer later, wrap that exe with Inno Setup or NSIS.
 
 ## Optional local AI command

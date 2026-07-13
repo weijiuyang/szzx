@@ -3,6 +3,11 @@ from __future__ import annotations
 
 CHANGELOG = [
     {
+        "version": "0.2.23",
+        "date": "2026-07-13",
+        "notes": "Windows 输出文件改名为「数智中心.exe」；图标改用兼容性更高的 BMP 格式多尺寸 ICO，并设置独立任务栏应用标识。",
+    },
+    {
         "version": "0.2.22",
         "date": "2026-07-13",
         "notes": "Windows 新增右下角系统托盘：关闭主窗口后继续后台运行，可双击托盘恢复或从菜单退出；打包前会校验并嵌入无边框图标。",

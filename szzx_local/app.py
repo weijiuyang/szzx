@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import ctypes
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject
@@ -73,6 +74,8 @@ class _WindowsTrayController(QObject):
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SZZX.DigitalCenter")  # type: ignore[attr-defined]
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)

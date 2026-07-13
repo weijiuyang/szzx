@@ -326,6 +326,7 @@ class LanDiscovery(QObject):
         executable = Path(sys.executable)
         if sys.platform == "win32":
             candidates.extend([
+                cwd / "dist" / "数智中心.exe",
                 cwd / "dist" / "SZZXLocalDesk.exe",
                 executable,
             ])
