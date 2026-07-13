@@ -1227,6 +1227,10 @@ class ProjectLogHistoryDialog(QDialog):
             top.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignTop)
         if str(project.get("backup_project_link", "")).strip():
             top.addWidget(self._project_link_button(project, "backup"), 0, Qt.AlignmentFlag.AlignTop)
+        if str(project.get("development_group_link", "")).strip():
+            top.addWidget(self._project_link_button(project, "development_group"), 0, Qt.AlignmentFlag.AlignTop)
+        if str(project.get("coordination_group_link", "")).strip():
+            top.addWidget(self._project_link_button(project, "coordination_group"), 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(top)
 
         role = str(project.get("role", "")).strip() or "未配置角色"
@@ -1242,15 +1246,26 @@ class ProjectLogHistoryDialog(QDialog):
         self.project_list.setItemWidget(item, card)
 
     def _project_link_button(self, project: dict[str, object], kind: str) -> QPushButton:
-        link_key = "backup_project_link" if kind == "backup" else "project_link"
+        link_key = {
+            "primary": "project_link",
+            "backup": "backup_project_link",
+            "development_group": "development_group_link",
+            "coordination_group": "coordination_group_link",
+        }.get(kind, "project_link")
         link = str(project.get(link_key, "")).strip()
         button = QPushButton()
         button.setObjectName("projectBackupLinkButton" if kind == "backup" else "projectPrimaryLinkButton")
-        button.setIcon(_project_link_icon(kind))
+        button.setIcon(_project_group_icon("development" if kind == "development_group" else "coordination") if kind.endswith("_group") else _project_link_icon(kind))
         button.setIconSize(QSize(16, 16))
         button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setToolTip(link or ("打开备用项目" if kind == "backup" else "打开主要项目"))
-        button.clicked.connect(lambda checked=False, selected=link: self._open_project_link(selected))
+        tooltip = {
+            "primary": "打开主要项目",
+            "backup": "打开备用项目",
+            "development_group": "打开开发群",
+            "coordination_group": "打开对接群",
+        }.get(kind, "打开连接")
+        button.setToolTip(tooltip)
+        button.clicked.connect(lambda checked=False, selected=link, selected_kind=kind: self._open_project_link(selected, selected_kind))
         return button
 
     def _project_notes_button(self, project: dict[str, object]) -> QPushButton:
@@ -1265,12 +1280,16 @@ class ProjectLogHistoryDialog(QDialog):
         button.clicked.connect(lambda checked=False, title=name, text=notes: _show_project_notes_dialog(self, title, text))
         return button
 
-    def _open_project_link(self, link: str) -> None:
+    def _open_project_link(self, link: str, kind: str = "primary") -> None:
         if not link:
             return
+        if kind in {"development_group", "coordination_group"}:
+            app_url = _dingtalk_group_app_url(link)
+            if app_url.isValid() and not app_url.isEmpty() and QDesktopServices.openUrl(app_url):
+                return
         url = QUrl.fromUserInput(link)
-        if not url.isValid() or url.scheme().lower() not in {"http", "https"}:
-            QMessageBox.information(self, "项目连接无效", "这个项目还没有配置可打开的网页链接。")
+        if not url.isValid() or url.scheme().lower() not in {"http", "https", "dingtalk"}:
+            QMessageBox.information(self, "连接无效", "这个项目还没有配置可打开的链接。")
             return
         QDesktopServices.openUrl(url)
 
@@ -3423,6 +3442,10 @@ class MainWindow(QMainWindow):
             title_row.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignTop)
         if project.backup_project_link:
             title_row.addWidget(self._project_link_button(project, "backup"), 0, Qt.AlignmentFlag.AlignTop)
+        if project.development_group_link:
+            title_row.addWidget(self._project_link_button(project, "development_group"), 0, Qt.AlignmentFlag.AlignTop)
+        if project.coordination_group_link:
+            title_row.addWidget(self._project_link_button(project, "coordination_group"), 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(title_row)
         owner_row = QHBoxLayout()
         owner_row.setContentsMargins(0, 0, 0, 0)
@@ -3877,6 +3900,10 @@ class MainWindow(QMainWindow):
             title_row.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignVCenter)
         if project.backup_project_link:
             title_row.addWidget(self._project_link_button(project, "backup"), 0, Qt.AlignmentFlag.AlignVCenter)
+        if project.development_group_link:
+            title_row.addWidget(self._project_link_button(project, "development_group"), 0, Qt.AlignmentFlag.AlignVCenter)
+        if project.coordination_group_link:
+            title_row.addWidget(self._project_link_button(project, "coordination_group"), 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch()
         title_row.addWidget(_label(project.status, "compactRoleBadge"))
         layout.addLayout(title_row)
@@ -3915,10 +3942,15 @@ class MainWindow(QMainWindow):
         }.get(kind, "")
         button = QPushButton()
         button.setObjectName("projectBackupLinkButton" if kind == "backup" else "projectPrimaryLinkButton")
-        button.setIcon(_project_link_icon(kind))
+        button.setIcon(_project_group_icon("development" if kind == "development_group" else "coordination") if kind.endswith("_group") else _project_link_icon(kind))
         button.setIconSize(QSize(16, 16))
         button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setToolTip(link or ("打开备用项目" if kind == "backup" else "打开主要项目"))
+        button.setToolTip({
+            "primary": "打开主要项目",
+            "backup": "打开备用项目",
+            "development_group": "打开开发群",
+            "coordination_group": "打开对接群",
+        }.get(kind, "打开连接"))
         button.clicked.connect(lambda checked=False, selected=project, selected_kind=kind: self._open_project_link(selected, selected_kind))
         return button
 
@@ -7129,8 +7161,14 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.db, peers)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self._refresh_identity()
+            central_sync = getattr(self, "central_sync", None)
+            if central_sync is not None:
+                central_sync.mark_local_dirty()
+                central_sync.sync_now(push_first=True)
             if self.discovery is not None:
                 self.discovery.set_display_name(self.db.display_name())
+                self.discovery.announce_burst()
+                self.discovery.request_peer_snapshot_refresh()
                 self._refresh_peers(self.discovery.sorted_peers())
 
     def _open_pet(self) -> None:

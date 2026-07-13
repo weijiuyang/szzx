@@ -421,7 +421,9 @@ class Database:
             self._save(bump_sync=False)
 
     def save_local_settings(self) -> None:
-        self._save(bump_sync=False)
+        # The settings themselves stay local, but this save also publishes the
+        # current user's shared name claim (including their DingTalk ID).
+        self._save(bump_sync=True)
 
     def verify_pin(self, pin: str) -> bool:
         stored = self.get_setting("pin_hash")
