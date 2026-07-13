@@ -14,6 +14,8 @@ class Project:
     created_at: datetime
     project_link: str = ""
     backup_project_link: str = ""
+    development_group_link: str = ""
+    coordination_group_link: str = ""
     project_notes: str = ""
 
 

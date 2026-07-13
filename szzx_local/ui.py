@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
-from PySide6.QtCore import QThread, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QRect, QThread, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextCursor, QTextDocument
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
@@ -569,6 +569,29 @@ def _normalize_project_link(value: str) -> str:
     return url.toString()
 
 
+def _normalize_dingtalk_group_link(value: str) -> str:
+    link = value.strip()
+    if not link:
+        return ""
+    url = QUrl.fromUserInput(link)
+    if url.scheme().lower() not in {"http", "https", "dingtalk"}:
+        return ""
+    if url.scheme().lower() in {"http", "https"} and not url.host():
+        return ""
+    return url.toString()
+
+
+def _dingtalk_group_app_url(link: str) -> QUrl:
+    url = QUrl.fromUserInput(link)
+    if url.scheme().lower() == "dingtalk":
+        return url
+    if url.host().lower() != "qr.dingtalk.com" or url.path() != "/action/joingroup":
+        return QUrl()
+    app_url = QUrl("dingtalk://dingtalkclient/action/joingroup")
+    app_url.setQuery(url.query())
+    return app_url
+
+
 def _project_link_icon(kind: str) -> QIcon:
     pixmap = QPixmap(48, 48)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -606,6 +629,24 @@ def _project_text_icon() -> QIcon:
     painter.drawLine(18, 18, 30, 18)
     painter.drawLine(18, 25, 30, 25)
     painter.drawLine(18, 32, 26, 32)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _project_group_icon(kind: str) -> QIcon:
+    pixmap = QPixmap(48, 48)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor("#2f7557"), 4)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.drawRoundedRect(7, 9, 34, 25, 7, 7)
+    painter.drawLine(16, 34, 13, 40)
+    painter.drawLine(13, 40, 22, 34)
+    painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+    painter.drawText(QRect(8, 10, 32, 22), Qt.AlignmentFlag.AlignCenter, "DEV" if kind == "development" else "CO")
     painter.end()
     return QIcon(pixmap)
 
@@ -2873,10 +2914,28 @@ class MainWindow(QMainWindow):
         self.project_backup_link_button.setToolTip("打开备用项目")
         self.project_backup_link_button.clicked.connect(lambda checked=False: self._open_current_project_link("backup"))
         self.project_backup_link_button.setVisible(False)
+        self.project_development_group_button = QPushButton()
+        self.project_development_group_button.setObjectName("projectPrimaryLinkButton")
+        self.project_development_group_button.setIcon(_project_group_icon("development"))
+        self.project_development_group_button.setIconSize(QSize(16, 16))
+        self.project_development_group_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.project_development_group_button.setToolTip("打开开发群")
+        self.project_development_group_button.clicked.connect(lambda checked=False: self._open_current_project_link("development_group"))
+        self.project_development_group_button.setVisible(False)
+        self.project_coordination_group_button = QPushButton()
+        self.project_coordination_group_button.setObjectName("projectBackupLinkButton")
+        self.project_coordination_group_button.setIcon(_project_group_icon("coordination"))
+        self.project_coordination_group_button.setIconSize(QSize(16, 16))
+        self.project_coordination_group_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.project_coordination_group_button.setToolTip("打开对接群")
+        self.project_coordination_group_button.clicked.connect(lambda checked=False: self._open_current_project_link("coordination_group"))
+        self.project_coordination_group_button.setVisible(False)
         title_row.addWidget(self.project_title, 1)
         title_row.addWidget(self.project_notes_button, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addWidget(self.project_primary_link_button, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addWidget(self.project_backup_link_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addWidget(self.project_development_group_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addWidget(self.project_coordination_group_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.project_description = _label("项目负责人可以在这里查看所有日报、维护项目周报，并归档项目文档。", "muted")
         hero_layout.addWidget(self.project_status)
         hero_layout.addLayout(title_row)
@@ -2961,6 +3020,10 @@ class MainWindow(QMainWindow):
         self.config_project_link.setPlaceholderText("主要项目连接，例如 https://example.com")
         self.config_project_backup_link = QLineEdit()
         self.config_project_backup_link.setPlaceholderText("备用项目连接，例如 https://preview.example.com")
+        self.config_development_group_link = QLineEdit()
+        self.config_development_group_link.setPlaceholderText("开发钉钉群链接")
+        self.config_coordination_group_link = QLineEdit()
+        self.config_coordination_group_link.setPlaceholderText("对接钉钉群链接")
         self.config_project_notes = AutoHeightTextEdit(96)
         self.config_project_notes.setPlaceholderText("项目地址、启动命令、测试账号、部署说明等。")
         self.config_project_notes_label = _label("项目文本资料", "eyebrow")
@@ -2972,6 +3035,10 @@ class MainWindow(QMainWindow):
         config_project_layout.addWidget(self.config_project_link)
         config_project_layout.addWidget(_label("备用项目连接", "eyebrow"))
         config_project_layout.addWidget(self.config_project_backup_link)
+        config_project_layout.addWidget(_label("开发群", "eyebrow"))
+        config_project_layout.addWidget(self.config_development_group_link)
+        config_project_layout.addWidget(_label("对接群", "eyebrow"))
+        config_project_layout.addWidget(self.config_coordination_group_link)
         config_project_layout.addWidget(self.config_project_notes_label)
         config_project_layout.addWidget(self.config_project_notes)
         config_project_layout.addWidget(self.save_project_description_button)
@@ -3840,7 +3907,12 @@ class MainWindow(QMainWindow):
         self._show_project_overview()
 
     def _project_link_button(self, project: Project, kind: str) -> QPushButton:
-        link = project.backup_project_link if kind == "backup" else project.project_link
+        link = {
+            "primary": project.project_link,
+            "backup": project.backup_project_link,
+            "development_group": project.development_group_link,
+            "coordination_group": project.coordination_group_link,
+        }.get(kind, "")
         button = QPushButton()
         button.setObjectName("projectBackupLinkButton" if kind == "backup" else "projectPrimaryLinkButton")
         button.setIcon(_project_link_icon(kind))
@@ -3861,12 +3933,22 @@ class MainWindow(QMainWindow):
         return button
 
     def _open_project_link(self, project: Project, kind: str = "primary") -> None:
-        link = project.backup_project_link if kind == "backup" else project.project_link
+        link = {
+            "primary": project.project_link,
+            "backup": project.backup_project_link,
+            "development_group": project.development_group_link,
+            "coordination_group": project.coordination_group_link,
+        }.get(kind, "")
         if not link:
             return
+        if kind in {"development_group", "coordination_group"}:
+            app_url = _dingtalk_group_app_url(link)
+            if app_url.isValid() and not app_url.isEmpty():
+                if QDesktopServices.openUrl(app_url):
+                    return
         url = QUrl.fromUserInput(link)
-        if not url.isValid() or url.scheme().lower() not in {"http", "https"}:
-            QMessageBox.information(self, "项目连接无效", "这个项目还没有配置可打开的网页链接。")
+        if not url.isValid() or url.scheme().lower() not in {"http", "https", "dingtalk"}:
+            QMessageBox.information(self, "连接无效", "这个项目还没有配置可打开的链接。")
             return
         QDesktopServices.openUrl(url)
 
@@ -4256,13 +4338,25 @@ class MainWindow(QMainWindow):
         if raw_backup_link and not backup_project_link:
             QMessageBox.information(self, "备用项目连接无效", "请填写网页链接，例如 preview.example.com 或 https://preview.example.com。")
             return
+        raw_development_group_link = self.config_development_group_link.text().strip()
+        development_group_link = _normalize_dingtalk_group_link(raw_development_group_link)
+        if raw_development_group_link and not development_group_link:
+            QMessageBox.information(self, "开发群链接无效", "请填写有效的钉钉群链接。")
+            return
+        raw_coordination_group_link = self.config_coordination_group_link.text().strip()
+        coordination_group_link = _normalize_dingtalk_group_link(raw_coordination_group_link)
+        if raw_coordination_group_link and not coordination_group_link:
+            QMessageBox.information(self, "对接群链接无效", "请填写有效的钉钉群链接。")
+            return
         updated = self.db.update_project_details(
-            project.id,
-            name,
-            description,
-            project_link,
-            backup_project_link,
-            project_notes,
+            project_id=project.id,
+            name=name,
+            description=description,
+            project_link=project_link,
+            backup_project_link=backup_project_link,
+            development_group_link=development_group_link,
+            coordination_group_link=coordination_group_link,
+            project_notes=project_notes,
         )
         if updated is None:
             QMessageBox.warning(self, "保存失败", "这个项目记录已经不存在。")
@@ -4651,6 +4745,10 @@ class MainWindow(QMainWindow):
         self.project_primary_link_button.setToolTip(project.project_link or "打开主要项目")
         self.project_backup_link_button.setVisible(bool(project.backup_project_link))
         self.project_backup_link_button.setToolTip(project.backup_project_link or "打开备用项目")
+        self.project_development_group_button.setVisible(bool(project.development_group_link))
+        self.project_development_group_button.setToolTip("打开开发群")
+        self.project_coordination_group_button.setVisible(bool(project.coordination_group_link))
+        self.project_coordination_group_button.setToolTip("打开对接群")
         self.project_description.setText(project.description)
         editing_config = (
             self.project_side_stack.currentIndex() == 1
@@ -4659,6 +4757,8 @@ class MainWindow(QMainWindow):
                 or self.config_project_name.hasFocus()
                 or (hasattr(self, "config_project_link") and self.config_project_link.hasFocus())
                 or (hasattr(self, "config_project_backup_link") and self.config_project_backup_link.hasFocus())
+                or self.config_development_group_link.hasFocus()
+                or self.config_coordination_group_link.hasFocus()
                 or (hasattr(self, "config_project_notes") and self.config_project_notes.hasFocus())
             )
         )
@@ -4669,6 +4769,8 @@ class MainWindow(QMainWindow):
                 self.config_project_link.setText(project.project_link)
             if hasattr(self, "config_project_backup_link"):
                 self.config_project_backup_link.setText(project.backup_project_link)
+            self.config_development_group_link.setText(project.development_group_link)
+            self.config_coordination_group_link.setText(project.coordination_group_link)
             if hasattr(self, "config_project_notes"):
                 self.config_project_notes.setPlainText(project.project_notes if can_view_project_notes else "")
         self._set_metric(self.metric_members, len(members))
@@ -4731,6 +4833,8 @@ class MainWindow(QMainWindow):
             self.config_project_link.setEnabled(is_manager)
         if hasattr(self, "config_project_backup_link"):
             self.config_project_backup_link.setEnabled(is_manager)
+        self.config_development_group_link.setEnabled(is_manager)
+        self.config_coordination_group_link.setEnabled(is_manager)
         if hasattr(self, "config_project_notes"):
             self.config_project_notes.setEnabled(can_edit_project_notes)
             self.config_project_notes.setVisible(can_view_project_notes)
@@ -4885,6 +4989,10 @@ class MainWindow(QMainWindow):
             self.project_primary_link_button.setVisible(False)
         if hasattr(self, "project_backup_link_button"):
             self.project_backup_link_button.setVisible(False)
+        if hasattr(self, "project_development_group_button"):
+            self.project_development_group_button.setVisible(False)
+        if hasattr(self, "project_coordination_group_button"):
+            self.project_coordination_group_button.setVisible(False)
         if getattr(self, "project_scope_value", "mine") == "mine":
             self.project_description.setText("当前没有你参与的项目。可以创建项目，或切到“全部项目”查看团队项目。")
         else:
@@ -4941,6 +5049,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "config_project_backup_link"):
             self.config_project_backup_link.clear()
             self.config_project_backup_link.setEnabled(False)
+        self.config_development_group_link.clear()
+        self.config_development_group_link.setEnabled(False)
+        self.config_coordination_group_link.clear()
+        self.config_coordination_group_link.setEnabled(False)
         if hasattr(self, "config_project_notes"):
             self.config_project_notes.clear()
             self.config_project_notes.setEnabled(False)

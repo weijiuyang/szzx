@@ -851,6 +851,8 @@ class Database:
         status: str = "推进中",
         project_link: str = "",
         backup_project_link: str = "",
+        development_group_link: str = "",
+        coordination_group_link: str = "",
         project_notes: str = "",
     ) -> Project:
         created_at = datetime.now()
@@ -862,6 +864,8 @@ class Database:
             "status": status.strip(),
             "project_link": project_link.strip(),
             "backup_project_link": backup_project_link.strip(),
+            "development_group_link": development_group_link.strip(),
+            "coordination_group_link": coordination_group_link.strip(),
             "project_notes": project_notes.strip(),
             "created_at": created_at.isoformat(timespec="seconds"),
             "updated_at": created_at.isoformat(timespec="seconds"),
@@ -1117,6 +1121,8 @@ class Database:
         description: str,
         project_link: str = "",
         backup_project_link: str = "",
+        development_group_link: str = "",
+        coordination_group_link: str = "",
         project_notes: str = "",
     ) -> Project | None:
         for row in self.data["projects"]:
@@ -1126,6 +1132,8 @@ class Database:
             row["description"] = description.strip()
             row["project_link"] = project_link.strip()
             row["backup_project_link"] = backup_project_link.strip()
+            row["development_group_link"] = development_group_link.strip()
+            row["coordination_group_link"] = coordination_group_link.strip()
             row["project_notes"] = project_notes.strip()
             row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
             self._save()
@@ -1152,6 +1160,8 @@ class Database:
             created_at=_parse_time(str(row["created_at"])),
             project_link=str(row.get("project_link", "")),
             backup_project_link=str(row.get("backup_project_link", "")),
+            development_group_link=str(row.get("development_group_link", "")),
+            coordination_group_link=str(row.get("coordination_group_link", "")),
             project_notes=str(row.get("project_notes", "")),
         )
 
@@ -1985,6 +1995,8 @@ class Database:
                 "description": str(row.get("description", "")),
                 "project_link": str(row.get("project_link", "")),
                 "backup_project_link": str(row.get("backup_project_link", "")),
+                "development_group_link": str(row.get("development_group_link", "")),
+                "coordination_group_link": str(row.get("coordination_group_link", "")),
                 "project_notes": str(row.get("project_notes", "")),
                 "joined_at": created_at.isoformat(timespec="seconds"),
                 "joined_days": max(1, (today - created_at.date()).days + 1),
@@ -2016,6 +2028,8 @@ class Database:
                 "description": str(project.get("description", "")),
                 "project_link": str(project.get("project_link", "")),
                 "backup_project_link": str(project.get("backup_project_link", "")),
+                "development_group_link": str(project.get("development_group_link", "")),
+                "coordination_group_link": str(project.get("coordination_group_link", "")),
                 "project_notes": str(project.get("project_notes", "")),
                 "joined_at": joined_at.isoformat(timespec="seconds"),
                 "joined_days": max(1, (today - joined_at.date()).days + 1),
@@ -2676,6 +2690,8 @@ class Database:
                 "description": str(row.get("description", "")),
                 "project_link": str(row.get("project_link", "")),
                 "backup_project_link": str(row.get("backup_project_link", "")),
+                "development_group_link": str(row.get("development_group_link", "")),
+                "coordination_group_link": str(row.get("coordination_group_link", "")),
                 "project_notes": str(row.get("project_notes", "")),
                 "updated_at": str(row.get("updated_at", "")),
             }
@@ -3100,7 +3116,7 @@ class Database:
         if not self._remote_project_is_newer(existing, remote, allow_untimestamped_updates):
             return False
         changed = False
-        for key in ("name", "owner", "description", "status", "project_link", "backup_project_link", "project_notes", "updated_at"):
+        for key in ("name", "owner", "description", "status", "project_link", "backup_project_link", "development_group_link", "coordination_group_link", "project_notes", "updated_at"):
             if key not in remote:
                 continue
             value = remote.get(key)
