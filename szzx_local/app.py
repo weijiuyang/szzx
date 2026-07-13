@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import ctypes
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject
@@ -74,6 +75,8 @@ class _WindowsTrayController(QObject):
 
 
 def main() -> int:
+    if "--update-restart" in sys.argv:
+        time.sleep(2)
     if sys.platform == "win32":
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SZZX.DigitalCenter")  # type: ignore[attr-defined]
     app = QApplication(sys.argv)

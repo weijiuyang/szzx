@@ -12,10 +12,11 @@ from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
-from PySide6.QtCore import QRect, QThread, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QProcess, QRect, QStandardPaths, QThread, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextCursor, QTextDocument
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QAbstractItemView,
     QCheckBox,
@@ -538,6 +539,11 @@ def _asset_path(*parts: str) -> Path:
 
 
 DINGTALK_ICON_PATH = _asset_path("dingtalk.svg")
+
+
+def _desktop_path() -> Path:
+    location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation)
+    return Path(location) if location else Path.home() / "Desktop"
 
 
 def _label(text: str, object_name: str | None = None) -> QLabel:
@@ -7567,13 +7573,19 @@ class MainWindow(QMainWindow):
         ) != QMessageBox.StandardButton.Yes:
             return
         try:
-            target = self.discovery.download_update_package(peer, Path.home() / "Downloads")
+            target = self.discovery.download_update_package(peer, _desktop_path())
         except Exception as exc:
             QMessageBox.warning(self, "下载失败", str(exc))
             return
-        message = f"安装包已保存到：\n{target}\n\n是否现在打开？"
-        if QMessageBox.question(self, "下载完成", message) == QMessageBox.StandardButton.Yes:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+        if sys.platform == "win32" and target.suffix.lower() == ".exe":
+            result = QProcess.startDetached(str(target), ["--update-restart"])
+            started = result[0] if isinstance(result, tuple) else bool(result)
+        else:
+            started = QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+        if not started:
+            QMessageBox.warning(self, "无法打开更新", f"安装包已保存到桌面，但未能自动打开：\n{target}")
+            return
+        QApplication.quit()
 
     def _lan_update_message(self, peer: LanPeer) -> str:
         package = peer.update_package
