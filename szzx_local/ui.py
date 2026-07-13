@@ -2274,6 +2274,7 @@ class MainWindow(QMainWindow):
         self.todo_view_mode = "personal"
         self.current_lan_peers: list[LanPeer] = []
         self._lan_logs_signature: tuple[object, ...] | None = None
+        self._lan_peer_scroll_generation = 0
         self.lan_direct_peers = self._load_lan_direct_peers()
         self.calendar_mode = "rest"
         self.rest_calendar_month = date.today().replace(day=1)
@@ -7307,7 +7308,9 @@ class MainWindow(QMainWindow):
             return
         scrollbar = self.peer_list.verticalScrollBar()
         scroll_value = scrollbar.value()
-        was_at_bottom = scroll_value >= scrollbar.maximum() - 4
+        was_at_bottom = scrollbar.maximum() > 0 and scroll_value >= scrollbar.maximum() - 4
+        self._lan_peer_scroll_generation += 1
+        scroll_generation = self._lan_peer_scroll_generation
         self.peer_list.setUpdatesEnabled(False)
         self.peer_list.clear()
         self.lan_panel_title.setText("在线同事")
@@ -7317,7 +7320,7 @@ class MainWindow(QMainWindow):
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.peer_list.addItem(item)
             self.peer_list.setUpdatesEnabled(True)
-            QTimer.singleShot(0, lambda value=scroll_value, bottom=was_at_bottom: self._restore_lan_peer_scroll(value, bottom))
+            self._schedule_lan_peer_scroll_restore(scroll_value, was_at_bottom, scroll_generation)
             return
         self.lan_subtitle.setText(f"我的名字：{self.db.display_name()}。发现 {len(peers)} 位在线同事。")
         if not peers:
@@ -7325,16 +7328,31 @@ class MainWindow(QMainWindow):
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.peer_list.addItem(item)
             self.peer_list.setUpdatesEnabled(True)
-            QTimer.singleShot(0, lambda value=scroll_value, bottom=was_at_bottom: self._restore_lan_peer_scroll(value, bottom))
+            self._schedule_lan_peer_scroll_restore(scroll_value, was_at_bottom, scroll_generation)
             return
         for peer in peers:
             seen = peer.last_seen.strftime("%H:%M:%S")
             self._add_peer_card(peer, seen)
         self.peer_list.setUpdatesEnabled(True)
-        QTimer.singleShot(0, lambda value=scroll_value, bottom=was_at_bottom: self._restore_lan_peer_scroll(value, bottom))
+        self._schedule_lan_peer_scroll_restore(scroll_value, was_at_bottom, scroll_generation)
 
-    def _restore_lan_peer_scroll(self, value: int, was_at_bottom: bool) -> None:
-        if not hasattr(self, "peer_list") or self.lan_view_mode != "peers":
+    def _schedule_lan_peer_scroll_restore(self, value: int, was_at_bottom: bool, generation: int) -> None:
+        self._restore_lan_peer_scroll(value, was_at_bottom, generation)
+        QTimer.singleShot(
+            0,
+            lambda saved=value, bottom=was_at_bottom, current=generation: self._restore_lan_peer_scroll(
+                saved,
+                bottom,
+                current,
+            ),
+        )
+
+    def _restore_lan_peer_scroll(self, value: int, was_at_bottom: bool, generation: int) -> None:
+        if (
+            not hasattr(self, "peer_list")
+            or self.lan_view_mode != "peers"
+            or generation != self._lan_peer_scroll_generation
+        ):
             return
         scrollbar = self.peer_list.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum() if was_at_bottom else min(value, scrollbar.maximum()))
@@ -7372,7 +7390,7 @@ class MainWindow(QMainWindow):
         self._lan_logs_signature = signature
         scrollbar = self.peer_list.verticalScrollBar()
         scroll_value = scrollbar.value()
-        was_at_bottom = scroll_value >= scrollbar.maximum() - 4
+        was_at_bottom = scrollbar.maximum() > 0 and scroll_value >= scrollbar.maximum() - 4
         self.peer_list.setUpdatesEnabled(False)
         self.peer_list.clear()
         self._add_lan_log_card(
