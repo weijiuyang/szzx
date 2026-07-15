@@ -93,8 +93,7 @@ class CentralDataSync(QObject):
             return
         self._busy = True
         self._active_mode = mode
-        snapshot = self.db.shared_snapshot(include_files=True) if mode == "push" else None
-        thread = threading.Thread(target=self._sync_worker, args=(self.server_url, snapshot, mode), daemon=True)
+        thread = threading.Thread(target=self._sync_worker, args=(self.server_url, mode), daemon=True)
         thread.start()
 
     def _after_db_save(self, bump_sync: bool) -> None:
@@ -167,9 +166,10 @@ class CentralDataSync(QObject):
             return True
         return expected == actual or expected in actual or actual in expected
 
-    def _sync_worker(self, server_url: str, snapshot: dict[str, Any] | None, mode: str) -> None:
+    def _sync_worker(self, server_url: str, mode: str) -> None:
         try:
-            if mode == "push" and snapshot is not None:
+            if mode == "push":
+                snapshot = self.db.shared_snapshot(include_files=True)
                 payload = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
                 request = Request(
                     f"{server_url}/snapshot",

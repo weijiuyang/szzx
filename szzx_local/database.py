@@ -3,16 +3,21 @@ from __future__ import annotations
 import base64
 import getpass
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import socket
+import stat
 import sys
 import threading
 import uuid
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Callable
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, ProjectWeeklyReport, RestDay, WeeklyReport
 from .pin import DEFAULT_PIN, hash_pin, verify_pin
@@ -23,6 +28,8 @@ BUNDLED_SEED_ENV = "SZZX_BUNDLED_SEED_PATH"
 MAX_DOCUMENT_FILENAME_LENGTH = 120
 BEFORE_SYNC_BACKUP_INTERVAL = timedelta(hours=1)
 BEFORE_SYNC_BACKUP_LIMIT = 24
+DOCUMENT_VAULT_MAGIC = b"SZZXDOC2"
+LEGACY_DOCUMENT_VAULT_MAGIC = b"SZZXDOC1"
 
 
 def _default_app_dir() -> Path:
@@ -240,6 +247,8 @@ class Database:
         self._migrate_weekly_report_owners()
         self._migrate_weekly_ids_to_timestamps()
         self._migrate_project_todo_scopes()
+        self._cleanup_document_open_cache()
+        self._migrate_document_vault()
         self._repair_workflow_todo_handlers()
         self._repair_project_todo_completion_duplicates()
         self._repair_daily_report_duplicates()
@@ -884,6 +893,19 @@ class Database:
         for row in self.data["projects"]:
             if int(row["id"]) == project_id:
                 return self._project_from_row(row)
+        return None
+
+    def update_project_status(self, project_id: int, status: str) -> Project | None:
+        normalized_status = status.strip()
+        if normalized_status not in {"推进中", "已暂停", "已完成", "已删除"}:
+            return None
+        for row in self.data["projects"]:
+            if int(row["id"]) != project_id:
+                continue
+            row["status"] = normalized_status
+            row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
+            self._save()
+            return self._project_from_row(row)
         return None
 
     def delete_project(self, project_id: int) -> bool:
@@ -2316,6 +2338,8 @@ class Database:
                 )
                 return report
             if status == "test_todo":
+                if "测试" not in role.strip():
+                    return None
                 developer = str(row.get("developer", "")).strip()
                 acceptor = str(row.get("acceptor", "")).strip() or str(row.get("assigned_by", "")).strip()
                 if action == "reject":
@@ -2342,6 +2366,8 @@ class Database:
                 )
                 return report
             if status == "accept_todo":
+                if "产品" not in role.strip():
+                    return None
                 row["status"] = "done"
                 row["completed_by"] = member_name.strip()
                 row["completed_by_pet"] = completed_by_pet.strip() or "penguin"
@@ -2561,6 +2587,7 @@ class Database:
             "visibility": visibility.strip(),
             "uploader": uploader.strip(),
             "file_path": file_path,
+            "file_sha256": self._document_plaintext_hash(Path(file_path)),
             "created_at": created_at.isoformat(timespec="seconds"),
         })
         self.data["project_documents"].append(row)
@@ -2620,6 +2647,13 @@ class Database:
                 expected_uploader = self._normalize_display_name(uploader)
                 if row_uploader != expected_uploader:
                     return False
+            source = Path(str(row.get("file_path", "")))
+            if self._document_path_is_inside_library(source):
+                try:
+                    source.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                    source.unlink()
+                except OSError:
+                    pass
             self._remember_deleted_record("project_documents", row)
             del rows[index]
             self._save()
@@ -2724,6 +2758,155 @@ class Database:
             return f"{source[0]}:{source[1]}"
         return str(row.get("id", "")).strip()
 
+    def _document_vault_key(self) -> bytes:
+        key_path = self.path.parent / "vault.key"
+        try:
+            key = key_path.read_bytes()
+            if len(key) == 32:
+                return key
+        except OSError:
+            pass
+        key = secrets.token_bytes(32)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key_path.write_bytes(key)
+        try:
+            key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+        return key
+
+    def _legacy_crypt_document_bytes(self, content: bytes, nonce: bytes) -> bytes:
+        key = self._document_vault_key()
+        output = bytearray(len(content))
+        for offset in range(0, len(content), 32):
+            counter = offset // 32
+            block = hmac.new(key, b"stream" + nonce + counter.to_bytes(8, "big"), hashlib.sha256).digest()
+            chunk = content[offset:offset + 32]
+            output[offset:offset + len(chunk)] = bytes(left ^ right for left, right in zip(chunk, block))
+        return bytes(output)
+
+    def _encrypt_document_bytes(self, content: bytes) -> bytes:
+        nonce = secrets.token_bytes(12)
+        ciphertext = AESGCM(self._document_vault_key()).encrypt(nonce, content, DOCUMENT_VAULT_MAGIC)
+        return DOCUMENT_VAULT_MAGIC + nonce + ciphertext
+
+    def _decrypt_document_bytes(self, payload: bytes) -> bytes:
+        if payload.startswith(DOCUMENT_VAULT_MAGIC):
+            header = len(DOCUMENT_VAULT_MAGIC)
+            if len(payload) < header + 28:
+                raise ValueError("加密文档内容不完整")
+            nonce = payload[header:header + 12]
+            ciphertext = payload[header + 12:]
+            try:
+                return AESGCM(self._document_vault_key()).decrypt(nonce, ciphertext, DOCUMENT_VAULT_MAGIC)
+            except Exception as exc:
+                raise ValueError("加密文档校验失败") from exc
+        if not payload.startswith(LEGACY_DOCUMENT_VAULT_MAGIC):
+            return payload
+        header = len(LEGACY_DOCUMENT_VAULT_MAGIC)
+        if len(payload) < header + 48:
+            raise ValueError("加密文档内容不完整")
+        nonce = payload[header:header + 16]
+        tag = payload[header + 16:header + 48]
+        ciphertext = payload[header + 48:]
+        expected = hmac.new(self._document_vault_key(), b"auth" + nonce + ciphertext, hashlib.sha256).digest()
+        if not hmac.compare_digest(tag, expected):
+            raise ValueError("加密文档校验失败")
+        return self._legacy_crypt_document_bytes(ciphertext, nonce)
+
+    def document_content(self, path: str | Path) -> bytes:
+        return self._decrypt_document_bytes(Path(path).read_bytes())
+
+    def _document_plaintext_hash(self, path: Path) -> str:
+        try:
+            return hashlib.sha256(self.document_content(path)).hexdigest()
+        except (OSError, ValueError):
+            return ""
+
+    def store_document_content(self, project_id: int, content: bytes) -> Path:
+        target_dir = self.path.parent / "documents" / str(project_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{uuid.uuid4().hex}.szzxdoc"
+        target.write_bytes(self._encrypt_document_bytes(content))
+        try:
+            target.chmod(stat.S_IRUSR)
+        except OSError:
+            pass
+        return target
+
+    def import_document_file(self, project_id: int, source: Path) -> Path:
+        return self.store_document_content(project_id, source.read_bytes())
+
+    def materialize_document(self, document: ProjectDocument) -> Path:
+        cache_dir = self.path.parent / "open-cache" / str(document.id)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / safe_document_filename(document.title)
+        if target.exists():
+            try:
+                target.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass
+        target.write_bytes(self.document_content(document.file_path))
+        try:
+            target.chmod(stat.S_IRUSR)
+        except OSError:
+            pass
+        return target
+
+    def _cleanup_document_open_cache(self) -> None:
+        root = self.path.parent / "open-cache"
+        if not root.exists():
+            return
+        for path in sorted(root.rglob("*"), reverse=True):
+            try:
+                if path.is_file():
+                    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                    path.unlink()
+                elif path.is_dir():
+                    path.rmdir()
+            except OSError:
+                continue
+        try:
+            root.rmdir()
+        except OSError:
+            pass
+
+    def _migrate_document_vault(self) -> bool:
+        changed = False
+        for row in self.data.get("project_documents", []):
+            if not isinstance(row, dict):
+                continue
+            source = Path(str(row.get("file_path", "")))
+            if not source.is_file():
+                continue
+            try:
+                payload = source.read_bytes()
+            except OSError:
+                continue
+            if payload.startswith(DOCUMENT_VAULT_MAGIC) and source.suffix == ".szzxdoc":
+                if not str(row.get("file_sha256", "")).strip():
+                    try:
+                        row["file_sha256"] = hashlib.sha256(self._decrypt_document_bytes(payload)).hexdigest()
+                        changed = True
+                    except ValueError:
+                        pass
+                continue
+            try:
+                content = self._decrypt_document_bytes(payload)
+                target = self.store_document_content(int(row.get("project_id", 0)), content)
+            except (OSError, ValueError):
+                continue
+            row["file_path"] = str(target)
+            row["file_sha256"] = hashlib.sha256(content).hexdigest()
+            if source != target and self._document_path_is_inside_library(source):
+                try:
+                    source.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                    source.unlink()
+                except OSError:
+                    pass
+            changed = True
+        return changed
+
     def _document_file_payloads(self, documents: Any) -> dict[str, dict[str, str]]:
         if not isinstance(documents, list):
             return {}
@@ -2736,14 +2919,14 @@ class Database:
             try:
                 if not document_id or not source.is_file():
                     continue
-                content = source.read_bytes()
+                content = self.document_content(source)
                 files[document_id] = {
-                    "name": source.name,
+                    "name": safe_document_filename(str(row.get("title") or f"document-{document_id}")),
                     "size": str(len(content)),
                     "sha256": hashlib.sha256(content).hexdigest(),
                     "content": base64.b64encode(content).decode("ascii"),
                 }
-            except OSError:
+            except (OSError, ValueError):
                 continue
         return files
 
@@ -3409,6 +3592,22 @@ class Database:
                 continue
 
             fallback_tester = self._workflow_todo_fallback_tester(row)
+            if status == "test_todo" and not fallback_tester:
+                acceptor = str(row.get("acceptor", "")).strip() or str(row.get("assigned_by", "")).strip()
+                if acceptor:
+                    row["status"] = "accept_todo"
+                    row["tester"] = ""
+                    row["current_handler"] = acceptor
+                    self._append_todo_flow(
+                        row,
+                        "系统",
+                        "项目未配置测试，跳过测试并提交验收",
+                        "accept_todo",
+                        acceptor,
+                        datetime.now(),
+                    )
+                    changed = True
+                    continue
             if fallback_tester and not str(row.get("tester", "")).strip():
                 row["tester"] = fallback_tester
                 changed = True
@@ -3927,37 +4126,44 @@ class Database:
             payload = files.get(document_id)
             if not isinstance(payload, dict):
                 continue
+            expected_hash = str(payload.get("sha256", "")).strip()
+            current = Path(str(row.get("file_path", "")))
+            if (
+                expected_hash
+                and str(row.get("file_sha256", "")).strip() == expected_hash
+                and current.exists()
+                and self._document_path_is_inside_library(current)
+            ):
+                continue
             try:
                 content = base64.b64decode(str(payload.get("content", "")))
             except ValueError:
                 continue
-            expected_hash = str(payload.get("sha256", "")).strip()
             if expected_hash and hashlib.sha256(content).hexdigest() != expected_hash:
                 continue
             project_id = int(row.get("project_id", 0))
-            filename = safe_document_filename(str(payload.get("name") or row.get("title") or f"document-{document_id}"))
-            target_dir = self.path.parent / "documents" / str(project_id)
-            target_dir.mkdir(parents=True, exist_ok=True)
-            current = Path(str(row.get("file_path", "")))
-            target = current if self._document_path_is_inside_library(current) else target_dir / filename
-            if target.exists():
+            if current.exists() and self._document_path_is_inside_library(current):
                 try:
-                    existing = target.read_bytes()
-                except OSError:
+                    existing = self.document_content(current)
+                except (OSError, ValueError):
                     existing = b""
                 if expected_hash and hashlib.sha256(existing).hexdigest() == expected_hash:
-                    if row.get("file_path") != str(target):
-                        row["file_path"] = str(target)
-                        changed = True
+                    row["file_sha256"] = expected_hash
+                    changed = True
                     continue
-            else:
-                target = unique_document_path(target_dir, filename, document_id)
             try:
-                target.write_bytes(content)
+                target = self.store_document_content(project_id, content)
             except OSError:
                 continue
+            if current.exists() and self._document_path_is_inside_library(current):
+                try:
+                    current.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                    current.unlink()
+                except OSError:
+                    pass
             if row.get("file_path") != str(target):
                 row["file_path"] = str(target)
+            row["file_sha256"] = expected_hash or hashlib.sha256(content).hexdigest()
             changed = True
         return changed
 
@@ -4009,6 +4215,7 @@ class Database:
             if resolved in referenced:
                 continue
             try:
+                path.chmod(stat.S_IRUSR | stat.S_IWUSR)
                 path.unlink()
                 changed = True
             except OSError:

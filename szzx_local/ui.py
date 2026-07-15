@@ -3,7 +3,6 @@ from __future__ import annotations
 import calendar
 import ipaddress
 import json
-import shutil
 import subprocess
 import sys
 import zipfile
@@ -49,7 +48,7 @@ from shiboken6 import isValid
 from .ai import LocalSummarizer
 from .autostart import autostart_registered, is_supported as autostart_supported, set_autostart
 from .changelog import changelog_text, current_release_notes
-from .database import APP_DIR, Database, safe_document_filename, unique_document_path
+from .database import Database
 from .lan import LanDiscovery, LanPeer
 from .models import (
     DailyReport,
@@ -149,6 +148,24 @@ QPushButton#primaryButton {
 QPushButton#primaryButton:hover {
     background: #383930;
     border-color: #383930;
+}
+QPushButton#successButton {
+    background: #edf4f0;
+    color: #315f4b;
+    border-color: #c5d8cf;
+}
+QPushButton#successButton:hover {
+    background: #e2eee8;
+    border-color: #a9c6b8;
+}
+QPushButton#warningButton {
+    background: #f5f3ec;
+    color: #675d49;
+    border-color: #d9d2c3;
+}
+QPushButton#warningButton:hover {
+    background: #eee9de;
+    border-color: #c8bda8;
 }
 QPushButton#dangerButton {
     background: #fff6f3;
@@ -365,6 +382,15 @@ QWidget#heroPanel {
     border-radius: 8px;
 }
 QWidget#feedCard {
+    background: #eef2eb;
+    border: 1px solid #d8ded2;
+    border-radius: 6px;
+}
+QWidget#dailyCalendarRow {
+    background: transparent;
+    border-bottom: 1px solid #e2e4dc;
+}
+QListWidget#dailyCalendarList {
     background: #eef2eb;
     border: 1px solid #d8ded2;
     border-radius: 6px;
@@ -1149,6 +1175,66 @@ class BadgeDialog(QDialog):
             index, remainder = divmod(index - 1, 26)
             value = chr(65 + remainder) + value
         return value
+
+
+class ProjectActionConfirmDialog(QDialog):
+    def __init__(
+        self,
+        project_name: str,
+        action: str,
+        current_status: str,
+        target_status: str,
+        destructive: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"{action}项目")
+        self.setModal(True)
+        self.setFixedWidth(520)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 26, 30, 26)
+        layout.setSpacing(16)
+        layout.addWidget(_label("项目状态操作", "eyebrow"))
+
+        title = _label(f"{action}「{project_name}」？", "pageTitle")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        descriptions = {
+            "开始": "项目将恢复推进，成员可以继续按当前计划开展工作。",
+            "暂停": "项目资料会完整保留，之后可以随时重新开始。",
+            "完成": "项目将标记为已完成，之后仍可重新开始。",
+            "删除": "项目资料和历史记录会继续保留，仅将状态标记为已删除。",
+        }
+        description = _label(descriptions.get(action, "确认更新这个项目的状态。"), "muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        status_panel = _panel()
+        status_panel.setObjectName("softPanel")
+        status_layout = QHBoxLayout(status_panel)
+        status_layout.setContentsMargins(18, 14, 18, 14)
+        status_layout.setSpacing(12)
+        status_layout.addWidget(_label(current_status or "推进中", "compactRoleBadge"))
+        status_layout.addWidget(_label("→", "muted"))
+        status_layout.addWidget(_label(target_status, "compactRoleBadge"))
+        status_layout.addStretch()
+        layout.addWidget(status_panel)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch()
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(self.reject)
+        confirm_button = QPushButton(f"确认{action}")
+        confirm_button.setObjectName("dangerButton" if destructive else "successButton")
+        confirm_button.clicked.connect(self.accept)
+        confirm_button.setDefault(True)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(confirm_button)
+        layout.addLayout(buttons)
 
 
 class ProjectLogHistoryDialog(QDialog):
@@ -2208,7 +2294,7 @@ class NextWeekRosterDialog(QDialog):
         return [start + timedelta(days=offset) for offset in range(7)]
 
     def _day_header(self, day: date) -> str:
-        return f"{day.month}/{day.day} 周{'一二三四五六日'[day.weekday()]}"
+        return f"{day.year}/{day.month}/{day.day}"
 
 
 class UpdateCheckWorker(QThread):
@@ -3100,6 +3186,7 @@ class MainWindow(QMainWindow):
         self.member_role = QComboBox()
         self.member_role.addItems(["前端开发", "后端开发", "数据开发", "算法", "UI/设计", "测试", "产品经理", "运营", "设计", "运维"])
         self.add_member_button = QPushButton("添加成员")
+        self.add_member_button.setObjectName("successButton")
         self.add_member_button.clicked.connect(self._add_project_member)
         member_form_layout.addWidget(self.member_name)
         member_form_layout.addWidget(self.member_role)
@@ -3112,6 +3199,7 @@ class MainWindow(QMainWindow):
         owner_form_layout.addWidget(_label("更改负责人", "eyebrow"))
         self.project_owner_select = QComboBox()
         self.save_project_owner_button = QPushButton("保存负责人")
+        self.save_project_owner_button.setObjectName("successButton")
         self.save_project_owner_button.clicked.connect(self._save_project_owner)
         owner_form_layout.addWidget(self.project_owner_select)
         owner_form_layout.addWidget(self.save_project_owner_button)
@@ -3131,9 +3219,24 @@ class MainWindow(QMainWindow):
         project_danger_layout.setContentsMargins(18, 18, 18, 18)
         project_danger_layout.setSpacing(10)
         project_danger_layout.addWidget(_label("项目操作", "eyebrow"))
+        self.start_project_button = QPushButton("开始项目")
+        self.start_project_button.setObjectName("successButton")
+        self.start_project_button.clicked.connect(lambda checked=False: self._set_current_project_status("推进中"))
+        self.pause_project_button = QPushButton("暂停项目")
+        self.pause_project_button.setObjectName("warningButton")
+        self.pause_project_button.clicked.connect(lambda checked=False: self._set_current_project_status("已暂停"))
+        self.complete_project_button = QPushButton("完成项目")
+        self.complete_project_button.setObjectName("successButton")
+        self.complete_project_button.clicked.connect(lambda checked=False: self._set_current_project_status("已完成"))
         self.delete_project_button = QPushButton("删除项目")
         self.delete_project_button.setObjectName("dangerButton")
         self.delete_project_button.clicked.connect(self._delete_current_project)
+        project_status_actions = QHBoxLayout()
+        project_status_actions.setSpacing(10)
+        project_status_actions.addWidget(self.start_project_button, 1)
+        project_status_actions.addWidget(self.pause_project_button, 1)
+        project_status_actions.addWidget(self.complete_project_button, 1)
+        project_danger_layout.addLayout(project_status_actions)
         project_danger_layout.addWidget(self.delete_project_button)
 
         self.todo_panel = _panel()
@@ -3443,16 +3546,6 @@ class MainWindow(QMainWindow):
         title = _label(project.name, "memberName")
         title.setWordWrap(True)
         title_row.addWidget(title, 1)
-        if project.project_notes and self._can_view_project_notes(project):
-            title_row.addWidget(self._project_notes_button(project), 0, Qt.AlignmentFlag.AlignTop)
-        if project.project_link:
-            title_row.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignTop)
-        if project.backup_project_link:
-            title_row.addWidget(self._project_link_button(project, "backup"), 0, Qt.AlignmentFlag.AlignTop)
-        if project.development_group_link:
-            title_row.addWidget(self._project_link_button(project, "development_group"), 0, Qt.AlignmentFlag.AlignTop)
-        if project.coordination_group_link:
-            title_row.addWidget(self._project_link_button(project, "coordination_group"), 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(title_row)
         owner_row = QHBoxLayout()
         owner_row.setContentsMargins(0, 0, 0, 0)
@@ -4148,7 +4241,14 @@ class MainWindow(QMainWindow):
         layout.addLayout(body, 1)
 
         project = self.db.get_project(todo.project_id)
-        if project is not None and self._todo_visible_to_current_user(todo):
+        is_assigned_creator = todo.scope == "assigned" and self.db.is_current_user_name(todo.assigned_by)
+        members = self.db.list_project_members(todo.project_id) if project is not None else []
+        current_member = self._current_project_member(project, members) if project is not None else None
+        can_operate = (
+            project is not None
+            and self._can_complete_todo(todo, current_member, self._can_manage_project(project, current_member))
+        )
+        if project is not None and can_operate:
             if todo.scope == "assigned" and self._todo_can_start(todo):
                 start_button = QPushButton("开始开发" if todo.workflow == "dev_test_accept" else "开始")
                 start_button.setObjectName("smallButton")
@@ -4175,7 +4275,7 @@ class MainWindow(QMainWindow):
                 skip_button.setObjectName("smallButton")
                 skip_button.clicked.connect(lambda checked=False, p=project, selected=todo: self._skip_todo_ui_for_project(p, selected))
                 layout.addWidget(skip_button)
-        if self.db.is_current_user_name(todo.assigned_by):
+        if is_assigned_creator:
             delete_button = QPushButton("删除")
             delete_button.setObjectName("smallButton")
             delete_button.clicked.connect(lambda checked=False, selected=todo: self._delete_assigned_todo_from_my_panel(selected))
@@ -4272,10 +4372,64 @@ class MainWindow(QMainWindow):
         self._load_projects()
 
     def _set_todo_view(self, mode: str) -> None:
-        self.todo_view_mode = mode if mode in {"personal", "assigned", "project"} else "personal"
+        next_mode = mode if mode in {"personal", "assigned", "project"} else "personal"
+        if self.todo_view_mode == next_mode:
+            return
+        self.todo_view_mode = next_mode
+        self._refresh_todo_view_only()
+
+    def _refresh_todo_view_only(self) -> None:
+        project = self._current_project()
+        if project is None:
+            self._set_todo_view_buttons()
+            return
+        members = self.db.list_project_members(project.id)
+        current_member = self._current_project_member(project, members)
+        is_manager = self._can_manage_project(project, current_member)
+        if current_member is None and not is_manager and self.todo_view_mode != "project":
+            self.todo_view_mode = "project"
+
         self._set_todo_view_buttons()
-        if self._current_project() is not None:
-            self._refresh_project_workspace()
+        can_assign_todos = self._can_assign_todo(project, current_member)
+        can_add_todos = (
+            (self.todo_view_mode == "assigned" and can_assign_todos)
+            or is_manager
+            or (self.todo_view_mode == "personal" and current_member is not None)
+        )
+        placeholder_by_mode = {
+            "personal": "新增一个个人代办",
+            "assigned": "写下要分配的代办",
+            "project": "新增一个项目代办",
+        }
+        self.project_todo_input.setPlaceholderText(placeholder_by_mode[self.todo_view_mode])
+        self._refresh_assigned_todo_assignees(members, can_assign_todos)
+        show_assignee = self.todo_view_mode == "assigned" and can_assign_todos
+        self.assigned_todo_assignee.setVisible(show_assignee)
+        self.assigned_todo_deadline_row.setVisible(show_assignee)
+        self.assigned_todo_deadline_row.setEnabled(show_assignee)
+        self._refresh_assigned_deadline_buttons()
+        self.project_todo_input.setVisible(can_add_todos)
+        self.add_todo_button.setVisible(can_add_todos)
+        self.project_todo_input.setEnabled(can_add_todos)
+        self.add_todo_button.setEnabled(can_add_todos)
+
+        todos = self._todos_for_current_view(project.id, is_manager)
+        self.todo_count_label.setText(f"{len(todos)} 个待完成")
+        self.todo_board.setUpdatesEnabled(False)
+        try:
+            self.todo_board.clear()
+            if not todos:
+                empty_todo_text = {
+                    "personal": "当前没有待完成个人代办。",
+                    "assigned": "当前没有待完成分配代办。",
+                    "project": "当前没有待完成项目代办。",
+                }[self.todo_view_mode]
+                self._add_todo_card(None, empty_todo_text, False)
+            for todo in todos:
+                self._add_todo_card(todo, todo.title, self._can_complete_todo(todo, current_member, is_manager))
+        finally:
+            self.todo_board.setUpdatesEnabled(True)
+            self.todo_board.viewport().update()
 
     def _set_todo_view_buttons(self) -> None:
         if hasattr(self, "personal_todo_button"):
@@ -4422,20 +4576,54 @@ class MainWindow(QMainWindow):
         if not self._can_manage_project(project, None):
             QMessageBox.warning(self, "不能删除", "只有这个项目的负责人或最高权限用户可以删除项目。")
             return
-        message = f"确定删除项目「{project.name}」吗？\n\n项目成员、代办、日报、项目周报和文档记录都会一起删除。"
-        if QMessageBox.question(self, "删除项目", message) != QMessageBox.StandardButton.Yes:
+        dialog = ProjectActionConfirmDialog(
+            project.name,
+            "删除",
+            project.status,
+            "已删除",
+            destructive=True,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if not self.db.delete_project(project.id):
+        if self.db.update_project_status(project.id, "已删除") is None:
             QMessageBox.warning(self, "删除失败", "这个项目记录已经不存在。")
             self._load_projects()
             return
-        project_docs_dir = APP_DIR / "documents" / str(project.id)
-        if project_docs_dir.exists():
-            shutil.rmtree(project_docs_dir, ignore_errors=True)
-        self.current_project_id = None
-        self._show_project_overview()
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is not None:
+            central_sync.mark_local_dirty()
+            central_sync.sync_now(push_first=True)
         self._load_projects()
         self._refresh_document_library()
+        self._announce_presence()
+
+    def _set_current_project_status(self, status: str) -> None:
+        project = self._current_project()
+        if project is None:
+            return
+        if not self._can_manage_project(project, None):
+            QMessageBox.warning(self, "不能操作", "只有这个项目的负责人或最高权限用户可以操作项目。")
+            return
+        action = {"推进中": "开始", "已暂停": "暂停", "已完成": "完成"}.get(status, "更新")
+        dialog = ProjectActionConfirmDialog(
+            project.name,
+            action,
+            project.status,
+            status,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if self.db.update_project_status(project.id, status) is None:
+            QMessageBox.warning(self, "操作失败", "这个项目记录已经不存在。")
+            self._load_projects()
+            return
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is not None:
+            central_sync.mark_local_dirty()
+            central_sync.sync_now(push_first=True)
+        self._load_projects()
         self._announce_presence()
 
     def _save_daily_report(self) -> None:
@@ -4738,16 +4926,10 @@ class MainWindow(QMainWindow):
         self._refresh_document_library()
 
     def _copy_document_into_library(self, project_id: int, source: Path) -> Path | None:
-        target_dir = APP_DIR / "documents" / str(project_id)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        safe_name = safe_document_filename(source.name)
-        source_name = Path(safe_name)
-        target = unique_document_path(target_dir, f"{source_name.stem}-{timestamp}{source_name.suffix}", timestamp)
         try:
-            shutil.copy2(source, target)
+            target = self.db.import_document_file(project_id, source)
         except OSError as exc:
-            QMessageBox.warning(self, "上传失败", f"复制文件失败：{exc}")
+            QMessageBox.warning(self, "上传失败", f"加密保存文件失败：{exc}")
             return None
         return target
 
@@ -4880,7 +5062,15 @@ class MainWindow(QMainWindow):
         if hasattr(self, "config_project_notes_label"):
             self.config_project_notes_label.setVisible(can_view_project_notes)
         self.save_project_description_button.setEnabled(is_manager)
+        project_deleted = project.status == "已删除"
+        self.start_project_button.setEnabled(is_manager)
+        self.pause_project_button.setEnabled(is_manager)
+        self.complete_project_button.setEnabled(is_manager)
         self.delete_project_button.setEnabled(is_manager)
+        self.start_project_button.setVisible(project.status in {"已暂停", "已完成"})
+        self.pause_project_button.setVisible(project.status == "推进中")
+        self.complete_project_button.setVisible(project.status in {"推进中", "已暂停"})
+        self.delete_project_button.setVisible(not project_deleted)
         self.weekly_form.setVisible(is_manager or can_upload_project_document)
         self.weekly_form_title.setText("负责人周报 / 文档" if is_manager else "项目文档")
         self.project_weekly_editor.setEnabled(is_manager)
@@ -5100,6 +5290,9 @@ class MainWindow(QMainWindow):
             self.config_project_notes_label.setVisible(True)
         self.save_project_description_button.setEnabled(False)
         self.config_project_panel.setVisible(False)
+        self.start_project_button.setEnabled(False)
+        self.pause_project_button.setEnabled(False)
+        self.complete_project_button.setEnabled(False)
         self.delete_project_button.setEnabled(False)
         self.weekly_form.setVisible(False)
         self.project_weekly_editor.setEnabled(False)
@@ -5350,7 +5543,20 @@ class MainWindow(QMainWindow):
         if todo.scope == "project":
             return is_manager
         if todo.scope == "assigned":
-            return self._todo_visible_to_current_user(todo)
+            if not self._todo_visible_to_current_user(todo):
+                return False
+            if todo.workflow != "dev_test_accept":
+                return True
+            role = current_member.role.strip()
+            if todo.status == "ui_todo":
+                return self._member_is_designer(current_member)
+            if todo.status in {"dev_todo", "dev_doing"}:
+                return self._member_is_developer(current_member)
+            if todo.status == "test_todo":
+                return "测试" in role
+            if todo.status == "accept_todo":
+                return self._member_is_product(current_member)
+            return False
         return True
 
     def _clear_layout(self, layout: QGridLayout) -> None:
@@ -5609,35 +5815,41 @@ class MainWindow(QMainWindow):
         layout.addLayout(body, 1)
 
         if todo is not None:
-            if todo.scope == "assigned" and self._todo_visible_to_current_user(todo) and self._todo_can_start(todo):
+            is_assigned_creator = todo.scope == "assigned" and self.db.is_current_user_name(todo.assigned_by)
+            can_operate = can_complete
+            if can_operate and todo.scope == "assigned" and self._todo_can_start(todo):
                 start_button = QPushButton("开始开发" if todo.workflow == "dev_test_accept" else "开始")
                 start_button.setObjectName("smallButton")
                 start_button.clicked.connect(lambda checked=False, selected=todo: self._start_project_todo(selected))
                 layout.addWidget(start_button)
-            elif todo.scope == "assigned" and self._todo_visible_to_current_user(todo) and self._todo_can_record(todo):
+            elif can_operate and todo.scope == "assigned" and self._todo_can_record(todo):
                 record_button = QPushButton("记录")
                 record_button.setObjectName("smallButton")
                 record_button.clicked.connect(lambda checked=False, selected=todo: self._record_todo_daily_report(selected))
                 layout.addWidget(record_button)
-            if self._todo_can_advance(todo):
+            if can_operate and self._todo_can_advance(todo):
                 done_button = QPushButton("完成")
                 done_button.setText(self._todo_primary_action_text(todo))
                 done_button.setObjectName("smallButton")
-                done_button.setEnabled(can_complete)
                 done_button.clicked.connect(lambda checked=False, selected=todo: self._complete_project_todo(selected))
                 layout.addWidget(done_button)
-            if self._todo_can_reject(todo):
+            if can_operate and self._todo_can_reject(todo):
                 reject_button = QPushButton("打回")
                 reject_button.setObjectName("smallButton")
-                reject_button.setEnabled(can_complete)
                 reject_button.clicked.connect(lambda checked=False, selected=todo: self._reject_project_todo(selected))
                 layout.addWidget(reject_button)
-            if self._todo_can_skip_ui(todo):
+            if can_operate and self._todo_can_skip_ui(todo):
                 skip_button = QPushButton("跳过UI")
                 skip_button.setObjectName("smallButton")
-                skip_button.setEnabled(can_complete)
                 skip_button.clicked.connect(lambda checked=False, selected=todo: self._skip_project_todo_ui(selected))
                 layout.addWidget(skip_button)
+            if is_assigned_creator:
+                delete_button = QPushButton("删除")
+                delete_button.setObjectName("smallButton")
+                delete_button.clicked.connect(
+                    lambda checked=False, selected=todo: self._delete_assigned_todo_from_my_panel(selected)
+                )
+                layout.addWidget(delete_button)
 
         extra_lines = 0
         if todo is not None:
@@ -5706,15 +5918,17 @@ class MainWindow(QMainWindow):
         visual_chars_per_line: int = 32,
         person_name: str = "",
         person_dingtalk_id: str = "",
+        daily_report_popup: bool = False,
+        flat: bool = False,
     ) -> None:
         item = QListWidgetItem()
         item.setFlags(Qt.ItemFlag.NoItemFlags)
 
         card = QWidget()
-        card.setObjectName("feedCard")
+        card.setObjectName("dailyCalendarRow" if flat else "feedCard")
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(*(10, 8, 10, 10) if flat else (14, 12, 14, 12))
+        layout.setSpacing(8 if flat else 12)
 
         body = QVBoxLayout()
         body.setSpacing(5)
@@ -5768,7 +5982,11 @@ class MainWindow(QMainWindow):
             )
             actions.addWidget(delete_button)
             layout.addLayout(actions)
-        elif daily_report is not None and (linked_todo is not None or self.db.is_current_user_name(daily_report.member_name)):
+        elif (
+            daily_report is not None
+            and not daily_report_popup
+            and (linked_todo is not None or self.db.is_current_user_name(daily_report.member_name))
+        ):
             actions = QHBoxLayout()
             actions.setSpacing(8)
             if self.db.is_current_user_name(daily_report.member_name):
@@ -5778,7 +5996,11 @@ class MainWindow(QMainWindow):
                 actions.addWidget(delete_button)
             layout.addLayout(actions)
 
-        if linked_todo is not None:
+        if daily_report_popup and daily_report is not None:
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            card.setToolTip("查看日报详情")
+            card.mousePressEvent = lambda event, selected=daily_report: self._open_daily_report_detail(selected)  # type: ignore[method-assign]
+        elif linked_todo is not None:
             card.setCursor(Qt.CursorShape.PointingHandCursor)
             card.setToolTip("查看代办详情")
             card.mousePressEvent = lambda event, selected=linked_todo: self._open_todo_detail(selected)  # type: ignore[method-assign]
@@ -5791,9 +6013,33 @@ class MainWindow(QMainWindow):
                 meta_text=meta_text,
                 visual_chars_per_line=visual_chars_per_line,
             )
+        if flat:
+            height = max(64, height - 24)
         item.setSizeHint(QSize(0, height))
         list_widget.addItem(item)
         list_widget.setItemWidget(item, card)
+        if flat:
+            def refresh_flat_height() -> None:
+                if not all(_is_qt_object_alive(obj) for obj in (list_widget, card, text)):
+                    return
+                try:
+                    content_width = max(160, list_widget.viewport().width() - 44)
+                    document = QTextDocument()
+                    document.setDefaultFont(text.font())
+                    document.setDocumentMargin(0)
+                    document.setPlainText(text.text())
+                    document.setTextWidth(content_width)
+                    content_height = int(document.size().height()) + 4
+                    meta_height = meta.fontMetrics().height()
+                    measured_height = max(64, 18 + meta_height + 5 + content_height)
+                    card.setFixedHeight(measured_height)
+                    item.setSizeHint(QSize(0, measured_height))
+                    list_widget.doItemsLayout()
+                except RuntimeError:
+                    return
+
+            refresh_flat_height()
+            QTimer.singleShot(0, refresh_flat_height)
 
     def _daily_report_groups(self, reports: list[DailyReport]) -> list[list[DailyReport]]:
         groups: dict[tuple[date, str], list[DailyReport]] = {}
@@ -5987,7 +6233,7 @@ class MainWindow(QMainWindow):
         self.deck_detail_meta.setText(
             f"{document.doc_type} · {visibility} · {document.uploader} · {document.created_at.strftime('%Y-%m-%d %H:%M')} · {status}"
         )
-        self.deck_detail_path.setPlainText(str(source) if source is not None else str(document.file_path))
+        self.deck_detail_path.setPlainText("应用加密文档库 · 仅通过数智中心访问")
         self.open_deck_button.setEnabled(exists)
 
     def _show_project_overview(self) -> None:
@@ -6010,7 +6256,13 @@ class MainWindow(QMainWindow):
         if not _path_exists_safely(source):
             QMessageBox.warning(self, "文件不在本机", "这个文档文件没有同步到当前电脑，或原文件已经被移动。")
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(source)))
+        try:
+            readable_copy = self.db.materialize_document(deck)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "打开失败", f"无法解密这个文档：{exc}")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(readable_copy))):
+            QMessageBox.warning(self, "打开失败", "系统没有找到可打开这个文档的应用。")
 
     def _delete_project_document(self, document: ProjectDocument) -> None:
         if not self.db.is_current_user_name(document.uploader):
@@ -6286,8 +6538,8 @@ class MainWindow(QMainWindow):
         self.daily_calendar_selected_label = _label("", "memberName")
         self.daily_calendar_summary = _label("", "muted")
         self.daily_calendar_list = QListWidget()
-        self.daily_calendar_list.setObjectName("plainList")
-        self.daily_calendar_list.setSpacing(8)
+        self.daily_calendar_list.setObjectName("dailyCalendarList")
+        self.daily_calendar_list.setSpacing(0)
         daily_layout.addWidget(self.daily_calendar_selected_label)
         daily_layout.addWidget(self.daily_calendar_summary)
         daily_layout.addWidget(self.daily_calendar_list, 1)
@@ -6442,15 +6694,11 @@ class MainWindow(QMainWindow):
                 "日报",
                 content,
                 daily_report=report if isinstance(report, DailyReport) else None,
-                height=self._feed_card_height(
-                    content,
-                    min_lines=2,
-                    max_lines=None,
-                    meta_text=f"{meta}  日报",
-                    visual_chars_per_line=22,
-                ) + 36,
+                daily_report_popup=isinstance(report, DailyReport),
+                flat=True,
                 min_content_lines=1,
                 max_content_lines=None,
+                visual_chars_per_line=32,
                 person_name=str(item["member_name"]),
             )
 
