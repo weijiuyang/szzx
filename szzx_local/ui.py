@@ -3824,13 +3824,106 @@ class MainWindow(QMainWindow):
         body.addWidget(_label(requirement.description, "cardTitle"))
         deadline = requirement.expected_at.isoformat() if requirement.expected_at else "未填写"
         body.addWidget(_label(f"提出人 {requirement.requester or '未填写'}  ·  期望上线 {deadline}", "muted"))
-        body.addWidget(_label(f"钉钉接收人 {requirement.recipient_name or '未识别'}", "muted"))
+        body.addWidget(_label(f"当前承接人 {requirement.recipient_name or '未识别'}", "muted"))
         layout.addLayout(body, 1)
+        actions = QVBoxLayout()
+        actions.setSpacing(8)
         button = QPushButton("指定项目并转代办")
         button.setObjectName("greenPrimaryButton")
         button.clicked.connect(lambda checked=False, row=requirement: self._convert_requirement(row))
-        layout.addWidget(button)
+        actions.addWidget(button)
+        transfer_button = QPushButton("转交负责人")
+        transfer_button.clicked.connect(lambda checked=False, row=requirement: self._transfer_requirement(row))
+        actions.addWidget(transfer_button)
+        return_text = "退回上一位" if requirement.transfer_history else "退回需求方"
+        return_button = QPushButton(return_text)
+        return_button.clicked.connect(lambda checked=False, row=requirement: self._return_requirement(row))
+        actions.addWidget(return_button)
+        layout.addLayout(actions)
         return card
+
+    def _transfer_requirement(self, requirement: Requirement) -> None:
+        owners: list[str] = []
+        for project in self.db.list_projects():
+            owner = project.owner.strip()
+            if owner and not self.db.is_current_user_name(owner) and owner not in owners:
+                owners.append(owner)
+        if not owners:
+            QMessageBox.information(self, "转交需求", "当前没有其他项目负责人可以接收。")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("转交需求")
+        dialog.setMinimumWidth(620)
+        outer = QVBoxLayout(dialog)
+        outer.setContentsMargins(24, 22, 24, 20)
+        outer.setSpacing(16)
+        outer.addWidget(_label("选择新的项目负责人", "sectionTitle"))
+        summary = QLabel(requirement.description)
+        summary.setWordWrap(True)
+        summary.setObjectName("muted")
+        outer.addWidget(summary)
+
+        choices = QWidget()
+        grid = QGridLayout(choices)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(8)
+        group = QButtonGroup(dialog)
+        group.setExclusive(True)
+        for index, owner in enumerate(owners):
+            choice = QPushButton(owner)
+            choice.setObjectName("requirementProjectChoice")
+            choice.setCheckable(True)
+            choice.setProperty("ownerName", owner)
+            group.addButton(choice)
+            grid.addWidget(choice, index // 3, index % 3)
+            if index == 0:
+                choice.setChecked(True)
+        for column in range(3):
+            grid.setColumnStretch(column, 1)
+        outer.addWidget(choices)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        confirm = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        confirm.setText("确认转交")
+        confirm.setObjectName("greenPrimaryButton")
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        outer.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = group.checkedButton()
+        target = str(selected.property("ownerName")).strip() if selected is not None else ""
+        if not target or self.db.transfer_requirement(requirement.id, target) is None:
+            QMessageBox.warning(self, "转交失败", "需求已被处理，请刷新后查看。")
+            return
+        self._push_requirement_change()
+        self._refresh_my_panel()
+        QMessageBox.information(self, "转交需求", f"需求已转交给 {target}。")
+
+    def _return_requirement(self, requirement: Requirement) -> None:
+        target = requirement.transfer_history[-1] if requirement.transfer_history else requirement.requester
+        label = "上一位承接人" if requirement.transfer_history else "需求提出人"
+        if QMessageBox.question(
+            self,
+            "退回需求",
+            f"确认将需求退回给{label}「{target or '未填写'}」？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        returned = self.db.return_requirement(requirement.id)
+        if returned is None:
+            QMessageBox.warning(self, "退回失败", "需求已被处理，或没有可退回的人员。")
+            return
+        self._push_requirement_change()
+        self._refresh_my_panel()
+        QMessageBox.information(self, "退回需求", f"需求已退回给 {returned.recipient_name}。")
+
+    def _push_requirement_change(self) -> None:
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is not None:
+            central_sync.mark_local_dirty()
+            central_sync.sync_now(push_first=True)
 
     def _convert_requirement(self, requirement: Requirement) -> None:
         projects = [project for project in self.db.list_projects() if self._project_involves_current_user(project)]

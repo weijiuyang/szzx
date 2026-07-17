@@ -101,6 +101,7 @@ class Requirement:
     project_id: int | None
     todo_id: int | None
     created_at: datetime
+    transfer_history: tuple[str, ...] = ()
 
 
 ProjectDeck = ProjectDocument

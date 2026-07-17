@@ -2230,6 +2230,7 @@ class Database:
             "status": "pending",
             "project_id": "",
             "todo_id": "",
+            "transfer_history": "",
             "created_at": created_at.isoformat(timespec="seconds"),
             "updated_at": created_at.isoformat(timespec="seconds"),
         })
@@ -2274,10 +2275,59 @@ class Database:
             return todo
         return None
 
+    def transfer_requirement(self, requirement_id: int, recipient_name: str) -> Requirement | None:
+        target = recipient_name.strip()
+        if not target:
+            return None
+        for row in self.data["requirements"]:
+            if int(row["id"]) != requirement_id or str(row.get("status", "pending")) != "pending":
+                continue
+            current = str(row.get("recipient_name", "")).strip()
+            try:
+                history = json.loads(str(row.get("transfer_history", "")) or "[]")
+            except json.JSONDecodeError:
+                history = []
+            if not isinstance(history, list):
+                history = []
+            if current and current != target:
+                history.append(current)
+            row["recipient_name"] = target
+            row["recipient_dingtalk_id"] = ""
+            row["transfer_history"] = json.dumps(history, ensure_ascii=False)
+            row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
+            self._save()
+            return self._requirement_from_row(row)
+        return None
+
+    def return_requirement(self, requirement_id: int) -> Requirement | None:
+        for row in self.data["requirements"]:
+            if int(row["id"]) != requirement_id or str(row.get("status", "pending")) != "pending":
+                continue
+            try:
+                history = json.loads(str(row.get("transfer_history", "")) or "[]")
+            except json.JSONDecodeError:
+                history = []
+            if not isinstance(history, list):
+                history = []
+            target = str(history.pop()).strip() if history else str(row.get("requester", "")).strip()
+            if not target:
+                return None
+            row["recipient_name"] = target
+            row["recipient_dingtalk_id"] = ""
+            row["transfer_history"] = json.dumps(history, ensure_ascii=False) if history else ""
+            row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
+            self._save()
+            return self._requirement_from_row(row)
+        return None
+
     def _requirement_from_row(self, row: dict[str, Any]) -> Requirement:
         expected = str(row.get("expected_at", "")).strip()
         project_id = str(row.get("project_id", "")).strip()
         todo_id = str(row.get("todo_id", "")).strip()
+        try:
+            transfer_history = json.loads(str(row.get("transfer_history", "")) or "[]")
+        except json.JSONDecodeError:
+            transfer_history = []
         return Requirement(
             id=int(row["id"]), requester=str(row.get("requester", "")),
             expected_at=date.fromisoformat(expected) if expected else None,
@@ -2290,6 +2340,7 @@ class Database:
             project_id=int(project_id) if project_id else None,
             todo_id=int(todo_id) if todo_id else None,
             created_at=_parse_time(str(row["created_at"])),
+            transfer_history=tuple(str(name) for name in transfer_history if str(name).strip()) if isinstance(transfer_history, list) else (),
         )
 
     def list_project_todos(
@@ -3630,7 +3681,7 @@ class Database:
             if remote_updated <= existing_updated:
                 return False
             changed = False
-            for key in ("recipient_name", "recipient_dingtalk_id", "status", "project_id", "todo_id", "updated_at"):
+            for key in ("recipient_name", "recipient_dingtalk_id", "status", "project_id", "todo_id", "transfer_history", "updated_at"):
                 if key in remote and existing.get(key) != remote.get(key):
                     existing[key] = remote.get(key)
                     changed = True
