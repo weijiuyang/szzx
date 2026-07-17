@@ -3112,6 +3112,11 @@ class Database:
                 if not document_id or not source.is_file():
                     continue
                 content = self.document_content(source)
+                # Sync payloads must always contain plaintext. Publishing an
+                # encrypted vault blob causes every receiver to encrypt it a
+                # second time and applications can no longer open the file.
+                if content.startswith((DOCUMENT_VAULT_MAGIC, LEGACY_DOCUMENT_VAULT_MAGIC)):
+                    continue
                 files[document_id] = {
                     "name": safe_document_filename(str(row.get("title") or f"document-{document_id}")),
                     "size": str(len(content)),
@@ -4342,6 +4347,10 @@ class Database:
             try:
                 content = base64.b64decode(str(payload.get("content", "")))
             except ValueError:
+                continue
+            # A remote vault blob is encrypted with the remote machine's key
+            # and must never be stored as if it were plaintext.
+            if content.startswith((DOCUMENT_VAULT_MAGIC, LEGACY_DOCUMENT_VAULT_MAGIC)):
                 continue
             if expected_hash and hashlib.sha256(content).hexdigest() != expected_hash:
                 continue
