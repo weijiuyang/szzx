@@ -19,8 +19,10 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QAbstractItemView,
     QCheckBox,
+    QButtonGroup,
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QGridLayout,
     QHeaderView,
@@ -57,6 +59,7 @@ from .models import (
     ProjectMember,
     ProjectTodo,
     ProjectWeeklyReport,
+    Requirement,
     RestDay,
     WeeklyReport,
 )
@@ -148,6 +151,50 @@ QPushButton#primaryButton {
 QPushButton#primaryButton:hover {
     background: #383930;
     border-color: #383930;
+}
+QPushButton#greenPrimaryButton {
+    background: #4f8768;
+    color: #ffffff;
+    border-color: #4f8768;
+}
+QPushButton#greenPrimaryButton:hover {
+    background: #42775a;
+    border-color: #42775a;
+}
+QPushButton#requirementProjectChoice, QPushButton#requirementMemberChoice {
+    padding: 9px 14px;
+    background: #fbfbf8;
+    color: #55594f;
+    border: 1px solid #d6ddd4;
+}
+QPushButton#requirementProjectChoice:hover, QPushButton#requirementMemberChoice:hover {
+    background: #f1f6f1;
+    border-color: #a9c6b2;
+}
+QPushButton#requirementProjectChoice:checked, QPushButton#requirementMemberChoice:checked {
+    background: #e2f0e7;
+    color: #315f4b;
+    border: 2px solid #6f9b80;
+    font-weight: 600;
+}
+QPushButton#requirementTypeChoice {
+    min-width: 126px;
+    min-height: 58px;
+    padding: 10px 12px;
+    background: #fbfbf8;
+    color: #55594f;
+    border: 1px solid #deded6;
+    text-align: left;
+}
+QPushButton#requirementTypeChoice:hover {
+    background: #f1f5ef;
+    border-color: #b9cbbb;
+}
+QPushButton#requirementTypeChoice:checked {
+    background: #e6f1ea;
+    color: #315f4b;
+    border: 2px solid #6f9b80;
+    font-weight: 600;
 }
 QPushButton#successButton {
     background: #edf4f0;
@@ -1718,7 +1765,6 @@ class TodoDetailDialog(QDialog):
             f"项目：{project_name}",
             f"分配人：{todo.assigned_by or todo.creator or '未记录'}",
             f"接收人：{todo.assignee or '未记录'}",
-            f"状态：{self._todo_status_text(todo)}",
             f"创建时间：{todo.created_at.strftime('%Y-%m-%d %H:%M')}",
         ]
         if todo.workflow == "dev_test_accept":
@@ -1728,7 +1774,6 @@ class TodoDetailDialog(QDialog):
                     f"开发：{todo.developer or '未记录'}",
                     f"测试：{todo.tester or '未记录'}",
                     f"验收：{todo.acceptor or todo.assigned_by or '未记录'}",
-                    f"当前处理人：{todo.current_handler or '已结束'}",
                 ]
             )
         if todo.due_at is not None:
@@ -1743,12 +1788,27 @@ class TodoDetailDialog(QDialog):
         if todo.completed_by:
             lines.append(f"完成人：{todo.completed_by}")
 
+        parts = [f"<div style='white-space: pre-wrap;'>{escape(chr(10).join(lines))}</div>"]
+        current_node = self._todo_status_text(todo)
+        current_handler = todo.current_handler or ("已结束" if todo.status == "done" else todo.assignee or "未记录")
+        parts.append(
+            "<div style='margin-top: 12px; color: #b42318; font-weight: 700;'>"
+            f"当前节点：{escape(current_node)} · 当前处理人：{escape(current_handler)}</div>"
+        )
+
         flow_lines = self._todo_flow_lines(todo)
         if flow_lines:
-            lines.extend(["", "流转记录", *flow_lines])
+            parts.append("<div style='margin-top: 16px; font-weight: 700;'>流转记录</div>")
+            for index, flow_line in enumerate(flow_lines):
+                is_current = index == len(flow_lines) - 1 and todo.status != "done"
+                color = "#b42318" if is_current else "#596d5b"
+                weight = "700" if is_current else "400"
+                parts.append(
+                    f"<div style='margin-top: 6px; color: {color}; font-weight: {weight};'>"
+                    f"{escape(flow_line)}</div>"
+                )
 
-        lines.extend(["", "关联日报"])
-        parts = [f"<div style='white-space: pre-wrap;'>{escape(chr(10).join(lines))}</div>"]
+        parts.append("<div style='margin-top: 18px; font-weight: 700;'>关联日报</div>")
         if not reports:
             parts.append("<p>暂无关联日报。</p>")
         for report in reports:
@@ -2796,6 +2856,17 @@ class MainWindow(QMainWindow):
         self.my_tasks_layout.setSpacing(12)
         tasks_layout.addWidget(self.my_tasks_body)
 
+        requirements_panel = _panel()
+        requirements_layout = QVBoxLayout(requirements_panel)
+        requirements_layout.setContentsMargins(20, 20, 20, 20)
+        requirements_layout.setSpacing(12)
+        requirements_layout.addWidget(_label("需求对接", "eyebrow"))
+        self.my_requirements_body = QWidget()
+        self.my_requirements_layout = QVBoxLayout(self.my_requirements_body)
+        self.my_requirements_layout.setContentsMargins(0, 0, 0, 0)
+        self.my_requirements_layout.setSpacing(10)
+        requirements_layout.addWidget(self.my_requirements_body)
+
         messages_panel = _panel()
         messages_layout = QVBoxLayout(messages_panel)
         messages_layout.setContentsMargins(20, 20, 20, 20)
@@ -2808,6 +2879,7 @@ class MainWindow(QMainWindow):
         messages_layout.addWidget(self.my_messages_body)
 
         outer.addWidget(projects_panel)
+        outer.addWidget(requirements_panel)
         outer.addWidget(tasks_panel)
         outer.addWidget(messages_panel)
         outer.addStretch()
@@ -3667,28 +3739,56 @@ class MainWindow(QMainWindow):
         for column in range(3):
             self.my_projects_layout.setColumnStretch(column, 1)
 
+        self._clear_layout(self.my_requirements_layout)
+        requirements = [row for row in self.db.list_requirements() if self._requirement_is_mine(row)]
+        if not requirements:
+            self.my_requirements_layout.addWidget(self._empty_my_card("当前没有待对接需求。"))
+        for requirement in requirements:
+            self.my_requirements_layout.addWidget(self._my_requirement_card(requirement))
+        self.my_requirements_layout.addStretch()
+
         all_assigned = self.db.list_all_project_todos(include_completed=True, scope="assigned")
-        active_tasks = [
+        active_assigned = [
             todo
             for todo in all_assigned
             if todo.status != "done"
             and (self._todo_visible_to_current_user(todo) or self.db.is_current_user_name(todo.assigned_by))
         ]
-        assigned_to_me = [todo for todo in active_tasks if self._todo_visible_to_current_user(todo)]
-        assigned_by_me = [todo for todo in active_tasks if self.db.is_current_user_name(todo.assigned_by)]
+        personal_tasks = [
+            todo
+            for todo in self.db.list_all_project_todos(include_completed=False, scope="personal")
+            if self.db.is_current_user_name(todo.creator)
+        ]
+        owned_project_ids = {
+            project.id
+            for project in all_projects
+            if self.db.is_current_user_name(project.owner)
+        }
+        owned_project_tasks = [
+            todo
+            for todo in self.db.list_all_project_todos(include_completed=False, scope="project")
+            if todo.project_id in owned_project_ids
+        ]
+        assigned_to_me = [todo for todo in active_assigned if self._todo_visible_to_current_user(todo)]
+        assigned_by_me = [todo for todo in active_assigned if self.db.is_current_user_name(todo.assigned_by)]
+        my_tasks = sorted(
+            [*assigned_to_me, *personal_tasks, *owned_project_tasks],
+            key=lambda todo: todo.created_at,
+            reverse=True,
+        )
         self._clear_layout(self.my_tasks_layout)
-        if not active_tasks:
-            self.my_tasks_layout.addWidget(self._empty_my_card("当前没有分配代办。"))
-        elif assigned_to_me and assigned_by_me:
+        if not my_tasks and not assigned_by_me:
+            self.my_tasks_layout.addWidget(self._empty_my_card("当前没有任务。"))
+        elif my_tasks and assigned_by_me:
             task_row = QWidget()
             task_row_layout = QHBoxLayout(task_row)
             task_row_layout.setContentsMargins(0, 0, 0, 0)
             task_row_layout.setSpacing(12)
-            task_row_layout.addWidget(self._my_task_bucket_panel("我的代办", assigned_to_me, projects_by_id), 1)
+            task_row_layout.addWidget(self._my_task_bucket_panel("我的任务", my_tasks, projects_by_id), 1)
             task_row_layout.addWidget(self._my_task_bucket_panel("由我分配", assigned_by_me, projects_by_id), 1)
             self.my_tasks_layout.addWidget(task_row)
-        elif assigned_to_me:
-            self.my_tasks_layout.addWidget(self._my_task_bucket_panel("我的代办", assigned_to_me, projects_by_id))
+        elif my_tasks:
+            self.my_tasks_layout.addWidget(self._my_task_bucket_panel("我的任务", my_tasks, projects_by_id))
         else:
             self.my_tasks_layout.addWidget(self._my_task_bucket_panel("由我分配", assigned_by_me, projects_by_id))
         self.my_tasks_layout.addStretch()
@@ -3711,6 +3811,186 @@ class MainWindow(QMainWindow):
         if self._check_project_membership_pet_notifications(projects_by_id):
             return
         self._check_todo_pet_notifications(all_assigned, projects_by_id)
+
+    def _requirement_is_mine(self, requirement: Requirement) -> bool:
+        return self.db.is_current_user_name(requirement.recipient_name)
+
+    def _my_requirement_card(self, requirement: Requirement) -> QWidget:
+        card = _panel()
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        body = QVBoxLayout()
+        body.setSpacing(5)
+        body.addWidget(_label(requirement.description, "cardTitle"))
+        deadline = requirement.expected_at.isoformat() if requirement.expected_at else "未填写"
+        body.addWidget(_label(f"提出人 {requirement.requester or '未填写'}  ·  期望上线 {deadline}", "muted"))
+        body.addWidget(_label(f"钉钉接收人 {requirement.recipient_name or '未识别'}", "muted"))
+        layout.addLayout(body, 1)
+        button = QPushButton("指定项目并转代办")
+        button.setObjectName("greenPrimaryButton")
+        button.clicked.connect(lambda checked=False, row=requirement: self._convert_requirement(row))
+        layout.addWidget(button)
+        return card
+
+    def _convert_requirement(self, requirement: Requirement) -> None:
+        projects = [project for project in self.db.list_projects() if self._project_involves_current_user(project)]
+        if not projects:
+            QMessageBox.information(self, "需求对接", "你还没有可指定的参与项目。")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("需求对接")
+        dialog.setMinimumWidth(760)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(24, 22, 24, 20)
+        dialog_layout.setSpacing(18)
+
+        summary = QLabel(requirement.description)
+        summary.setWordWrap(True)
+        summary.setObjectName("cardTitle")
+        dialog_layout.addWidget(summary)
+        deadline = requirement.expected_at.isoformat() if requirement.expected_at else "未填写"
+        dialog_layout.addWidget(_label(f"提出人 {requirement.requester or '未填写'}  ·  期望上线 {deadline}", "muted"))
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(14)
+        project_choices = QWidget()
+        project_choices_layout = QGridLayout(project_choices)
+        project_choices_layout.setContentsMargins(0, 0, 0, 0)
+        project_choices_layout.setHorizontalSpacing(8)
+        project_choices_layout.setVerticalSpacing(8)
+        project_group = QButtonGroup(dialog)
+        project_group.setExclusive(True)
+        for index, project in enumerate(projects):
+            choice = QPushButton(project.name)
+            choice.setObjectName("requirementProjectChoice")
+            choice.setCheckable(True)
+            choice.setProperty("projectId", project.id)
+            choice.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            project_group.addButton(choice)
+            project_choices_layout.addWidget(choice, index // 3, index % 3)
+            if index == 0:
+                choice.setChecked(True)
+        for column in range(3):
+            project_choices_layout.setColumnStretch(column, 1)
+        form.addRow("指定项目：", project_choices)
+
+        type_choices = QWidget()
+        type_choices_layout = QHBoxLayout(type_choices)
+        type_choices_layout.setContentsMargins(0, 0, 0, 0)
+        type_choices_layout.setSpacing(10)
+        type_group = QButtonGroup(dialog)
+        type_group.setExclusive(True)
+        type_specs = (
+            ("个人代办\n自己处理", "personal", "个人代办"),
+            ("指定代办\n指派给成员", "assigned", "指定代办"),
+            ("项目代办\n项目共同处理", "project", "项目代办"),
+        )
+        for index, (text, scope, label) in enumerate(type_specs):
+            choice = QPushButton(text)
+            choice.setObjectName("requirementTypeChoice")
+            choice.setCheckable(True)
+            choice.setProperty("scope", scope)
+            choice.setProperty("typeLabel", label)
+            choice.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            type_group.addButton(choice)
+            type_choices_layout.addWidget(choice, 1)
+            if index == 0:
+                choice.setChecked(True)
+        form.addRow("代办类型：", type_choices)
+
+        assignee_label = QLabel("让谁做：")
+        assignee_choices = QWidget()
+        assignee_choices_layout = QGridLayout(assignee_choices)
+        assignee_choices_layout.setContentsMargins(0, 0, 0, 0)
+        assignee_choices_layout.setHorizontalSpacing(8)
+        assignee_choices_layout.setVerticalSpacing(8)
+        assignee_group = QButtonGroup(dialog)
+        assignee_group.setExclusive(True)
+        form.addRow(assignee_label, assignee_choices)
+        dialog_layout.addLayout(form)
+
+        def refresh_assignees() -> None:
+            selected_project = project_group.checkedButton()
+            if selected_project is None:
+                return
+            project_id = int(selected_project.property("projectId"))
+            project = next(item for item in projects if item.id == project_id)
+            candidates: list[str] = []
+            for name in (project.owner, *(member.name for member in self.db.list_project_members(project.id))):
+                if name and name not in candidates:
+                    candidates.append(name)
+            previous_button = assignee_group.checkedButton()
+            previous = str(previous_button.property("memberName")) if previous_button is not None else ""
+            for button in assignee_group.buttons():
+                assignee_group.removeButton(button)
+                button.deleteLater()
+            while assignee_choices_layout.count():
+                item = assignee_choices_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            for index, name in enumerate(candidates):
+                choice = QPushButton(name)
+                choice.setObjectName("requirementMemberChoice")
+                choice.setCheckable(True)
+                choice.setProperty("memberName", name)
+                assignee_group.addButton(choice)
+                assignee_choices_layout.addWidget(choice, index // 3, index % 3)
+                if name == previous or (not previous and index == 0):
+                    choice.setChecked(True)
+            for column in range(3):
+                assignee_choices_layout.setColumnStretch(column, 1)
+
+        def refresh_assignee_visibility() -> None:
+            selected = type_group.checkedButton()
+            visible = selected is not None and selected.property("scope") == "assigned"
+            assignee_label.setVisible(visible)
+            assignee_choices.setVisible(visible)
+
+        project_group.buttonToggled.connect(lambda _button, checked: refresh_assignees() if checked else None)
+        type_group.buttonToggled.connect(lambda _button, _checked: refresh_assignee_visibility())
+        refresh_assignees()
+        refresh_assignee_visibility()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        cancel_button.setText("取消")
+        ok_button.setText("确认转代办")
+        ok_button.setObjectName("greenPrimaryButton")
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        dialog_layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected_project = project_group.checkedButton()
+        if selected_project is None:
+            QMessageBox.information(self, "需求对接", "请先选择一个项目。")
+            return
+        project_id = int(selected_project.property("projectId"))
+        project = next(item for item in projects if item.id == project_id)
+        selected_choice = type_group.checkedButton()
+        scope = str(selected_choice.property("scope")) if selected_choice is not None else "personal"
+        selected_type = str(selected_choice.property("typeLabel")) if selected_choice is not None else "个人代办"
+        actor = self.db.display_name()
+        assignee = actor if scope == "personal" else ""
+        if scope == "assigned":
+            selected_assignee = assignee_group.checkedButton()
+            assignee = str(selected_assignee.property("memberName")).strip() if selected_assignee is not None else ""
+            if not assignee:
+                QMessageBox.information(self, "需求对接", "该项目还没有可指定的成员。")
+                return
+        todo = self.db.convert_requirement_to_todo(requirement.id, project.id, scope, assignee, actor)
+        if todo is None:
+            QMessageBox.warning(self, "需求对接", "需求已被处理，请刷新后查看。")
+            return
+        self._refresh_my_panel()
+        self._refresh_project_workspace_if_current(project.id)
+        QMessageBox.information(self, "需求对接", f"已转为{selected_type}，项目：{project.name}。")
 
     def _group_todos_by_project(self, todos: list[ProjectTodo]) -> dict[int, list[ProjectTodo]]:
         grouped: dict[int, list[ProjectTodo]] = {}
@@ -3915,8 +4195,6 @@ class MainWindow(QMainWindow):
         return f"开始 {todo.started_at.strftime('%m-%d %H:%M')} · 已开始 {self._days_since(todo.started_at)} 天"
 
     def _daily_report_todo_text(self, report: DailyReport) -> str:
-        if self._completion_todo_title_from_report(report.content):
-            return ""
         todo = self._todo_for_daily_report(report)
         if todo is None:
             return "关联的代办已删除" if report.todo_id is not None else ""
@@ -3942,7 +4220,19 @@ class MainWindow(QMainWindow):
 
     def _completion_todo_title_from_report(self, content: str) -> str:
         text = content.strip()
-        for prefix in ("完成待办：", "完成代办：", "完成待办:", "完成代办:"):
+        for prefix in (
+            "完成待办：",
+            "完成代办：",
+            "完成待办:",
+            "完成代办:",
+            "跳过UI，提交开发：",
+            "UI完成，提交开发：",
+            "开发完成，提交验收：",
+            "开发完成，提交测试：",
+            "测试不通过，打回开发：",
+            "测试通过，提交验收：",
+            "验收完成：",
+        ):
             if text.startswith(prefix):
                 return text[len(prefix):].strip()
         return ""
@@ -4214,7 +4504,17 @@ class MainWindow(QMainWindow):
         meta_row.setContentsMargins(0, 0, 0, 0)
         meta_row.setSpacing(5)
         assigned_days = self._days_since(todo.created_at)
-        if self._todo_visible_to_current_user(todo):
+        if todo.scope == "personal":
+            meta_row.addWidget(_nowrap_label(
+                f"个人代办 · {todo.created_at.strftime('%m-%d %H:%M')} · 已创建 {assigned_days} 天",
+                "eyebrow",
+            ))
+        elif todo.scope == "project":
+            meta_row.addWidget(_nowrap_label(
+                f"项目代办 · {todo.created_at.strftime('%m-%d %H:%M')} · 已创建 {assigned_days} 天",
+                "eyebrow",
+            ))
+        elif self._todo_visible_to_current_user(todo):
             meta_row.addWidget(_nowrap_label(
                 f"{self._todo_status_text(todo)} · {todo.created_at.strftime('%m-%d %H:%M')} · 已分配 {assigned_days} 天",
                 "eyebrow",
@@ -5985,6 +6285,7 @@ class MainWindow(QMainWindow):
         elif (
             daily_report is not None
             and not daily_report_popup
+            and not flat
             and (linked_todo is not None or self.db.is_current_user_name(daily_report.member_name))
         ):
             actions = QHBoxLayout()
@@ -6684,9 +6985,10 @@ class MainWindow(QMainWindow):
             report = item["report"]
             meta = f"{item['created_at'].strftime('%H:%M')}  {item['project_name']} · {item['role']}"
             content = str(item["content"])
+            linked_todo_record = self._todo_for_daily_report(report) if isinstance(report, DailyReport) else None
             if isinstance(report, DailyReport):
                 linked_todo = self._daily_report_todo_text(report)
-                if linked_todo:
+                if linked_todo and not self._completion_todo_title_from_report(report.content):
                     content = f"{content}\n关联代办：{linked_todo}"
             self._add_feed_card(
                 self.daily_calendar_list,
@@ -6694,7 +6996,7 @@ class MainWindow(QMainWindow):
                 "日报",
                 content,
                 daily_report=report if isinstance(report, DailyReport) else None,
-                daily_report_popup=isinstance(report, DailyReport),
+                daily_report_popup=isinstance(report, DailyReport) and linked_todo_record is None,
                 flat=True,
                 min_content_lines=1,
                 max_content_lines=None,

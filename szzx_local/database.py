@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, ProjectWeeklyReport, RestDay, WeeklyReport
+from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, ProjectWeeklyReport, Requirement, RestDay, WeeklyReport
 from .pin import DEFAULT_PIN, hash_pin, verify_pin
 from .version import APP_VERSION
 
@@ -125,6 +125,7 @@ SHARED_TABLES = (
     "project_decks",
     "project_documents",
     "project_todos",
+    "requirements",
     "rest_days",
     "activity_events",
     "name_claims",
@@ -141,6 +142,7 @@ RECORD_TOMBSTONE_TABLES = {
     "project_decks",
     "project_documents",
     "project_todos",
+    "requirements",
     "rest_days",
 }
 
@@ -213,6 +215,7 @@ class Database:
             "project_decks": [],
             "project_documents": [],
             "project_todos": [],
+            "requirements": [],
             "rest_days": [],
             "activity_events": [],
             "name_claims": [],
@@ -1288,6 +1291,56 @@ class Database:
                 return dingtalk_id
         return ""
 
+    def name_for_dingtalk_id(self, dingtalk_id: str) -> str:
+        target = dingtalk_id.strip().casefold()
+        if not target:
+            return ""
+        for table in ("name_claims", "project_members"):
+            for row in reversed(self.data.get(table, [])):
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("dingtalk_id", "")).strip().casefold() != target:
+                    continue
+                name = str(row.get("name", "")).strip()
+                if name:
+                    return name
+        return ""
+
+    def requirement_recipient_alias(self, dingtalk_id: str) -> str:
+        target = dingtalk_id.strip()
+        if not target:
+            return ""
+        try:
+            aliases = json.loads(self.get_setting("requirement_recipient_aliases") or "{}")
+        except json.JSONDecodeError:
+            return ""
+        value = aliases.get(target) if isinstance(aliases, dict) else None
+        if isinstance(value, str):
+            return value.strip()
+        # 兼容此前保存的 {name, dingtalk_id} 格式，读取时只使用名字。
+        return str(value.get("name", "")).strip() if isinstance(value, dict) else ""
+
+    def set_requirement_recipient_alias(self, source_id: str, name: str) -> None:
+        try:
+            aliases = json.loads(self.get_setting("requirement_recipient_aliases") or "{}")
+        except json.JSONDecodeError:
+            aliases = {}
+        if not isinstance(aliases, dict):
+            aliases = {}
+        aliases[source_id.strip()] = name.strip()
+        self.set_setting("requirement_recipient_aliases", json.dumps(aliases, ensure_ascii=False))
+
+    def update_requirement_recipient(self, requirement_id: int, name: str, dingtalk_id: str) -> bool:
+        for row in self.data.get("requirements", []):
+            if not isinstance(row, dict) or int(row.get("id", 0) or 0) != requirement_id:
+                continue
+            row["recipient_name"] = name.strip()
+            row["recipient_dingtalk_id"] = dingtalk_id.strip()
+            row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
+            self._save()
+            return True
+        return False
+
     def _member_from_row(self, row: dict[str, Any]) -> ProjectMember:
         return ProjectMember(
             id=int(row["id"]),
@@ -2150,6 +2203,94 @@ class Database:
         self.data["project_todos"].append(row)
         self._save()
         return self._todo_from_row(row)
+
+    def add_requirement(
+        self,
+        requester: str,
+        description: str,
+        recipient_name: str,
+        recipient_dingtalk_id: str = "",
+        expected_at: date | None = None,
+        source_conversation_id: str = "",
+        source_message_id: str = "",
+    ) -> Requirement:
+        existing = self.get_requirement_by_source_message(source_message_id)
+        if existing is not None:
+            return existing
+        created_at = datetime.now()
+        row = self._with_operator({
+            "id": self._next_id("requirements", created_at),
+            "requester": requester.strip(),
+            "expected_at": expected_at.isoformat() if expected_at else "",
+            "description": description.strip(),
+            "recipient_name": recipient_name.strip(),
+            "recipient_dingtalk_id": recipient_dingtalk_id.strip(),
+            "source_conversation_id": source_conversation_id.strip(),
+            "source_message_id": source_message_id.strip(),
+            "status": "pending",
+            "project_id": "",
+            "todo_id": "",
+            "created_at": created_at.isoformat(timespec="seconds"),
+            "updated_at": created_at.isoformat(timespec="seconds"),
+        })
+        self.data["requirements"].append(row)
+        self._save()
+        return self._requirement_from_row(row)
+
+    def get_requirement_by_source_message(self, message_id: str) -> Requirement | None:
+        message_id = message_id.strip()
+        if not message_id:
+            return None
+        for row in self.data["requirements"]:
+            if str(row.get("source_message_id", "")).strip() == message_id:
+                return self._requirement_from_row(row)
+        return None
+
+    def list_requirements(self, include_converted: bool = False) -> list[Requirement]:
+        rows = list(self.data["requirements"])
+        if not include_converted:
+            rows = [row for row in rows if str(row.get("status", "pending")) == "pending"]
+        rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        return [self._requirement_from_row(row) for row in rows]
+
+    def convert_requirement_to_todo(
+        self, requirement_id: int, project_id: int, scope: str, assignee: str, actor: str
+    ) -> ProjectTodo | None:
+        for row in self.data["requirements"]:
+            if int(row["id"]) != requirement_id or str(row.get("status", "pending")) != "pending":
+                continue
+            expected = str(row.get("expected_at", "")).strip()
+            due_at = datetime.combine(date.fromisoformat(expected), time.max) if expected else None
+            title = str(row.get("description", "")).strip()
+            todo = self.add_project_todo(
+                project_id, title, actor, scope=scope, assignee=assignee,
+                assigned_by=actor if scope == "assigned" else "", due_at=due_at,
+            )
+            row["status"] = "converted"
+            row["project_id"] = project_id
+            row["todo_id"] = todo.id
+            row["updated_at"] = datetime.now().isoformat(timespec="microseconds")
+            self._save()
+            return todo
+        return None
+
+    def _requirement_from_row(self, row: dict[str, Any]) -> Requirement:
+        expected = str(row.get("expected_at", "")).strip()
+        project_id = str(row.get("project_id", "")).strip()
+        todo_id = str(row.get("todo_id", "")).strip()
+        return Requirement(
+            id=int(row["id"]), requester=str(row.get("requester", "")),
+            expected_at=date.fromisoformat(expected) if expected else None,
+            description=str(row.get("description", "")),
+            recipient_name=str(row.get("recipient_name", "")),
+            recipient_dingtalk_id=str(row.get("recipient_dingtalk_id", "")),
+            source_conversation_id=str(row.get("source_conversation_id", "")),
+            source_message_id=str(row.get("source_message_id", "")),
+            status=str(row.get("status", "pending")),
+            project_id=int(project_id) if project_id else None,
+            todo_id=int(todo_id) if todo_id else None,
+            created_at=_parse_time(str(row["created_at"])),
+        )
 
     def list_project_todos(
         self,
@@ -3403,9 +3544,10 @@ class Database:
             if not isinstance(row, dict):
                 continue
             next_row = dict(row)
-            if "project_id" in next_row:
+            raw_project_id = str(next_row.get("project_id", "")).strip()
+            if "project_id" in next_row and raw_project_id:
                 try:
-                    remote_project_id = int(next_row.get("project_id", 0) or 0)
+                    remote_project_id = int(raw_project_id)
                 except (TypeError, ValueError):
                     continue
                 if remote_project_id not in project_id_map:
@@ -3482,6 +3624,17 @@ class Database:
         return changed
 
     def _merge_existing_shared_row(self, table: str, existing: dict[str, Any], remote: dict[str, Any]) -> bool:
+        if table == "requirements":
+            remote_updated = str(remote.get("updated_at") or remote.get("created_at") or "")
+            existing_updated = str(existing.get("updated_at") or existing.get("created_at") or "")
+            if remote_updated <= existing_updated:
+                return False
+            changed = False
+            for key in ("recipient_name", "recipient_dingtalk_id", "status", "project_id", "todo_id", "updated_at"):
+                if key in remote and existing.get(key) != remote.get(key):
+                    existing[key] = remote.get(key)
+                    changed = True
+            return changed
         if table != "project_todos":
             return False
         changed = False

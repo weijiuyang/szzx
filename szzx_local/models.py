@@ -87,6 +87,22 @@ class ProjectTodo:
     completed_by_pet: str = "penguin"
 
 
+@dataclass(frozen=True)
+class Requirement:
+    id: int
+    requester: str
+    expected_at: date | None
+    description: str
+    recipient_name: str
+    recipient_dingtalk_id: str
+    source_conversation_id: str
+    source_message_id: str
+    status: str
+    project_id: int | None
+    todo_id: int | None
+    created_at: datetime
+
+
 ProjectDeck = ProjectDocument
 
 

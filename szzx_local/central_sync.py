@@ -166,10 +166,15 @@ class CentralDataSync(QObject):
             return True
         return expected == actual or expected in actual or actual in expected
 
-    def _sync_worker(self, server_url: str, mode: str) -> None:
+    def _sync_worker(
+        self,
+        server_url: str,
+        mode: str,
+        snapshot_override: dict[str, Any] | None = None,
+    ) -> None:
         try:
             if mode == "push":
-                snapshot = self.db.shared_snapshot(include_files=True)
+                snapshot = snapshot_override or self.db.shared_snapshot(include_files=True)
                 payload = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
                 request = Request(
                     f"{server_url}/snapshot",
@@ -265,7 +270,11 @@ class CentralDataSync(QObject):
         hydrate_snapshot["files"] = missing_files
         self._busy = True
         self._active_mode = "push"
-        thread = threading.Thread(target=self._sync_worker, args=(self.server_url, hydrate_snapshot, "push"), daemon=True)
+        thread = threading.Thread(
+            target=self._sync_worker,
+            args=(self.server_url, "push", hydrate_snapshot),
+            daemon=True,
+        )
         thread.start()
         return True
 

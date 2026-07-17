@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import logging
 import os
 import shutil
 import socket
@@ -31,6 +32,7 @@ from .protocol import (
     SERVER_AUTHORITATIVE_VALUE,
 )
 from .version import APP_VERSION
+from .dingtalk_bot import start_requirement_bot
 
 
 def _ipv4_broadcast_interfaces() -> list[tuple[str, str]]:
@@ -582,6 +584,10 @@ def default_server_db_path() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     parser = argparse.ArgumentParser(description="Run the SZZX central LAN data service.")
     parser.add_argument("--host", default=os.environ.get("SZZX_DATA_SERVER_HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("SZZX_DATA_SERVER_PORT", DEFAULT_DATA_SERVER_PORT)))
@@ -598,6 +604,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Backed up server database to: {backup}")
         db.clear_shared_data_cache()
     service = DataService(db, args.name, args.port)
+    start_requirement_bot(db)
     service.start_backups()
     service.start_announcing()
     httpd = SZZXDataHTTPServer((args.host, args.port), DataServiceHandler, service)
