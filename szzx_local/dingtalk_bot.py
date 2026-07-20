@@ -64,19 +64,19 @@ def _recipient(db: Database, message: object, text: str, bot_name: str) -> tuple
     mentions = _mentioned_users(message)
     visible_names = [
         match.group(1).split("(", 1)[0].split("（", 1)[0].strip()
-        for match in re.finditer(r"@([^@\s]+)", text)
+        for match in re.finditer(r"@\s*([^@\s]+)", text)
     ]
     visible_names = [name for name in visible_names if name and name.casefold() != bot_name.casefold()]
-    # SDK 的 AtUser 只有 dingtalkId/staffId，没有昵称；昵称从正文中的 @ 文本恢复。
-    ids = [user_id for name, user_id in mentions if name.casefold() != bot_name.casefold() and user_id]
-    if not ids:
+    if not visible_names:
         return None
-    recipient_id = ids[-1]
-    alias = db.requirement_recipient_alias(recipient_id)
-    if alias:
-        return alias, recipient_id
-    recipient_name = visible_names[-1] if visible_names else db.name_for_dingtalk_id(recipient_id)
-    return (recipient_name or "待确认承接人", recipient_id)
+    # 正文中的最后一个非机器人 @ 才是承接人。AtUser 数组的顺序与正文顺序
+    # 并无保证，不能再将两边的“最后一项”硬拼，否则会把别人的 ID 配给承接人。
+    recipient_name = visible_names[-1]
+    recipient_id = db.dingtalk_id_for_name(recipient_name)
+    if not recipient_id:
+        target = recipient_name.casefold()
+        recipient_id = next((user_id for name, user_id in mentions if name.casefold() == target and user_id), "")
+    return recipient_name, recipient_id
 
 
 def start_requirement_bot(db: Database) -> threading.Thread | None:
@@ -120,8 +120,12 @@ def start_requirement_bot(db: Database) -> threading.Thread | None:
                         self.reply_text("没有识别到实际承接人，请先 @承接人，再 @需求搜集机器人。", message)
                     else:
                         recipient_name, recipient_id = recipient
+                        # 需求方是发送这条群消息的人；@ 到的人只是承接人。
+                        requester = str(_value(message, "sender_nick", "senderNick", default="")).strip()
+                        if not requester:
+                            requester = str(parsed["requester"])
                         requirement = db.add_requirement(
-                            requester=str(parsed["requester"]), description=str(parsed["description"]),
+                            requester=requester, description=str(parsed["description"]),
                             expected_at=parsed["expected_at"], recipient_name=recipient_name,
                             recipient_dingtalk_id=recipient_id,
                             source_conversation_id=str(_value(message, "conversation_id", "conversationId")),
