@@ -93,6 +93,28 @@ class RecipientParsingTests(unittest.TestCase):
             ("尉久洋", "yu-current-staff-id"),
         )
 
+    def test_placeholder_cache_does_not_block_directory_lookup(self):
+        message = SimpleNamespace(
+            chatbot_user_id="bot-encrypted-id",
+            robot_code="robot-code",
+            at_users=[
+                SimpleNamespace(dingtalk_id="liu-encrypted-id", staff_id="liu-staff-id"),
+                SimpleNamespace(dingtalk_id="bot-encrypted-id", staff_id=None),
+            ],
+        )
+        db = FakeDatabase(names={"liu-staff-id": "待确认承接人"})
+
+        self.assertEqual(
+            _recipient(
+                db,
+                message,
+                "需求描述：审批流加签",
+                "需求搜集机器人",
+                name_resolver=lambda user_id: "刘文博" if user_id == "liu-staff-id" else "",
+            ),
+            ("刘文博", "liu-staff-id"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

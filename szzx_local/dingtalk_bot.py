@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 import requests
 
-from .database import Database
+from .database import Database, UNKNOWN_REQUIREMENT_RECIPIENT_NAMES
 
 
 LOGGER = logging.getLogger("szzx.dingtalk-requirement")
@@ -97,12 +97,12 @@ def _recipient(
     def resolved_identity(ids: tuple[str, ...]) -> tuple[str, str]:
         for user_id in ids:
             name = db.name_for_dingtalk_id(user_id) or db.requirement_recipient_alias(user_id)
-            if name:
+            if name and name not in UNKNOWN_REQUIREMENT_RECIPIENT_NAMES:
                 return name, user_id
         if name_resolver is not None:
             for user_id in ids:
                 name = name_resolver(user_id).strip()
-                if name:
+                if name and name not in UNKNOWN_REQUIREMENT_RECIPIENT_NAMES:
                     return name, user_id
         return "", ids[0] if ids else ""
 

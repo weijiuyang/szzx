@@ -135,6 +135,7 @@ SHARED_TABLES = (
 )
 ACTIVITY_EVENT_SYNC_DAYS = 0
 PROJECT_NOTES_ADMIN_NAMES = {"尉久洋"}
+UNKNOWN_REQUIREMENT_RECIPIENT_NAMES = {"待确认承接人", "未识别", "未知承接人"}
 RECORD_TOMBSTONE_TABLES = {
     "project_members",
     "daily_reports",
@@ -1319,7 +1320,7 @@ class Database:
             if str(row.get("recipient_dingtalk_id", "")).strip().casefold() != target:
                 continue
             name = str(row.get("recipient_name", "")).strip()
-            if name:
+            if name and name not in UNKNOWN_REQUIREMENT_RECIPIENT_NAMES:
                 return name
         return ""
 
@@ -1333,9 +1334,11 @@ class Database:
             return ""
         value = aliases.get(target) if isinstance(aliases, dict) else None
         if isinstance(value, str):
-            return value.strip()
+            name = value.strip()
+            return "" if name in UNKNOWN_REQUIREMENT_RECIPIENT_NAMES else name
         # 兼容此前保存的 {name, dingtalk_id} 格式，读取时只使用名字。
-        return str(value.get("name", "")).strip() if isinstance(value, dict) else ""
+        name = str(value.get("name", "")).strip() if isinstance(value, dict) else ""
+        return "" if name in UNKNOWN_REQUIREMENT_RECIPIENT_NAMES else name
 
     def set_requirement_recipient_alias(self, source_id: str, name: str) -> None:
         try:
@@ -1344,7 +1347,12 @@ class Database:
             aliases = {}
         if not isinstance(aliases, dict):
             aliases = {}
-        aliases[source_id.strip()] = name.strip()
+        source = source_id.strip()
+        target_name = name.strip()
+        if target_name in UNKNOWN_REQUIREMENT_RECIPIENT_NAMES:
+            aliases.pop(source, None)
+        else:
+            aliases[source] = target_name
         self.set_setting("requirement_recipient_aliases", json.dumps(aliases, ensure_ascii=False))
 
     def update_requirement_recipient(self, requirement_id: int, name: str, dingtalk_id: str) -> bool:

@@ -15,6 +15,7 @@ from .central_sync import CentralDataSync
 from .database import Database
 from .lan import LanDiscovery
 from .pet import DesktopPet
+from .single_instance import SingleInstanceController
 from .ui import MainWindow, PinDialog
 from .version import APP_NAME, APP_VERSION
 
@@ -84,6 +85,14 @@ def main() -> int:
     app.setApplicationVersion(APP_VERSION)
     app_icon = QIcon(str(_app_icon_path()))
     app.setWindowIcon(app_icon)
+
+    instance_controller = None
+    if "--smoke-test" not in sys.argv:
+        instance_controller = SingleInstanceController(app)
+        instance_controller.replacement_requested.connect(app.quit)
+        app.aboutToQuit.connect(instance_controller.close)
+        if not instance_controller.take_over():
+            return 1
 
     db = Database()
     if "--smoke-test" in sys.argv:
