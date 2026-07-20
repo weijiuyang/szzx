@@ -1289,6 +1289,15 @@ class Database:
             dingtalk_id = str(row.get("dingtalk_id", "")).strip()
             if dingtalk_id:
                 return dingtalk_id
+        # 旧版机器人已成功识别过的承接人也是可靠的账号映射。
+        for row in reversed(self.data.get("requirements", [])):
+            if not isinstance(row, dict):
+                continue
+            if self._normalize_display_name(str(row.get("recipient_name", ""))) != target:
+                continue
+            dingtalk_id = str(row.get("recipient_dingtalk_id", "")).strip()
+            if dingtalk_id:
+                return dingtalk_id
         return ""
 
     def name_for_dingtalk_id(self, dingtalk_id: str) -> str:
@@ -1304,6 +1313,14 @@ class Database:
                 name = str(row.get("name", "")).strip()
                 if name:
                     return name
+        for row in reversed(self.data.get("requirements", [])):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("recipient_dingtalk_id", "")).strip().casefold() != target:
+                continue
+            name = str(row.get("recipient_name", "")).strip()
+            if name:
+                return name
         return ""
 
     def requirement_recipient_alias(self, dingtalk_id: str) -> str:

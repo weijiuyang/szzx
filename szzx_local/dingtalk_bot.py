@@ -5,7 +5,9 @@ import os
 import re
 import threading
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
+
+import requests
 
 from .database import Database
 
@@ -48,35 +50,115 @@ def parse_requirement_text(text: str) -> dict[str, object] | None:
     return {"requester": fields["需求提出人"], "expected_at": expected, "description": fields["需求描述"]}
 
 
-def _mentioned_users(message: object) -> list[tuple[str, str]]:
+def _mentioned_users(message: object) -> list[tuple[str, tuple[str, ...]]]:
     users = _value(message, "at_users", "atUsers", default=[])
-    result: list[tuple[str, str]] = []
+    result: list[tuple[str, tuple[str, ...]]] = []
     for user in users if isinstance(users, list) else []:
         name = str(_value(user, "dingtalk_nick", "dingtalkNick", "staff_name", "staffName", default="")).strip()
-        user_id = str(_value(
-            user, "staff_id", "staffId", "dingtalk_id", "dingtalkId", "user_id", "userId", default=""
-        )).strip()
-        result.append((name, user_id))
+        ids: list[str] = []
+        for field_names in (
+            ("dingtalk_id", "dingtalkId"),
+            ("staff_id", "staffId"),
+            ("user_id", "userId"),
+        ):
+            user_id = str(_value(user, *field_names, default="")).strip()
+            if user_id and user_id not in ids:
+                ids.append(user_id)
+        result.append((name, tuple(ids)))
     return result
 
 
-def _recipient(db: Database, message: object, text: str, bot_name: str) -> tuple[str, str] | None:
+def _recipient(
+    db: Database,
+    message: object,
+    text: str,
+    bot_name: str,
+    name_resolver: Callable[[str], str] | None = None,
+) -> tuple[str, str] | None:
     mentions = _mentioned_users(message)
     visible_names = [
         match.group(1).split("(", 1)[0].split("（", 1)[0].strip()
         for match in re.finditer(r"@\s*([^@\s]+)", text)
     ]
     visible_names = [name for name in visible_names if name and name.casefold() != bot_name.casefold()]
-    if not visible_names:
-        return None
-    # 正文中的最后一个非机器人 @ 才是承接人。AtUser 数组的顺序与正文顺序
-    # 并无保证，不能再将两边的“最后一项”硬拼，否则会把别人的 ID 配给承接人。
-    recipient_name = visible_names[-1]
-    recipient_id = db.dingtalk_id_for_name(recipient_name)
-    if not recipient_id:
-        target = recipient_name.casefold()
-        recipient_id = next((user_id for name, user_id in mentions if name.casefold() == target and user_id), "")
-    return recipient_name, recipient_id
+    chatbot_ids = {
+        str(_value(message, "chatbot_user_id", "chatbotUserId", default="")).strip().casefold(),
+        str(_value(message, "robot_code", "robotCode", default="")).strip().casefold(),
+    }
+    chatbot_ids.discard("")
+    candidates = [
+        (name, ids)
+        for name, ids in mentions
+        if name.casefold() != bot_name.casefold()
+        and ids
+        and not any(user_id.casefold() in chatbot_ids for user_id in ids)
+    ]
+
+    def resolved_identity(ids: tuple[str, ...]) -> tuple[str, str]:
+        for user_id in ids:
+            name = db.name_for_dingtalk_id(user_id) or db.requirement_recipient_alias(user_id)
+            if name:
+                return name, user_id
+        if name_resolver is not None:
+            for user_id in ids:
+                name = name_resolver(user_id).strip()
+                if name:
+                    return name, user_id
+        return "", ids[0] if ids else ""
+
+    if visible_names:
+        # 正文中的最后一个非机器人 @ 才是承接人。AtUser 数组的顺序与正文顺序
+        # 并无保证，不能再将两边的“最后一项”硬拼，否则会把别人的 ID 配给承接人。
+        recipient_name = visible_names[-1]
+        recipient_id = db.dingtalk_id_for_name(recipient_name)
+        if not recipient_id:
+            target = recipient_name.casefold()
+            matching_ids = next((ids for name, ids in candidates if name.casefold() == target), ())
+            _, recipient_id = resolved_identity(matching_ids)
+        if not recipient_id and len(candidates) == 1:
+            _, recipient_id = resolved_identity(candidates[0][1])
+        return recipient_name, recipient_id
+
+    # 钉钉 Stream 有时会把 @ 文本从 text.content 中剔除，但 atUsers 仍会保留。
+    named = [(name, ids) for name, ids in candidates if name]
+    if len(named) == 1:
+        name, ids = named[0]
+        _, user_id = resolved_identity(ids)
+        return name, user_id
+    if len(candidates) == 1:
+        _, ids = candidates[0]
+        recipient_name, recipient_id = resolved_identity(ids)
+        return (recipient_name, recipient_id) if recipient_name else None
+    resolved = [resolved_identity(ids) for _, ids in candidates]
+    resolved = [(name, user_id) for name, user_id in resolved if name and name.casefold() != bot_name.casefold()]
+    if len(resolved) == 1:
+        return resolved[0]
+    return None
+
+
+def _dingtalk_user_name(client: object, user_id: str) -> str:
+    """Resolve an employee userId through DingTalk's official directory API."""
+    target = user_id.strip()
+    if not target or target.startswith("$:"):
+        return ""
+    try:
+        access_token = client.get_access_token()
+        if not access_token:
+            return ""
+        response = requests.post(
+            "https://oapi.dingtalk.com/topapi/v2/user/get",
+            params={"access_token": access_token},
+            json={"userid": target, "language": "zh_CN"},
+            timeout=8,
+        )
+        payload = response.json()
+        if response.ok and int(payload.get("errcode", -1)) == 0:
+            result = payload.get("result")
+            return str(result.get("name", "")).strip() if isinstance(result, dict) else ""
+        LOGGER.warning("钉钉用户姓名查询失败 errcode=%s errmsg=%s", payload.get("errcode"), payload.get("errmsg"))
+    except (requests.RequestException, ValueError, TypeError):
+        LOGGER.exception("钉钉用户姓名查询异常")
+    return ""
 
 
 def start_requirement_bot(db: Database) -> threading.Thread | None:
@@ -113,13 +195,21 @@ def start_requirement_bot(db: Database) -> threading.Thread | None:
                         text,
                     )
                     parsed = parse_requirement_text(text)
-                    recipient = _recipient(db, message, text, bot_name)
+                    recipient = _recipient(
+                        db,
+                        message,
+                        text,
+                        bot_name,
+                        name_resolver=lambda user_id: _dingtalk_user_name(self.dingtalk_client, user_id),
+                    )
                     if parsed is None:
                         self.reply_text("需求格式不完整，请填写需求提出人、期望上线时间和需求描述。", message)
                     elif recipient is None:
-                        self.reply_text("没有识别到实际承接人，请先 @承接人，再 @需求搜集机器人。", message)
+                        self.reply_text("没有识别到实际承接人，请同时 @承接人 和 @需求搜集机器人。", message)
                     else:
                         recipient_name, recipient_id = recipient
+                        if recipient_id:
+                            db.set_requirement_recipient_alias(recipient_id, recipient_name)
                         # 需求方是发送这条群消息的人；@ 到的人只是承接人。
                         requester = str(_value(message, "sender_nick", "senderNick", default="")).strip()
                         if not requester:

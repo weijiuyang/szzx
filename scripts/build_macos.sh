@@ -4,8 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 export PYINSTALLER_CONFIG_DIR="$ROOT_DIR/.pyinstaller-cache"
-MACOS_TARGET_ARCH="${MACOS_TARGET_ARCH:-universal2}"
-
+MACOS_TARGET_ARCH="${MACOS_TARGET_ARCH:-arm64}"
 PYTHON_BIN=""
 for candidate in python3.12 python3.11 python3.10 python3; do
   if command -v "$candidate" >/dev/null 2>&1; then
