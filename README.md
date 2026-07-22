@@ -7,13 +7,13 @@
 中央数据服务可同时通过钉钉 Stream 接收群需求。复制 `.env.example` 为 `.env`，填写
 `DINGTALK_CLIENT_ID` 和 `DINGTALK_CLIENT_SECRET`，然后按原方式启动中央数据服务。
 群消息需要包含“需求提出人、期望上线时间、需求描述”，并同时 @实际承接人 和
-@需求搜集机器人。承接人需在桌面端“名字 / PIN”中填写自己的钉钉号；需求同步后会出现在
+@需求搜集机器人。承接人需在桌面端“账户设置”中填写自己的钉钉号；需求同步后会出现在
 “我的面板 → 需求对接”，可先指定项目，再转为个人代办、指定代办或项目代办。
 
 Current shape:
 
-- no login
-- local PIN unlock
+- central-server username/password login
+- server-side scrypt password hashing and short-lived bearer sessions
 - local JSON storage
 - LAN central data service for shared records
 - optional local AI command integration
@@ -38,7 +38,10 @@ pip install -r requirements.txt
 python -m szzx_local
 ```
 
-The default PIN is `1234`. Change it after first unlock from the app settings panel.
+On first login, enter a username and any non-empty password. The
+server creates the account and stores only a salted scrypt hash. Later logins
+must use the same password; the desktop client never stores it locally. Account
+names and passwords can be changed at any time and are not tied to a device or MAC address.
 In development, local data is stored in `local_data/szzx.json`.
 In packaged builds, it is stored in the user's application data directory.
 Override it with `SZZX_LOCAL_DATA_DIR`.
@@ -559,8 +562,8 @@ If the command is not set, the app uses a local rule-based summary so the protot
 ## LAN Discovery
 
 数智中心使用 UDP `45454` 端口发现同一局域网内运行中的客户端。
-应用没有登录和好友申请系统，局域网内发现的同事会默认显示。
-可以在应用内 `PIN` 设置面板修改自己的可见名称。
+应用使用中央服务器账户登录，不需要好友申请；局域网内发现的同事会默认显示。
+可以在应用内“账户设置”面板修改服务器密码和自己的钉钉号。
 
 ## Project Shape
 
@@ -572,6 +575,6 @@ szzx_local/
   database.py       JSON persistence
   models.py         shared dataclasses
   pet.py            transparent desktop pet
-  pin.py            PIN hashing/verification
+  auth.py           Server-side password hashing/verification
   ui.py             windows and widgets
 ```

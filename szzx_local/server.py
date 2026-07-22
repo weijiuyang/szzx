@@ -5,6 +5,7 @@ import ctypes
 import json
 import logging
 import os
+import secrets
 import shutil
 import socket
 import sys
@@ -17,7 +18,6 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -33,6 +33,7 @@ from .protocol import (
 )
 from .version import APP_VERSION
 from .dingtalk_bot import start_requirement_bot
+from .auth import hash_password, verify_password
 
 
 def _ipv4_broadcast_interfaces() -> list[tuple[str, str]]:
@@ -103,7 +104,83 @@ class DataService:
         self.lock = threading.RLock()
         self._stopped = threading.Event()
         self._ai_lock = threading.Lock()
+        self._sessions: dict[str, tuple[str, float]] = {}
         self._ensure_ai_config()
+
+    def login(self, username: str, password: str) -> dict[str, Any]:
+        username = " ".join(username.strip().split())
+        if not username or not password:
+            raise PermissionError("invalid username or password")
+        key = username.casefold()
+        with self.lock:
+            users = self._auth_users()
+            account = users.get(key)
+            created = False
+            if account is None:
+                users[key] = {"username": username, "password_hash": hash_password(password)}
+                self._save_auth_users(users)
+                created = True
+            elif not verify_password(password, str(account.get("password_hash", ""))):
+                raise PermissionError("invalid username or password")
+            token = secrets.token_urlsafe(32)
+            self._sessions[token] = (key, time.time() + 12 * 60 * 60)
+        return {"ok": True, "token": token, "username": username, "created": created}
+
+    def change_account(
+        self,
+        token: str,
+        current_password: str,
+        username: str,
+        new_password: str | None = None,
+    ) -> dict[str, Any]:
+        current_username = self.authenticate(token)
+        key = current_username.casefold()
+        username = " ".join(username.strip().split())
+        if not username:
+            raise ValueError("username is required")
+        next_key = username.casefold()
+        with self.lock:
+            users = self._auth_users()
+            account = users.get(key)
+            if account is None or not verify_password(current_password, str(account.get("password_hash", ""))):
+                raise PermissionError("current password is incorrect")
+            if next_key != key and next_key in users:
+                raise FileExistsError("username already exists")
+            if new_password is not None:
+                if not new_password:
+                    raise ValueError("password cannot be empty")
+                account["password_hash"] = hash_password(new_password)
+            account["username"] = username
+            if next_key != key:
+                del users[key]
+                users[next_key] = account
+            self._save_auth_users(users)
+            self._sessions = {value: session for value, session in self._sessions.items() if session[0] != key}
+            next_token = secrets.token_urlsafe(32)
+            self._sessions[next_token] = (next_key, time.time() + 12 * 60 * 60)
+        return {"ok": True, "token": next_token, "username": username}
+
+    def change_password(self, token: str, current_password: str, new_password: str) -> dict[str, Any]:
+        return self.change_account(token, current_password, self.authenticate(token), new_password)
+
+    def authenticate(self, token: str) -> str:
+        with self.lock:
+            session = self._sessions.get(token)
+            if session is None or session[1] <= time.time():
+                self._sessions.pop(token, None)
+                raise PermissionError("authentication required")
+            account = self._auth_users().get(session[0], {})
+            return str(account.get("username", session[0]))
+
+    def _auth_users(self) -> dict[str, dict[str, str]]:
+        try:
+            value = json.loads(self.db.get_setting("auth_users") or "{}")
+        except json.JSONDecodeError:
+            value = {}
+        return value if isinstance(value, dict) else {}
+
+    def _save_auth_users(self, users: dict[str, dict[str, str]]) -> None:
+        self.db.set_setting("auth_users", json.dumps(users, ensure_ascii=False))
 
     @property
     def ai_config_path(self) -> Path:
@@ -353,15 +430,7 @@ class DataService:
 
     def _is_restore_admin(self, actor: str, origin: str) -> bool:
         normalized = " ".join(actor.strip().split()).casefold()
-        if normalized != "尉久洋" or not origin.strip():
-            return False
-        for row in self.db.data.get("name_claims", []):
-            if not isinstance(row, dict):
-                continue
-            row_name = " ".join(str(row.get("name", "")).strip().split()).casefold()
-            if row_name == normalized and str(row.get("device_id", "")).strip() == origin.strip():
-                return True
-        return False
+        return normalized == "尉久洋"
 
     def _backup_loop(self) -> None:
         while not self._stopped.wait(60 * 60):
@@ -447,12 +516,15 @@ class DataServiceHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_json(self.service.health())
             return
+        actor = self._authenticated_actor()
+        if actor is None:
+            return
         if self.path == "/snapshot":
-            self._send_json(self.service.snapshot(self._request_actor(), self._request_origin()))
+            self._send_json(self.service.snapshot(actor, self._request_origin()))
             return
         if self.path == "/backups":
             try:
-                payload = self.service.list_backups(self._request_actor(), self._request_origin())
+                payload = self.service.list_backups(actor, self._request_origin())
             except PermissionError:
                 self.send_error(403, "restore access denied")
                 return
@@ -461,12 +533,50 @@ class DataServiceHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
+        if self.path == "/auth/login":
+            try:
+                payload = self._read_json_body(max_length=16 * 1024)
+                result = self.service.login(str(payload.get("username", "")), str(payload.get("password", "")))
+            except ValueError as exc:
+                self.send_error(400, str(exc))
+                return
+            except PermissionError:
+                self.send_error(401, "invalid username or password")
+                return
+            self._send_json(result)
+            return
+        token = self._bearer_token()
+        try:
+            actor = self.service.authenticate(token)
+        except PermissionError:
+            self.send_error(401, "authentication required")
+            return
+        if self.path in {"/auth/account", "/auth/password"}:
+            try:
+                payload = self._read_json_body(max_length=16 * 1024)
+                result = self.service.change_account(
+                    token,
+                    str(payload.get("current_password", "")),
+                    str(payload.get("username", actor)),
+                    str(payload["new_password"]) if "new_password" in payload else None,
+                )
+            except ValueError as exc:
+                self.send_error(400, str(exc))
+                return
+            except FileExistsError:
+                self.send_error(409, "username already exists")
+                return
+            except PermissionError:
+                self.send_error(403, "current password is incorrect")
+                return
+            self._send_json(result)
+            return
         if self.path == "/ai/weekly-summary":
             try:
                 payload = self._read_json_body(max_length=200 * 1024)
                 result = self.service.summarize_weekly(
                     str(payload.get("content", "")),
-                    self._request_actor(),
+                    actor,
                 )
             except ValueError:
                 self.send_error(400, "invalid weekly content")
@@ -483,7 +593,7 @@ class DataServiceHandler(BaseHTTPRequestHandler):
             try:
                 payload = self._read_json_body(max_length=1024 * 1024)
                 backup_name = str(payload.get("backup", ""))
-                result = self.service.restore_backup(backup_name, self._request_actor(), self._request_origin())
+                result = self.service.restore_backup(backup_name, actor, self._request_origin())
             except PermissionError:
                 self.send_error(403, "restore access denied")
                 return
@@ -500,7 +610,7 @@ class DataServiceHandler(BaseHTTPRequestHandler):
                 payload = self._read_json_body(max_length=1024 * 1024)
                 result = self.service.preview_backup(
                     str(payload.get("backup", "")),
-                    self._request_actor(),
+                    actor,
                     self._request_origin(),
                 )
             except PermissionError:
@@ -550,8 +660,16 @@ class DataServiceHandler(BaseHTTPRequestHandler):
     def service(self) -> DataService:
         return self.server.service  # type: ignore[attr-defined]
 
-    def _request_actor(self) -> str:
-        return unquote(self.headers.get("X-SZZX-Actor", "").strip())
+    def _bearer_token(self) -> str:
+        value = self.headers.get("Authorization", "").strip()
+        return value[7:].strip() if value.lower().startswith("bearer ") else ""
+
+    def _authenticated_actor(self) -> str | None:
+        try:
+            return self.service.authenticate(self._bearer_token())
+        except PermissionError:
+            self.send_error(401, "authentication required")
+            return None
 
     def _request_origin(self) -> str:
         return self.headers.get("X-SZZX-Origin", "").strip()

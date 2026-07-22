@@ -46,6 +46,7 @@ class CentralDataSync(QObject):
         configured_url = server_url or os.environ.get("SZZX_DATA_SERVER_URL") or db.get_setting("data_server_url")
         self.server_url = self._normalize_url(configured_url or "")
         self.current_server: CentralDataServer | None = None
+        self.auth_token = ""
         self._busy = False
         self._pending = False
         self._pending_push = False
@@ -77,7 +78,57 @@ class CentralDataSync(QObject):
         self.server_url = server.url
         self.db.set_setting("data_server_url", self.server_url, save=True)
         self.server_changed.emit(server)
-        self.sync_now()
+        if self.auth_token:
+            self.sync_now()
+
+    def login(self, username: str, password: str) -> dict[str, Any]:
+        if not self.server_url:
+            raise ValueError("尚未发现数据服务器")
+        payload = json.dumps({"username": username, "password": password}, ensure_ascii=False).encode("utf-8")
+        request = Request(
+            f"{self.server_url}/auth/login",
+            data=payload,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:
+            result = json.loads(response.read(64 * 1024).decode("utf-8"))
+        if not isinstance(result, dict) or not result.get("token"):
+            raise ValueError("服务器登录响应无效")
+        self.auth_token = str(result["token"])
+        self.db.set_setting("display_name", str(result.get("username", username)).strip(), save=False)
+        self.db.set_setting("display_name_locked", "false", save=False)
+        self.db.save_local_settings()
+        return result
+
+    def change_account(self, current_password: str, username: str, new_password: str | None = None) -> str:
+        values: dict[str, str] = {
+            "current_password": current_password,
+            "username": username,
+        }
+        if new_password is not None:
+            values["new_password"] = new_password
+        payload = json.dumps(values, ensure_ascii=False).encode("utf-8")
+        try:
+            result = self._admin_request("/auth/account", data=payload)
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+            if username.strip() != self.db.display_name().strip():
+                raise ValueError("当前数据服务器版本较旧，升级服务器后才能修改账户名。") from exc
+            if new_password is None:
+                raise ValueError("当前数据服务器版本较旧，请先升级服务器。") from exc
+            legacy_payload = json.dumps({
+                "current_password": current_password,
+                "new_password": new_password,
+            }, ensure_ascii=False).encode("utf-8")
+            result = self._admin_request("/auth/password", data=legacy_payload)
+        if result.get("token"):
+            self.auth_token = str(result["token"])
+        return str(result.get("username", username)).strip()
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
 
     def sync_now(self, push_first: bool = False) -> None:
         if not self.server_url:
@@ -149,6 +200,7 @@ class CentralDataSync(QObject):
                 "Content-Type": "application/json; charset=utf-8",
                 "X-SZZX-Actor": quote(str(self.db.display_name()), safe=""),
                 "X-SZZX-Origin": str(self.db.device_id()),
+                **self._auth_headers(),
             },
             method="POST" if data is not None else "GET",
         )
@@ -184,6 +236,7 @@ class CentralDataSync(QObject):
                         SERVER_AUTHORITATIVE_HEADER: SERVER_AUTHORITATIVE_VALUE,
                         "X-SZZX-Actor": quote(str(self.db.display_name()), safe=""),
                         "X-SZZX-Origin": str(self.db.device_id()),
+                        **self._auth_headers(),
                     },
                     method="POST",
                 )
@@ -193,6 +246,7 @@ class CentralDataSync(QObject):
                     headers={
                         "X-SZZX-Actor": quote(str(self.db.display_name()), safe=""),
                         "X-SZZX-Origin": str(self.db.device_id()),
+                        **self._auth_headers(),
                     },
                     method="GET",
                 )

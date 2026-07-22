@@ -16,7 +16,7 @@ from .database import Database
 from .lan import LanDiscovery
 from .pet import DesktopPet
 from .single_instance import SingleInstanceController
-from .ui import MainWindow, PinDialog
+from .ui import LoginDialog, MainWindow
 from .version import APP_NAME, APP_VERSION
 
 
@@ -102,8 +102,14 @@ def main() -> int:
         db.close()
         return 0
 
-    pin = PinDialog(db)
-    if pin.exec() != PinDialog.DialogCode.Accepted:
+    bootstrap_snapshot = db.shared_snapshot(include_files=True)
+    discovery = LanDiscovery(db.device_id(), db.display_name(), db=db, peer_data_sync_enabled=False)
+    central_sync = CentralDataSync(db, bootstrap_snapshot=bootstrap_snapshot)
+    discovery.data_server_seen.connect(central_sync.set_discovered_server)
+    discovery.start()
+
+    login = LoginDialog(db, central_sync)
+    if login.exec() != LoginDialog.DialogCode.Accepted:
         db.close()
         return 0
 
@@ -112,10 +118,7 @@ def main() -> int:
 
     pet = DesktopPet()
     summarizer = LocalSummarizer()
-    bootstrap_snapshot = db.shared_snapshot(include_files=True)
-    discovery = LanDiscovery(db.device_id(), db.display_name(), db=db, peer_data_sync_enabled=False)
-    central_sync = CentralDataSync(db, bootstrap_snapshot=bootstrap_snapshot)
-    discovery.data_server_seen.connect(central_sync.set_discovered_server)
+    discovery.set_display_name(db.display_name())
     window = MainWindow(db, summarizer, pet, discovery)
     window.central_sync = central_sync
     central_sync.data_synced.connect(window._refresh_after_lan_sync)

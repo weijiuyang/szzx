@@ -9,6 +9,7 @@ import zipfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
+from urllib.error import HTTPError, URLError
 from xml.sax.saxutils import escape
 
 from PySide6.QtCore import QProcess, QRect, QStandardPaths, QThread, QSize, Qt, QTimer, QUrl, Signal
@@ -800,10 +801,11 @@ def _soft_panel() -> QWidget:
     return widget
 
 
-class PinDialog(QDialog):
-    def __init__(self, db: Database) -> None:
+class LoginDialog(QDialog):
+    def __init__(self, db: Database, central_sync: object) -> None:
         super().__init__()
         self.db = db
+        self.central_sync = central_sync
         self.setWindowTitle("数智中心")
         self.setFixedWidth(470)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -816,16 +818,19 @@ class PinDialog(QDialog):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle = _label("安静地开始今天的记录", "muted")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pin_hint = _label("PIN 是本机本地密码，默认 1234。", "muted")
-        pin_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        setup_hint = _label("进入后请在左下角「名字/PIN」修改名字、PIN、钉钉号", "muted")
-        setup_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.server_hint = _label("正在查找数据服务器…", "muted")
+        self.server_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.pin_input = QLineEdit()
-        self.pin_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.pin_input.setMaxLength(12)
-        self.pin_input.setPlaceholderText("PIN")
-        self.pin_input.returnPressed.connect(self._try_unlock)
+        self.username_input = QLineEdit()
+        self.username_input.setMaxLength(32)
+        self.username_input.setText(self.db.display_name())
+        self.username_input.setPlaceholderText("用户名")
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setMaxLength(128)
+        self.password_input.setPlaceholderText("密码")
+        self.password_input.returnPressed.connect(self._try_unlock)
 
         unlock = QPushButton("进入")
         unlock.setObjectName("primaryButton")
@@ -833,130 +838,206 @@ class PinDialog(QDialog):
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        layout.addWidget(pin_hint)
-        layout.addWidget(setup_hint)
-        layout.addWidget(self.pin_input)
+        layout.addWidget(self.server_hint)
+        layout.addWidget(self.username_input)
+        layout.addWidget(self.password_input)
         layout.addWidget(unlock)
-        self.pin_input.setFocus()
+        self.password_input.setFocus()
+        self.central_sync.server_changed.connect(self._server_changed)  # type: ignore[attr-defined]
+        if getattr(self.central_sync, "server_url", ""):
+            self.server_hint.setText(f"服务器：{self.central_sync.server_url}")
+
+    def _server_changed(self, server: object) -> None:
+        self.server_hint.setText(f"服务器：{getattr(server, 'name', '')}")
 
     def _try_unlock(self) -> None:
-        if self.db.verify_pin(self.pin_input.text()):
+        try:
+            result = self.central_sync.login(  # type: ignore[attr-defined]
+                self.username_input.text().strip(), self.password_input.text()
+            )
+        except HTTPError as exc:
+            message = "用户名或密码不正确。" if exc.code == 401 else f"服务器拒绝登录（{exc.code}）。"
+            QMessageBox.warning(self, "登录失败", message)
+            self.password_input.clear()
+            return
+        except (URLError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "登录失败", str(exc))
+            return
+        if result.get("created"):
+            QMessageBox.information(self, "账户已创建", "账户和密码已安全保存到服务器。")
+        if result.get("ok"):
             self.accept()
-        else:
-            QMessageBox.warning(self, "PIN 错误", "PIN 不对。")
-            self.pin_input.clear()
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, db: Database, peers: list[LanPeer] | None = None) -> None:
+    def __init__(self, db: Database, peers: list[LanPeer] | None = None, central_sync: object | None = None) -> None:
         super().__init__()
         self.db = db
         self.peers = peers or []
-        self.setWindowTitle("名字和本地密码")
-        self.setFixedWidth(420)
-        self.setStyleSheet(APP_STYLE)
+        self.central_sync = central_sync
+        self.setObjectName("accountSettings")
+        self.setWindowTitle("账户设置")
+        self.setFixedWidth(520)
+        self.setStyleSheet(APP_STYLE + """
+QDialog#accountSettings { background: #f3f5f1; }
+QDialog#accountSettings QWidget#settingsCard {
+    background: #ffffff; border: 1px solid #dfe5dc; border-radius: 12px;
+}
+QDialog#accountSettings QLineEdit#accountField {
+    background: #f9faf7; border: 1px solid #d8ded4; border-radius: 8px;
+    padding: 10px 12px; min-height: 24px;
+}
+QDialog#accountSettings QLineEdit#accountField:focus {
+    background: #ffffff; border: 1px solid #6d9279;
+}
+QDialog#accountSettings QLabel#fieldLabel {
+    color: #4f574f; font-size: 12px; font-weight: 600;
+}
+QDialog#accountSettings QPushButton#settingsSave {
+    background: #315f4b; color: #ffffff; border: none; border-radius: 8px;
+    padding: 10px 24px; min-width: 72px;
+}
+QDialog#accountSettings QPushButton#settingsSave:hover { background: #274f3e; }
+QDialog#accountSettings QPushButton#settingsCancel {
+    background: transparent; border: none; color: #6f776e; padding: 10px 18px;
+}
+""")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
-        form = QFormLayout()
-        form.setSpacing(14)
-        self.display_name: QLineEdit | None = None
-        if self.db.display_name_locked():
-            locked_name = _label(self.db.display_name(), "memberName")
-            locked_name.setToolTip("名字已经锁定")
-            form.addRow("名字", locked_name)
-        else:
-            self.display_name = QLineEdit()
-            self.display_name.setMaxLength(32)
-            self.display_name.setText(self.db.display_name())
-            self.display_name.setPlaceholderText("显示给局域网同事的名字")
-            form.addRow("名字", self.display_name)
+        layout.setContentsMargins(30, 26, 30, 26)
+        layout.setSpacing(18)
 
-        self.new_pin = QLineEdit()
-        self.new_pin.setEchoMode(QLineEdit.EchoMode.Password)
-        self.new_pin.setMaxLength(12)
-        self.new_pin.setPlaceholderText("本地密码，留空则不修改")
+        header = QVBoxLayout()
+        header.setSpacing(5)
+        header.addWidget(_label("账户设置", "sectionTitle"))
+        header.addWidget(_label("管理登录信息与个人联系方式", "muted"))
+        layout.addLayout(header)
 
-        form.addRow("本地密码", self.new_pin)
+        def field_label(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setObjectName("fieldLabel")
+            return label
+
+        account_card = QWidget()
+        account_card.setObjectName("settingsCard")
+        account_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        account_layout = QVBoxLayout(account_card)
+        account_layout.setContentsMargins(20, 18, 20, 20)
+        account_layout.setSpacing(10)
+        account_layout.addWidget(_label("登录账户", "eyebrow"))
+
+        self.display_name = QLineEdit()
+        self.display_name.setObjectName("accountField")
+        self.display_name.setMaxLength(32)
+        self.display_name.setText(self.db.display_name())
+        self.display_name.setPlaceholderText("用户名")
+        account_layout.addWidget(field_label("用户名"))
+        account_layout.addWidget(self.display_name)
+
+        password_grid = QGridLayout()
+        password_grid.setHorizontalSpacing(12)
+        password_grid.setVerticalSpacing(7)
+        self.current_password = QLineEdit()
+        self.current_password.setObjectName("accountField")
+        self.current_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.current_password.setMaxLength(128)
+        self.current_password.setPlaceholderText("需要修改时填写")
+        self.new_password = QLineEdit()
+        self.new_password.setObjectName("accountField")
+        self.new_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.new_password.setMaxLength(128)
+        self.new_password.setPlaceholderText("留空则不修改")
+        password_grid.addWidget(field_label("当前密码"), 0, 0)
+        password_grid.addWidget(field_label("新密码"), 0, 1)
+        password_grid.addWidget(self.current_password, 1, 0)
+        password_grid.addWidget(self.new_password, 1, 1)
+        account_layout.addLayout(password_grid)
+        password_hint = _label("修改用户名或密码时，需要验证当前密码。密码长度不限。", "muted")
+        password_hint.setWordWrap(True)
+        account_layout.addWidget(password_hint)
+        layout.addWidget(account_card)
+
+        profile_card = QWidget()
+        profile_card.setObjectName("settingsCard")
+        profile_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        profile_layout = QVBoxLayout(profile_card)
+        profile_layout.setContentsMargins(20, 18, 20, 20)
+        profile_layout.setSpacing(8)
+        profile_layout.addWidget(_label("个人信息", "eyebrow"))
         self.dingtalk_id = QLineEdit()
+        self.dingtalk_id.setObjectName("accountField")
         self.dingtalk_id.setMaxLength(80)
         self.dingtalk_id.setText(self.db.dingtalk_id())
         self.dingtalk_id.setPlaceholderText("自己的钉钉号，用于点击姓名发起聊天")
-        form.addRow("钉钉号", self.dingtalk_id)
-        layout.addLayout(form)
+        profile_layout.addWidget(field_label("钉钉号"))
+        profile_layout.addWidget(self.dingtalk_id)
+        layout.addWidget(profile_card)
+
         self.autostart = QCheckBox("开机自动启动")
         self.autostart.setChecked(self.db.get_setting("autostart_enabled") != "false")
         self.autostart.setEnabled(autostart_supported())
-        layout.addWidget(self.autostart)
+        preference_row = QHBoxLayout()
+        preference_row.addWidget(self.autostart)
+        preference_row.addStretch()
+        preference_row.addWidget(_label("可在任意设备登录", "muted"))
+        layout.addLayout(preference_row)
         if not autostart_supported():
             layout.addWidget(_label("当前系统暂不支持开机自动启动。", "muted"))
         elif self.db.get_setting("autostart_enabled") != "false" and not autostart_registered():
             layout.addWidget(_label("打包安装后的应用会在下次启动时写入开机自动启动。", "muted"))
-        layout.addWidget(_label("换电脑时，先在旧电脑退出当前姓名，再在新电脑设置同一个姓名。", "muted"))
 
-        save = QPushButton("保存")
-        save.setObjectName("primaryButton")
+        save = QPushButton("保存更改")
+        save.setObjectName("settingsSave")
         save.clicked.connect(self._save)
-        logout = QPushButton("退出登录")
-        logout.setObjectName("dangerButton")
-        logout.clicked.connect(self._release_name)
-
+        cancel = QPushButton("取消")
+        cancel.setObjectName("settingsCancel")
+        cancel.clicked.connect(self.reject)
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        actions.addWidget(logout)
+        actions.addStretch()
+        actions.addWidget(cancel)
         actions.addWidget(save)
         layout.addLayout(actions)
 
     def _save(self) -> None:
-        if self.display_name is not None:
-            name = self.display_name.text().strip()
-            if not name:
-                QMessageBox.warning(self, "名字为空", "名字至少写一个字。")
-                return
-            if name != self.db.display_name():
-                if self._online_name_owner(name) is not None or self.db.display_name_claim_owner(name) is not None:
-                    QMessageBox.warning(self, "名字已被使用", "这个名字已经被别人使用。")
-                    return
-                try:
-                    self.db.set_display_name(name)
-                except ValueError as exc:
-                    QMessageBox.warning(self, "不能改名", str(exc))
-                    return
-
-        pin = self.new_pin.text().strip()
-        if pin and len(pin) < 4:
-            QMessageBox.warning(self, "太短了", "PIN 至少 4 位。")
+        name = self.display_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "账户为空", "账户名不能为空。")
             return
-        if pin:
-            self.db.change_pin(pin)
+        password = self.new_password.text()
+        account_changed = name != self.db.display_name() or bool(password)
+        if account_changed:
+            if self.central_sync is None:
+                QMessageBox.warning(self, "服务器未连接", "连接服务器后才能修改账户。")
+                return
+            try:
+                saved_name = self.central_sync.change_account(  # type: ignore[attr-defined]
+                    self.current_password.text(), name, password if password else None
+                )
+                self.db.set_display_name(saved_name)
+            except HTTPError as exc:
+                if exc.code == 403:
+                    message = "当前密码不正确。"
+                elif exc.code == 409:
+                    message = "这个账户名已经被使用。"
+                else:
+                    message = f"服务器拒绝修改（{exc.code}）。"
+                QMessageBox.warning(self, "修改失败", message)
+                return
+            except (URLError, OSError, ValueError) as exc:
+                QMessageBox.warning(self, "修改失败", str(exc))
+                return
         self.db.set_dingtalk_id(self.dingtalk_id.text().strip(), save=False)
         self.db.set_setting("autostart_enabled", "true" if self.autostart.isChecked() else "false", save=False)
         try:
             set_autostart(self.autostart.isChecked())
         except OSError as exc:
-            QMessageBox.warning(self, "开机启动失败", f"保存名字和密码成功，但开机自动启动设置失败：{exc}")
+            QMessageBox.warning(self, "开机启动失败", f"保存账户设置成功，但开机自动启动设置失败：{exc}")
             self.db.save_local_settings()
             self.accept()
             return
         self.db.save_local_settings()
         self.accept()
-
-    def _release_name(self) -> None:
-        name = self.db.display_name()
-        message = f"确定在这台电脑退出登录「{name}」吗？\n\n退出后，新电脑同步刷新后才能使用这个姓名。"
-        if QMessageBox.question(self, "退出登录", message) != QMessageBox.StandardButton.Yes:
-            return
-        self.db.release_display_name()
-        self.accept()
-
-    def _online_name_owner(self, name: str) -> str | None:
-        target = " ".join(name.strip().split()).casefold()
-        for peer in self.peers:
-            if " ".join(peer.name.strip().split()).casefold() == target:
-                return peer.device_id
-        return None
-
 
 class PetDialog(QDialog):
     def __init__(self, db: Database, pet: DesktopPet) -> None:
@@ -2507,7 +2588,7 @@ class MainWindow(QMainWindow):
         pet_button.clicked.connect(self._open_pet)
         version = QPushButton("版本")
         version.clicked.connect(self._open_version)
-        settings = QPushButton("名字/PIN")
+        settings = QPushButton("账户设置")
         settings.clicked.connect(self._open_settings)
         layout.addWidget(pet_button)
         layout.addWidget(version)
@@ -2736,7 +2817,7 @@ class MainWindow(QMainWindow):
         self._last_dingtalk_id_reminder_date = today
         self.db.set_setting("last_dingtalk_id_reminder_date", today.isoformat())
         self.pet.move_to_bottom_right()
-        self.pet.speak("还没有设置钉钉号。去左下角「名字/PIN」里填写钉钉号，同事点聊天图标才能直接找你。", mood="wave")
+        self.pet.speak("还没有设置钉钉号。去左下角「账户设置」里填写钉钉号，同事点聊天图标才能直接找你。", mood="wave")
 
     def _check_daily_report_reminder(self) -> None:
         now = datetime.now()
@@ -7483,9 +7564,9 @@ class MainWindow(QMainWindow):
                 "左下角入口可打开桌宠设置，切换形象、互动动作，或隐藏和重新显示桌宠。",
             ),
             (
-                "名字/PIN",
+                "账户设置",
                 "维护个人身份。",
-                "设置姓名、PIN 和钉钉号；姓名用于团队同步识别，PIN 用于保护设置和接管旧电脑身份。",
+                "随时修改服务器账户、密码和钉钉号；账户不绑定本机或 MAC。",
             ),
             (
                 "版本",
@@ -7808,7 +7889,7 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         peers = self.discovery.sorted_peers() if self.discovery is not None else []
-        dialog = SettingsDialog(self.db, peers)
+        dialog = SettingsDialog(self.db, peers, getattr(self, "central_sync", None))
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self._refresh_identity()
             central_sync = getattr(self, "central_sync", None)

@@ -20,7 +20,6 @@ from typing import Any, Callable
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .models import DailyReport, Project, ProjectDocument, ProjectMember, ProjectTodo, ProjectWeeklyReport, Requirement, RestDay, WeeklyReport
-from .pin import DEFAULT_PIN, hash_pin, verify_pin
 from .version import APP_VERSION
 
 
@@ -231,8 +230,9 @@ class Database:
         for key, value in empty.items():
             self.data.setdefault(key, value.copy() if isinstance(value, dict) else list(value))
 
-        if self.get_setting("pin_hash") is None:
-            self.set_setting("pin_hash", hash_pin(DEFAULT_PIN), save=False)
+        # PIN hashes from older clients are deliberately discarded. Passwords
+        # are now owned and verified by the central data service.
+        self.data.setdefault("settings", {}).pop("pin_hash", None)
         if self.get_setting("mac_address") is None:
             self.set_setting("mac_address", self._mac_address(), save=False)
         if self.get_setting("device_id") is None:
@@ -240,8 +240,9 @@ class Database:
         if self.get_setting("display_name") is None:
             self.set_setting("display_name", self._default_display_name(), save=False)
         if self.get_setting("display_name_locked") is None:
-            locked = "true" if self.display_name_aliases() else "false"
-            self.set_setting("display_name_locked", locked, save=False)
+            self.set_setting("display_name_locked", "false", save=False)
+        elif self.get_setting("display_name_locked") != "false":
+            self.set_setting("display_name_locked", "false", save=False)
         if self.get_setting("autostart_enabled") is None:
             self.set_setting("autostart_enabled", "true", save=False)
         self._remove_legacy_demo_project()
@@ -438,13 +439,6 @@ class Database:
         # current user's shared name claim (including their DingTalk ID).
         self._save(bump_sync=True)
 
-    def verify_pin(self, pin: str) -> bool:
-        stored = self.get_setting("pin_hash")
-        return stored is not None and verify_pin(pin, stored)
-
-    def change_pin(self, new_pin: str) -> None:
-        self.set_setting("pin_hash", hash_pin(new_pin))
-
     def device_id(self) -> str:
         value = self.get_setting("device_id")
         if value:
@@ -474,38 +468,23 @@ class Database:
             self._save()
 
     def display_name_locked(self) -> bool:
-        return self.get_setting("display_name_locked") == "true"
+        return False
 
     def display_name_claim_owner(self, name: str) -> str | None:
-        target = self._normalize_display_name(name)
-        if not target:
-            return None
-        for row in self.data.get("name_claims", []):
-            if not isinstance(row, dict):
-                continue
-            if self._normalize_display_name(str(row.get("name", ""))) != target:
-                continue
-            device_id = str(row.get("device_id", ""))
-            mac_address = str(row.get("mac_address", ""))
-            if device_id == self.device_id() or mac_address == self.mac_address():
-                continue
-            return device_id or mac_address or "unknown"
         return None
 
     def set_display_name(self, name: str) -> None:
         previous = self.display_name()
         next_name = name.strip()
-        if self.display_name_locked() and next_name != previous:
-            raise ValueError("名字已经锁定，不能再次修改。")
-        if self.display_name_claim_owner(next_name) is not None:
-            raise ValueError("这个名字已经被别人使用。")
+        if not next_name:
+            raise ValueError("名字不能为空。")
         if previous and previous != next_name:
             aliases = self.display_name_aliases()
             if previous not in aliases:
                 aliases.append(previous)
                 self.set_setting("display_name_aliases", json.dumps(aliases, ensure_ascii=False), save=False)
             self.set_setting("display_name", next_name, save=False)
-            self.set_setting("display_name_locked", "true", save=False)
+            self.set_setting("display_name_locked", "false", save=False)
             self._claim_display_name(next_name, save=False)
             self._save()
             return
@@ -597,7 +576,6 @@ class Database:
             return
         claims = self.data.setdefault("name_claims", [])
         device_id = self.device_id()
-        mac_address = self.mac_address()
         claims[:] = [
             row
             for row in claims
@@ -605,7 +583,6 @@ class Database:
             or (
                 self._normalize_display_name(str(row.get("name", ""))) != normalized
                 and str(row.get("device_id", "")) != device_id
-                and str(row.get("mac_address", "")) != mac_address
             )
         ]
         claims.append(
@@ -613,7 +590,6 @@ class Database:
                 "name": name.strip(),
                 "normalized_name": normalized,
                 "device_id": device_id,
-                "mac_address": mac_address,
                 "dingtalk_id": self.dingtalk_id(),
                 "claimed_at": datetime.now().isoformat(timespec="seconds"),
             }
@@ -624,7 +600,6 @@ class Database:
     def _remove_own_display_name_claim(self, name: str) -> None:
         normalized = self._normalize_display_name(name)
         device_id = self.device_id()
-        mac_address = self.mac_address()
         claims = self.data.setdefault("name_claims", [])
         claims[:] = [
             row
@@ -633,7 +608,6 @@ class Database:
             or self._normalize_display_name(str(row.get("name", ""))) != normalized
             or (
                 str(row.get("device_id", "")) != device_id
-                and str(row.get("mac_address", "")) != mac_address
             )
         ]
 
