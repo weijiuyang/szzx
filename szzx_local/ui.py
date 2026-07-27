@@ -5737,16 +5737,15 @@ class MainWindow(QMainWindow):
             )
 
         self.developer_feed.clear()
-        visible_daily_reports = daily_reports if is_manager else [
-            report for report in daily_reports if self.db.is_current_user_name(report.member_name)
-        ]
+        # This is the company-wide daily-report feed. It intentionally does
+        # not depend on the selected project, project membership, or viewer.
+        visible_daily_reports = self.db.list_all_daily_reports(limit=200)
         if not visible_daily_reports:
-            empty_text = "还没有日报。" if is_manager else "你还没有写过日报。"
             self._add_feed_card(
                 self.developer_feed,
                 "",
                 "日报",
-                empty_text,
+                "还没有日报。",
                 min_content_lines=1,
                 max_content_lines=None,
                 visual_chars_per_line=46,

@@ -1503,6 +1503,13 @@ class Database:
         rows = self._unique_daily_report_rows(rows)
         return [self._daily_from_row(row) for row in rows[:limit]]
 
+    def list_all_daily_reports(self, limit: int = 200) -> list[DailyReport]:
+        """Return the company-wide daily-report feed, independent of project or viewer."""
+        rows = [row for row in self.data["daily_reports"] if isinstance(row, dict)]
+        rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        rows = self._unique_daily_report_rows(rows)
+        return [self._daily_from_row(row) for row in rows[:limit]]
+
     def list_member_daily_reports(self, project_id: int, member_name: str) -> list[DailyReport]:
         target = self._normalize_display_name(member_name)
         rows = [
