@@ -5737,9 +5737,9 @@ class MainWindow(QMainWindow):
             )
 
         self.developer_feed.clear()
-        # This is the company-wide daily-report feed. It intentionally does
-        # not depend on the selected project, project membership, or viewer.
-        visible_daily_reports = self.db.list_all_daily_reports(limit=200)
+        # Everyone viewing this project sees every member's reports in this
+        # project. Do not filter by the current viewer, and do not mix projects.
+        visible_daily_reports = daily_reports
         if not visible_daily_reports:
             self._add_feed_card(
                 self.developer_feed,
