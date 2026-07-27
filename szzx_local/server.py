@@ -33,6 +33,8 @@ from .protocol import (
 )
 from .version import APP_VERSION
 from .dingtalk_bot import start_requirement_bot
+from .dingtalk_daily_bot import DingTalkDailyBot
+from .dingtalk_config import dingtalk_config_path
 from .auth import hash_password, verify_password
 
 
@@ -105,6 +107,7 @@ class DataService:
         self._stopped = threading.Event()
         self._ai_lock = threading.Lock()
         self._sessions: dict[str, tuple[str, float]] = {}
+        self.daily_bot: DingTalkDailyBot | None = None
         self._ensure_ai_config()
 
     def login(self, username: str, password: str) -> dict[str, Any]:
@@ -169,8 +172,17 @@ class DataService:
             if session is None or session[1] <= time.time():
                 self._sessions.pop(token, None)
                 raise PermissionError("authentication required")
+            # 正在使用软件的客户端持续续期，避免应用开着超过 12 小时后
+            # 同步和 AI 整理突然收到 401。
+            self._sessions[token] = (session[0], time.time() + 12 * 60 * 60)
             account = self._auth_users().get(session[0], {})
             return str(account.get("username", session[0]))
+
+    def send_yesterday_daily_reports(self) -> dict[str, Any]:
+        if self.daily_bot is None:
+            raise RuntimeError("服务器尚未配置钉钉日报机器人。")
+        yesterday = datetime.now().date() - timedelta(days=1)
+        return {"ok": True, **self.daily_bot.send_daily_reports(yesterday)}
 
     def _auth_users(self) -> dict[str, dict[str, str]]:
         try:
@@ -589,6 +601,17 @@ class DataServiceHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(result)
             return
+        if self.path == "/dingtalk/daily-reports/send-yesterday":
+            try:
+                result = self.service.send_yesterday_daily_reports()
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=404)
+                return
+            except RuntimeError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=503)
+                return
+            self._send_json(result)
+            return
         if self.path == "/restore":
             try:
                 payload = self._read_json_body(max_length=1024 * 1024)
@@ -674,10 +697,10 @@ class DataServiceHandler(BaseHTTPRequestHandler):
     def _request_origin(self) -> str:
         return self.headers.get("X-SZZX-Origin", "").strip()
 
-    def _send_json(self, payload: dict[str, Any]) -> None:
+    def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -723,11 +746,15 @@ def main(argv: list[str] | None = None) -> int:
         db.clear_shared_data_cache()
     service = DataService(db, args.name, args.port)
     start_requirement_bot(db)
+    service.daily_bot = DingTalkDailyBot.from_config(db)
+    if service.daily_bot is not None:
+        service.daily_bot.start()
     service.start_backups()
     service.start_announcing()
     httpd = SZZXDataHTTPServer((args.host, args.port), DataServiceHandler, service)
     print(f"SZZX data service '{service.name}' listening on {args.host}:{args.port}")
     print(f"Database: {args.data}")
+    print(f"DingTalk config: {dingtalk_config_path(db)}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import socket
 import struct
 import sys
@@ -400,6 +401,7 @@ class LanDiscovery(QObject):
             "size": stat.st_size,
             "version": APP_VERSION,
             "platform": sys.platform,
+            "architecture": platform.machine().lower(),
             "notes": current_release_notes(),
         }
         if not compact:
@@ -702,6 +704,11 @@ class LanDiscovery(QObject):
                 raise ValueError("安装包缺少版本信息。")
             if version_tuple(package_version) <= version_tuple(APP_VERSION):
                 raise ValueError(f"不能下载 v{package_version} 安装包；本机已经是 v{APP_VERSION}。")
+            package_arch = str(metadata.get("architecture") or "").lower()
+            local_arch = platform.machine().lower()
+            if sys.platform == "darwin" and package_arch not in {local_arch, "universal2"}:
+                package_label = package_arch or "未知架构"
+                raise ValueError(f"安装包架构 {package_label} 与本机 {local_arch} 不兼容。")
             package_size = struct.unpack("!Q", self._recv_exact(client, 8))[0]
             if package_size <= 0 or package_size > 500 * 1024 * 1024:
                 raise ValueError("安装包大小异常。")

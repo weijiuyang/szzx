@@ -4,11 +4,35 @@
 
 ## 钉钉需求搜集机器人
 
-中央数据服务可同时通过钉钉 Stream 接收群需求。复制 `.env.example` 为 `.env`，填写
-`DINGTALK_CLIENT_ID` 和 `DINGTALK_CLIENT_SECRET`，然后按原方式启动中央数据服务。
+中央数据服务可同时通过钉钉 Stream 接收群需求。两套钉钉应用凭证统一保存在服务器数据库
+旁边的 `dingtalk_config.json`。首次启动服务器会自动生成空白配置，也可以复制
+`dingtalk_config.example.json` 后填写。
 群消息需要包含“需求提出人、期望上线时间、需求描述”，并同时 @实际承接人 和
 @需求搜集机器人。承接人需在桌面端“账户设置”中填写自己的钉钉号；需求同步后会出现在
 “我的面板 → 需求对接”，可先指定项目，再转为个人代办、指定代办或项目代办。
+
+## 钉钉日报发送机器人
+
+中央数据服务可以运行第二个企业机器人，主动发送昨天所有项目的全员日报。配置文件格式如下：
+
+```json
+{
+  "requirement_bot": {
+    "app_key": "需求机器人的 AppKey",
+    "app_secret": "需求机器人的 AppSecret",
+    "bot_name": "需求搜集机器人"
+  },
+  "daily_report_bot": {
+    "app_key": "日报机器人的 AppKey",
+    "app_secret": "日报机器人的 AppSecret",
+    "robot_code": ""
+  }
+}
+```
+
+`robot_code` 通常可以留空，此时使用日报机器人的 AppKey。启动服务器并把机器人加入
+目标群后，在群里 @机器人发送“绑定日报群”。绑定成功后，桌面端“我的面板”里的
+“发送昨天到钉钉群”会请求中央服务器读取权威数据并发送，不在客户端保存应用密钥。
 
 Current shape:
 
@@ -111,11 +135,24 @@ macOS:
 ./scripts/build_macos.sh
 ```
 
+The script builds for the current Mac by default: `arm64` on Apple Silicon and
+`x86_64` on Intel. To select an architecture explicitly, run for example:
+
+```bash
+MACOS_TARGET_ARCH=x86_64 ./scripts/build_macos.sh
+```
+
+Build the Intel package on an Intel Mac (or with an x86_64 Python environment)
+so Python and all bundled native dependencies have the matching architecture.
+Architecture-specific virtual environments and DMG names make each build explicit.
+
 Output:
 
 ```text
 dist/SZZXLocalDesk.app
 dist/SZZXLocalDesk-mac.dmg
+dist/SZZXLocalDesk-mac-arm64.dmg
+dist/SZZXLocalDesk-mac-x86_64.dmg
 ```
 
 Do not open files under `build/SZZXLocalDesk/` directly. Files such as

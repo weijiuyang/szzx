@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 from datetime import date, datetime
@@ -10,6 +9,7 @@ from typing import Any, Callable
 import requests
 
 from .database import Database, UNKNOWN_REQUIREMENT_RECIPIENT_NAMES
+from .dingtalk_config import bot_credentials
 
 
 LOGGER = logging.getLogger("szzx.dingtalk-requirement")
@@ -57,9 +57,9 @@ def _mentioned_users(message: object) -> list[tuple[str, tuple[str, ...]]]:
         name = str(_value(user, "dingtalk_nick", "dingtalkNick", "staff_name", "staffName", default="")).strip()
         ids: list[str] = []
         for field_names in (
-            ("dingtalk_id", "dingtalkId"),
             ("staff_id", "staffId"),
             ("user_id", "userId"),
+            ("dingtalk_id", "dingtalkId"),
         ):
             user_id = str(_value(user, *field_names, default="")).strip()
             if user_id and user_id not in ids:
@@ -162,13 +162,9 @@ def _dingtalk_user_name(client: object, user_id: str) -> str:
 
 
 def start_requirement_bot(db: Database) -> threading.Thread | None:
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-    client_id = os.environ.get("DINGTALK_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("DINGTALK_CLIENT_SECRET", "").strip()
+    credentials = bot_credentials(db, "requirement_bot")
+    client_id = credentials["app_key"]
+    client_secret = credentials["app_secret"]
     if not client_id or not client_secret:
         LOGGER.info("未配置钉钉机器人，跳过需求 Stream")
         return None
@@ -180,7 +176,7 @@ def start_requirement_bot(db: Database) -> threading.Thread | None:
             LOGGER.exception("缺少 dingtalk-stream 依赖")
             return
 
-        bot_name = os.environ.get("DINGTALK_BOT_NAME", "需求搜集机器人").strip()
+        bot_name = credentials["bot_name"]
 
         class Handler(dingtalk_stream.ChatbotHandler):
             async def process(self, callback: object):
@@ -188,6 +184,11 @@ def start_requirement_bot(db: Database) -> threading.Thread | None:
                     message = dingtalk_stream.ChatbotMessage.from_dict(_value(callback, "data", default={}))
                     text_obj = _value(message, "text", default=None)
                     text = str(_value(text_obj, "content", default="")).strip()
+                    sender_name = str(_value(message, "sender_nick", "senderNick", default="")).strip()
+                    sender_staff_id = str(
+                        _value(message, "sender_staff_id", "senderStaffId", default="")
+                    ).strip()
+                    db.remember_dingtalk_staff_id(sender_name, sender_staff_id)
                     LOGGER.info(
                         "收到钉钉群消息 message_id=%s at_users=%d text=%r",
                         _value(message, "message_id", "msg_id", "msgId"),
@@ -205,11 +206,12 @@ def start_requirement_bot(db: Database) -> threading.Thread | None:
                     if parsed is None:
                         self.reply_text("需求格式不完整，请填写需求提出人、期望上线时间和需求描述。", message)
                     elif recipient is None:
-                        self.reply_text("没有识别到实际承接人，请同时 @承接人 和 @需求搜集机器人。", message)
+                        self.reply_text("没有识别到需求处理人，请同时 @需求处理人 和 @需求收集机器人。", message)
                     else:
                         recipient_name, recipient_id = recipient
                         if recipient_id:
                             db.set_requirement_recipient_alias(recipient_id, recipient_name)
+                            db.remember_dingtalk_staff_id(recipient_name, recipient_id)
                         # 需求方是发送这条群消息的人；@ 到的人只是承接人。
                         requester = str(_value(message, "sender_nick", "senderNick", default="")).strip()
                         if not requester:

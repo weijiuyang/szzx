@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -37,6 +38,14 @@ class DataServiceAuthTests(unittest.TestCase):
         self.service.login("Alice", "long-enough-password")
         with self.assertRaises(PermissionError):
             self.service.login("Alice", "not-the-password")
+
+    def test_active_session_is_renewed_when_authenticated(self):
+        result = self.service.login("Alice", "long-enough-password")
+        token = result["token"]
+        self.service._sessions[token] = ("alice", time.time() + 1)
+
+        self.assertEqual(self.service.authenticate(token), "Alice")
+        self.assertGreater(self.service._sessions[token][1], time.time() + 11 * 60 * 60)
 
     def test_change_password_requires_current_password(self):
         result = self.service.login("Alice", "long-enough-password")

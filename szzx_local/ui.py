@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import ipaddress
 import json
+import platform
 import subprocess
 import sys
 import zipfile
@@ -870,14 +871,23 @@ class LoginDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, db: Database, peers: list[LanPeer] | None = None, central_sync: object | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        peers: list[LanPeer] | None = None,
+        central_sync: object | None = None,
+        require_dingtalk_id: bool = False,
+    ) -> None:
         super().__init__()
         self.db = db
         self.peers = peers or []
         self.central_sync = central_sync
+        self.require_dingtalk_id = require_dingtalk_id
         self.setObjectName("accountSettings")
         self.setWindowTitle("账户设置")
         self.setFixedWidth(520)
+        if self.require_dingtalk_id:
+            self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
         self.setStyleSheet(APP_STYLE + """
 QDialog#accountSettings { background: #f3f5f1; }
 QDialog#accountSettings QWidget#settingsCard {
@@ -910,7 +920,12 @@ QDialog#accountSettings QPushButton#settingsCancel {
         header = QVBoxLayout()
         header.setSpacing(5)
         header.addWidget(_label("账户设置", "sectionTitle"))
-        header.addWidget(_label("管理登录信息与个人联系方式", "muted"))
+        header.addWidget(_label(
+            "首次使用必须填写钉钉号，填写后才能进入系统。"
+            if self.require_dingtalk_id
+            else "管理登录信息与个人联系方式",
+            "muted",
+        ))
         layout.addLayout(header)
 
         def field_label(text: str) -> QLabel:
@@ -971,6 +986,10 @@ QDialog#accountSettings QPushButton#settingsCancel {
         self.dingtalk_id.setPlaceholderText("自己的钉钉号，用于点击姓名发起聊天")
         profile_layout.addWidget(field_label("钉钉号"))
         profile_layout.addWidget(self.dingtalk_id)
+        if self.require_dingtalk_id:
+            required_hint = _label("必填 · 请填写钉钉个人主页中显示的「钉钉号」。", "muted")
+            required_hint.setWordWrap(True)
+            profile_layout.addWidget(required_hint)
         layout.addWidget(profile_card)
 
         self.autostart = QCheckBox("开机自动启动")
@@ -992,6 +1011,7 @@ QDialog#accountSettings QPushButton#settingsCancel {
         cancel = QPushButton("取消")
         cancel.setObjectName("settingsCancel")
         cancel.clicked.connect(self.reject)
+        cancel.setVisible(not self.require_dingtalk_id)
         actions = QHBoxLayout()
         actions.setSpacing(10)
         actions.addStretch()
@@ -1003,6 +1023,11 @@ QDialog#accountSettings QPushButton#settingsCancel {
         name = self.display_name.text().strip()
         if not name:
             QMessageBox.warning(self, "账户为空", "账户名不能为空。")
+            return
+        dingtalk_id = self.dingtalk_id.text().strip()
+        if not dingtalk_id:
+            QMessageBox.warning(self, "必须填写钉钉号", "请先填写自己的钉钉号，保存后才能使用系统。")
+            self.dingtalk_id.setFocus()
             return
         password = self.new_password.text()
         account_changed = name != self.db.display_name() or bool(password)
@@ -1027,7 +1052,7 @@ QDialog#accountSettings QPushButton#settingsCancel {
             except (URLError, OSError, ValueError) as exc:
                 QMessageBox.warning(self, "修改失败", str(exc))
                 return
-        self.db.set_dingtalk_id(self.dingtalk_id.text().strip(), save=False)
+        self.db.set_dingtalk_id(dingtalk_id, save=False)
         self.db.set_setting("autostart_enabled", "true" if self.autostart.isChecked() else "false", save=False)
         try:
             set_autostart(self.autostart.isChecked())
@@ -1038,6 +1063,19 @@ QDialog#accountSettings QPushButton#settingsCancel {
             return
         self.db.save_local_settings()
         self.accept()
+
+    def reject(self) -> None:
+        if self.require_dingtalk_id and not self.db.dingtalk_id().strip():
+            self.dingtalk_id.setFocus()
+            return
+        super().reject()
+
+    def closeEvent(self, event: object) -> None:  # type: ignore[override]
+        if self.require_dingtalk_id and not self.db.dingtalk_id().strip():
+            event.ignore()  # type: ignore[attr-defined]
+            self.dingtalk_id.setFocus()
+            return
+        super().closeEvent(event)  # type: ignore[arg-type]
 
 class PetDialog(QDialog):
     def __init__(self, db: Database, pet: DesktopPet) -> None:
@@ -1109,8 +1147,9 @@ class PetDialog(QDialog):
 
 
 class VersionDialog(QDialog):
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, main_window: MainWindow) -> None:
+        super().__init__(main_window)
+        self.main_window = main_window
         self.setWindowTitle("版本")
         self.setFixedWidth(470)
         self.setStyleSheet(APP_STYLE)
@@ -1122,8 +1161,35 @@ class VersionDialog(QDialog):
         layout.addWidget(_label("数智中心", "appTitle"))
         layout.addWidget(_label(f"当前版本：v{APP_VERSION}", "muted"))
         layout.addWidget(_label(f"本版更新：{current_release_notes()}", "muted"))
-        layout.addWidget(_label("更新方式：本地 / 局域网", "muted"))
-        layout.addWidget(_label("打开「局域网」面板，可以从同系统、高版本同事电脑下载安装包。", "muted"))
+
+        update_title = _label("检查更新", "eyebrow")
+        layout.addWidget(update_title)
+        discovery = main_window.discovery
+        peers = (
+            [peer for peer in discovery.sorted_peers() if main_window._peer_has_lan_update(peer)]
+            if discovery is not None
+            else []
+        )
+        if peers:
+            peer = max(peers, key=lambda item: version_tuple(main_window._peer_update_package_version(item)))
+            package_version = main_window._peer_update_package_version(peer)
+            layout.addWidget(_label(
+                f"局域网发现 v{package_version}，来自 {peer.name}（同操作系统）。",
+                "muted",
+            ))
+            download = QPushButton("下载并安装 v" + package_version)
+            download.setObjectName("primaryButton")
+            download.clicked.connect(lambda checked=False, selected=peer: self._download_and_install(selected))
+            layout.addWidget(download)
+        else:
+            layout.addWidget(_label(
+                "当前局域网暂未发现同操作系统的更新版本；有任意一位同事更新后，这里会自动提供下载安装。",
+                "muted",
+            ))
+            refresh = QPushButton("重新检查局域网")
+            refresh.clicked.connect(self._refresh_lan_updates)
+            layout.addWidget(refresh)
+
         history_title = _label("全部历史记录", "eyebrow")
         history = QTextEdit()
         history.setReadOnly(True)
@@ -1131,6 +1197,17 @@ class VersionDialog(QDialog):
         history.setPlainText(changelog_text())
         layout.addWidget(history_title)
         layout.addWidget(history)
+
+    def _download_and_install(self, peer: LanPeer) -> None:
+        self.accept()
+        self.main_window._download_lan_update(peer)
+
+    def _refresh_lan_updates(self) -> None:
+        discovery = self.main_window.discovery
+        if discovery is not None:
+            discovery.announce_burst()
+        self.accept()
+        QTimer.singleShot(1200, self.main_window._open_version)
 
 
 class BadgeDialog(QDialog):
@@ -1334,7 +1411,7 @@ class ProjectActionConfirmDialog(QDialog):
             "开始": "项目将恢复推进，成员可以继续按当前计划开展工作。",
             "暂停": "项目资料会完整保留，之后可以随时重新开始。",
             "完成": "项目将标记为已完成，之后仍可重新开始。",
-            "删除": "项目资料和历史记录会继续保留，仅将状态标记为已删除。",
+            "删除": "删除后软件将不再展示这个项目；项目资料和历史记录由服务器保留。",
         }
         description = _label(descriptions.get(action, "确认更新这个项目的状态。"), "muted")
         description.setWordWrap(True)
@@ -2492,6 +2569,7 @@ class MainWindow(QMainWindow):
         self._metric_labels: dict[str, QLabel] = {}
         self._update_worker: UpdateCheckWorker | None = None
         self._weekly_ai_worker: WeeklyAIWorker | None = None
+        self._weekly_ai_retry_after_login = False
         self._notified_update_version: str | None = None
         self._last_daily_reminder_date: date | None = None
         self._last_lan_update_reminder_at: datetime | None = None
@@ -2914,6 +2992,12 @@ class MainWindow(QMainWindow):
         export_week = QPushButton("导出近一周")
         export_week.clicked.connect(self._export_owned_projects_recent_week)
         header.addWidget(export_week, 0, Qt.AlignmentFlag.AlignTop)
+        export_yesterday = QPushButton("导出昨天日报")
+        export_yesterday.clicked.connect(self._export_yesterday_daily_reports)
+        header.addWidget(export_yesterday, 0, Qt.AlignmentFlag.AlignTop)
+        send_yesterday = QPushButton("发送昨天到钉钉群")
+        send_yesterday.clicked.connect(self._send_yesterday_daily_reports_to_dingtalk)
+        header.addWidget(send_yesterday, 0, Qt.AlignmentFlag.AlignTop)
         outer.addLayout(header)
 
         projects_panel = _panel()
@@ -3727,7 +3811,10 @@ class MainWindow(QMainWindow):
             return
         total = len(self.db.list_projects())
         visible = len(self._visible_projects())
-        scope = "全部" if getattr(self, "project_scope_value", "mine") == "all" else "自己"
+        scope = {
+            "mine": "自己",
+            "all": "全部",
+        }.get(getattr(self, "project_scope_value", "mine"), "自己")
         source = "服务器数据" if getattr(self, "central_sync", None) is not None else "本机已同步"
         base = f"{scope}视角：显示 {visible} / {source} {total} 个项目。"
         self.project_sync_hint.setText(f"{message} · {base}" if message else base)
@@ -3753,7 +3840,8 @@ class MainWindow(QMainWindow):
 
     def _visible_projects(self) -> list[Project]:
         projects = self.db.list_projects()
-        if getattr(self, "project_scope_value", "mine") != "all":
+        scope = getattr(self, "project_scope_value", "mine")
+        if scope == "mine":
             projects = [project for project in projects if self._project_involves_current_user(project)]
         keyword = getattr(self, "project_search_keyword", "").strip().casefold()
         if keyword:
@@ -4841,7 +4929,7 @@ class MainWindow(QMainWindow):
             button.style().polish(button)
 
     def _select_project_scope(self, scope: str) -> None:
-        self.project_scope_value = scope
+        self.project_scope_value = scope if scope in {"mine", "all"} else "mine"
         self._select_project_mode(0)
         self._load_projects()
 
@@ -5536,7 +5624,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "config_project_notes_label"):
             self.config_project_notes_label.setVisible(can_view_project_notes)
         self.save_project_description_button.setEnabled(is_manager)
-        project_deleted = project.status == "已删除"
         self.start_project_button.setEnabled(is_manager)
         self.pause_project_button.setEnabled(is_manager)
         self.complete_project_button.setEnabled(is_manager)
@@ -5544,7 +5631,7 @@ class MainWindow(QMainWindow):
         self.start_project_button.setVisible(project.status in {"已暂停", "已完成"})
         self.pause_project_button.setVisible(project.status == "推进中")
         self.complete_project_button.setVisible(project.status in {"推进中", "已暂停"})
-        self.delete_project_button.setVisible(not project_deleted)
+        self.delete_project_button.setVisible(True)
         self.weekly_form.setVisible(is_manager or can_upload_project_document)
         self.weekly_form_title.setText("负责人周报 / 文档" if is_manager else "项目文档")
         self.project_weekly_editor.setEnabled(is_manager)
@@ -5696,7 +5783,8 @@ class MainWindow(QMainWindow):
             self.project_development_group_button.setVisible(False)
         if hasattr(self, "project_coordination_group_button"):
             self.project_coordination_group_button.setVisible(False)
-        if getattr(self, "project_scope_value", "mine") == "mine":
+        scope = getattr(self, "project_scope_value", "mine")
+        if scope == "mine":
             self.project_description.setText("当前没有你参与的项目。可以创建项目，或切到“全部项目”查看团队项目。")
         else:
             self.project_description.setText("创建项目后，可以继续维护成员、日报、周报和项目文档。")
@@ -5731,7 +5819,9 @@ class MainWindow(QMainWindow):
         self._add_todo_card(None, "选择项目后，这里会显示代办。", False)
         self.product_feed.clear()
         self.developer_feed.clear()
-        empty_text = "当前没有你参与的项目。" if getattr(self, "project_scope_value", "mine") == "mine" else "还没有项目。"
+        empty_text = {
+            "mine": "当前没有你参与的项目。",
+        }.get(scope, "还没有项目。")
         self._add_feed_card(self.product_feed, "", "项目", empty_text)
         self._add_feed_card(self.developer_feed, "", "日报", "还没有项目日报。")
         self.member_name.setEnabled(False)
@@ -7181,14 +7271,26 @@ class MainWindow(QMainWindow):
     def _export_recent_week_daily_reports(self) -> None:
         end_day = date.today()
         start_day = end_day - timedelta(days=6)
+        self._export_daily_reports(start_day, end_day, "最近一周")
+
+    def _export_yesterday_daily_reports(self) -> None:
+        yesterday = date.today() - timedelta(days=1)
+        self._export_daily_reports(yesterday, yesterday, "昨天")
+
+    def _export_daily_reports(self, start_day: date, end_day: date, period_label: str) -> None:
         reports = self.db.daily_reports_between(start_day, end_day, mine_only=False)
+        reports = [
+            report for report in reports
+            if not self.db.is_departed_colleague(str(report.get("member_name", "")))
+        ]
         if not reports:
-            QMessageBox.information(self, "没有日报", "最近一周本机还没有同步到任何项目日报。")
+            QMessageBox.information(self, "没有日报", f"{period_label}本机还没有同步到任何项目日报。")
             return
-        default_name = str(Path.home() / "Downloads" / f"全员日报-{start_day:%Y%m%d}-{end_day:%Y%m%d}.pdf")
+        date_part = f"{start_day:%Y%m%d}" if start_day == end_day else f"{start_day:%Y%m%d}-{end_day:%Y%m%d}"
+        default_name = str(Path.home() / "Downloads" / f"全员日报-{date_part}.pdf")
         target, selected_filter = QFileDialog.getSaveFileName(
             self,
-            "导出最近一周全员日报",
+            f"导出{period_label}全员日报",
             default_name,
             "PDF 文件 (*.pdf);;Word 文档 (*.docx)",
         )
@@ -7211,7 +7313,32 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "导出完成", f"已导出：\n{target_path}")
 
     def _daily_export_title(self, start_day: date, end_day: date) -> str:
+        if start_day == end_day:
+            return f"全员项目日报（{start_day:%Y-%m-%d}）"
         return f"最近一周全员日报（{start_day:%Y-%m-%d} 至 {end_day:%Y-%m-%d}）"
+
+    def _send_yesterday_daily_reports_to_dingtalk(self) -> None:
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is None:
+            QMessageBox.warning(self, "服务器未连接", "连接数智中心服务器后才能发送钉钉群日报。")
+            return
+        try:
+            result = central_sync.send_yesterday_daily_reports()
+        except (HTTPError, URLError, OSError, ValueError) as exc:
+            message = str(exc)
+            if isinstance(exc, HTTPError):
+                try:
+                    detail = json.loads(exc.read().decode("utf-8"))
+                    message = str(detail.get("message", detail.get("error", message)))
+                except (OSError, ValueError, TypeError):
+                    pass
+            QMessageBox.warning(self, "发送失败", message)
+            return
+        QMessageBox.information(
+            self,
+            "发送完成",
+            f"服务器已将昨天 {int(result.get('report_count', 0))} 篇项目日报发送到钉钉群。",
+        )
 
     def _daily_reports_grouped_by_day(self, reports: list[dict[str, object]]) -> dict[date, list[dict[str, object]]]:
         grouped: dict[date, list[dict[str, object]]] = {}
@@ -7447,8 +7574,11 @@ class MainWindow(QMainWindow):
         self.lan_logs_button = QPushButton("日志视角")
         self.lan_logs_button.setCheckable(True)
         self.lan_logs_button.clicked.connect(lambda: self._set_lan_view("logs"))
+        colleague_list = QPushButton("同事列表")
+        colleague_list.clicked.connect(self._open_colleague_list)
         header.addWidget(self.lan_peers_button)
         header.addWidget(self.lan_logs_button)
+        header.addWidget(colleague_list)
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self._manual_lan_refresh)
         header.addWidget(refresh)
@@ -7792,10 +7922,20 @@ class MainWindow(QMainWindow):
         self.weekly_ai_button.setEnabled(True)
         self.weekly_save_button.setEnabled(True)
         self.weekly_ai_button.setText("AI 整理")
+        normalized = message.casefold()
+        if "401" in normalized or "authentication required" in normalized:
+            login = LoginDialog(self.db, self.central_sync)
+            login.setWindowTitle("登录已过期")
+            if login.exec() == QDialog.DialogCode.Accepted:
+                self._weekly_ai_retry_after_login = True
+            return
         QMessageBox.warning(self, "AI 整理失败", f"服务器没有完成整理：{message}")
 
     def _weekly_ai_finished(self) -> None:
         self._weekly_ai_worker = None
+        if self._weekly_ai_retry_after_login:
+            self._weekly_ai_retry_after_login = False
+            QTimer.singleShot(0, self._summarize_weekly_with_server)
 
     def _save_weekly_report(self) -> None:
         content = self.editor.toPlainText().strip()
@@ -7912,7 +8052,7 @@ class MainWindow(QMainWindow):
         self._announce_presence()
 
     def _open_version(self) -> None:
-        dialog = VersionDialog()
+        dialog = VersionDialog(self)
         dialog.exec()
 
     def _refresh_identity(self) -> None:
@@ -8021,6 +8161,98 @@ class MainWindow(QMainWindow):
             button.style().unpolish(button)
             button.style().polish(button)
         self._refresh_peers(self.current_lan_peers)
+
+    def _open_colleague_list(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("同事列表")
+        dialog.resize(760, 680)
+        outer = QVBoxLayout(dialog)
+        outer.setContentsMargins(24, 22, 24, 20)
+        outer.setSpacing(14)
+        outer.addWidget(_label("同事列表", "sectionTitle"))
+        can_manage = self.db.can_manage_colleague_statuses()
+        outer.addWidget(_label(
+            "尉久洋可以标记离职状态；已离职同事不会出现在昨天日报导出和钉钉群日报中。"
+            if can_manage else
+            "离职状态由尉久洋维护；已离职同事不会出现在昨天日报导出和钉钉群日报中。",
+            "muted",
+        ))
+        colleague_list = QListWidget()
+        colleague_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(colleague_list, 1)
+
+        peer_names = [peer.name for peer in self.current_lan_peers if peer.name.strip()]
+
+        def is_readable_colleague_name(name: str) -> bool:
+            value = " ".join(name.strip().split())
+            if len(value) < 2 or value.isdigit():
+                return False
+            # 系统自动生成的“用户名@电脑名”不是实际同事姓名。
+            return "@" not in value
+
+        def refresh() -> None:
+            colleague_list.clear()
+            names = [
+                name for name in self.db.colleague_names()
+                if is_readable_colleague_name(name) or self.db.is_departed_colleague(name)
+            ]
+            known = {" ".join(name.strip().split()).casefold() for name in names}
+            for name in peer_names:
+                normalized = " ".join(name.strip().split()).casefold()
+                if normalized and normalized not in known and is_readable_colleague_name(name):
+                    names.append(name.strip())
+                    known.add(normalized)
+            names.sort(key=lambda value: " ".join(value.strip().split()).casefold())
+            for name in names:
+                departed = self.db.is_departed_colleague(name)
+                item = QListWidgetItem()
+                item.setSizeHint(QSize(0, 82))
+                card = QWidget()
+                card.setObjectName("feedCard")
+                row = QHBoxLayout(card)
+                row.setContentsMargins(18, 12, 18, 12)
+                row.setSpacing(16)
+                name_label = _label(name, "cardTitle")
+                name_label.setMinimumHeight(44)
+                name_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                row.addWidget(name_label, 1)
+                row.addStretch()
+                status_label = _label("已离职" if departed else "在职", "muted")
+                status_label.setMinimumWidth(72)
+                status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                row.addWidget(status_label)
+                if can_manage and not self.db.is_current_user_name(name):
+                    action = QPushButton("恢复在职" if departed else "标记离职")
+                    action.setMinimumSize(118, 46)
+
+                    def toggle(checked: bool = False, colleague: str = name, next_departed: bool = not departed) -> None:
+                        if not self.db.set_colleague_departed(colleague, next_departed):
+                            QMessageBox.warning(dialog, "操作失败", "只有尉久洋可以修改同事状态。")
+                            return
+                        central_sync = getattr(self, "central_sync", None)
+                        if central_sync is not None:
+                            central_sync.mark_local_dirty()
+                            central_sync.sync_now(push_first=True)
+                        refresh()
+
+                    action.clicked.connect(toggle)
+                    row.addWidget(action)
+                colleague_list.addItem(item)
+                colleague_list.setItemWidget(item, card)
+            if not names:
+                item = QListWidgetItem("暂时还没有同事记录。")
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+                colleague_list.addItem(item)
+
+        refresh()
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        if close_button is not None:
+            close_button.setText("关闭")
+            close_button.setMinimumSize(100, 46)
+        buttons.rejected.connect(dialog.reject)
+        outer.addWidget(buttons)
+        dialog.exec()
 
     def _refresh_peers(self, peers: list[LanPeer]) -> None:
         if not hasattr(self, "peer_list"):
@@ -8310,12 +8542,18 @@ class MainWindow(QMainWindow):
             package_size = int(package.get("size", 0) or 0) if isinstance(package, dict) else 0
         except (TypeError, ValueError):
             package_size = 0
+        package_arch = str(package.get("architecture") or "").lower() if isinstance(package, dict) else ""
+        architecture_matches = (
+            sys.platform != "darwin"
+            or package_arch in {platform.machine().lower(), "universal2"}
+        )
         return (
             peer.platform == sys.platform
             and isinstance(package, dict)
             and bool(package)
             and package_size > 0
             and bool(self._peer_update_package_version(peer))
+            and architecture_matches
         )
 
     def _peer_update_package_version(self, peer: LanPeer) -> str:

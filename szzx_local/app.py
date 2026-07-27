@@ -16,7 +16,7 @@ from .database import Database
 from .lan import LanDiscovery
 from .pet import DesktopPet
 from .single_instance import SingleInstanceController
-from .ui import LoginDialog, MainWindow
+from .ui import LoginDialog, MainWindow, SettingsDialog
 from .version import APP_NAME, APP_VERSION
 
 
@@ -112,6 +112,14 @@ def main() -> int:
     if login.exec() != LoginDialog.DialogCode.Accepted:
         db.close()
         return 0
+
+    if not db.dingtalk_id().strip():
+        required_profile = SettingsDialog(
+            db,
+            central_sync=central_sync,
+            require_dingtalk_id=True,
+        )
+        required_profile.exec()
 
     if db.get_setting("autostart_enabled") != "false":
         set_autostart(True)

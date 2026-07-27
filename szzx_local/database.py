@@ -128,12 +128,14 @@ SHARED_TABLES = (
     "rest_days",
     "activity_events",
     "name_claims",
+    "colleague_statuses",
     "deleted_projects",
     "deleted_records",
     "counters",
 )
 ACTIVITY_EVENT_SYNC_DAYS = 0
 PROJECT_NOTES_ADMIN_NAMES = {"尉久洋"}
+COLLEAGUE_STATUS_ADMIN_NAMES = {"尉久洋"}
 UNKNOWN_REQUIREMENT_RECIPIENT_NAMES = {"待确认承接人", "未识别", "未知承接人"}
 RECORD_TOMBSTONE_TABLES = {
     "project_members",
@@ -219,6 +221,7 @@ class Database:
             "rest_days": [],
             "activity_events": [],
             "name_claims": [],
+            "colleague_statuses": [],
             "deleted_projects": [],
             "deleted_records": [],
             "counters": {},
@@ -546,6 +549,85 @@ class Database:
                 seen.add(normalized)
         return names
 
+    def colleague_names(self) -> list[str]:
+        names = self.known_display_names()
+        seen = {self._normalize_display_name(name) for name in names}
+        for table, field in (
+            ("projects", "owner"),
+            ("project_members", "name"),
+            ("daily_reports", "member_name"),
+            ("weekly_reports", "owner"),
+            ("colleague_statuses", "name"),
+        ):
+            for row in self.data.get(table, []):
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get(field, "")).strip()
+                normalized = self._normalize_display_name(name)
+                if normalized and normalized not in seen:
+                    names.append(name)
+                    seen.add(normalized)
+        return sorted(names, key=self._normalize_display_name)
+
+    def can_manage_colleague_statuses(self) -> bool:
+        admin_names = {self._normalize_display_name(name) for name in COLLEAGUE_STATUS_ADMIN_NAMES}
+        return any(self._normalize_display_name(name) in admin_names for name in self.current_user_names())
+
+    def is_departed_colleague(self, name: str) -> bool:
+        normalized = self._normalize_display_name(name)
+        if not normalized:
+            return False
+        latest: dict[str, Any] | None = None
+        for row in self.data.get("colleague_statuses", []):
+            if not isinstance(row, dict):
+                continue
+            if self._normalize_display_name(str(row.get("name", ""))) != normalized:
+                continue
+            if latest is None or str(row.get("updated_at", "")) > str(latest.get("updated_at", "")):
+                latest = row
+        return latest is not None and str(latest.get("status", "")).strip() == "departed"
+
+    def departed_colleague_names(self) -> list[str]:
+        return [name for name in self.colleague_names() if self.is_departed_colleague(name)]
+
+    def set_colleague_departed(self, name: str, departed: bool) -> bool:
+        if not self.can_manage_colleague_statuses():
+            return False
+        display_name = " ".join(name.strip().split())
+        normalized = self._normalize_display_name(display_name)
+        if not normalized:
+            return False
+        rows = self.data.setdefault("colleague_statuses", [])
+        row = next(
+            (
+                item
+                for item in rows
+                if isinstance(item, dict)
+                and self._normalize_display_name(str(item.get("name", ""))) == normalized
+                and str(item.get("operator_device_id", "")) == self.device_id()
+            ),
+            None,
+        )
+        now = datetime.now().isoformat(timespec="microseconds")
+        if row is None:
+            row = self._with_operator({
+                "id": self._next_id("colleague_statuses", datetime.now()),
+                "name": display_name,
+                "normalized_name": normalized,
+                "status": "departed" if departed else "active",
+                "updated_at": now,
+            })
+            rows.append(row)
+        else:
+            row.update({
+                "name": display_name,
+                "normalized_name": normalized,
+                "status": "departed" if departed else "active",
+                "updated_at": now,
+            })
+        self._save()
+        return True
+
     def pet_kind(self) -> str:
         return self.get_setting("pet_kind") or "penguin"
 
@@ -863,8 +945,10 @@ class Database:
         self._save()
         return self._project_from_row(row)
 
-    def list_projects(self) -> list[Project]:
+    def list_projects(self, *, include_deleted: bool = False) -> list[Project]:
         rows = sorted(self.data["projects"], key=lambda row: int(row["id"]), reverse=True)
+        if not include_deleted:
+            rows = [row for row in rows if str(row.get("status", "")).strip() != "已删除"]
         return [self._project_from_row(row) for row in rows]
 
     def get_project(self, project_id: int) -> Project | None:
@@ -1274,6 +1358,47 @@ class Database:
             if dingtalk_id:
                 return dingtalk_id
         return ""
+
+    def dingtalk_staff_id_for_name(self, name: str) -> str:
+        """Return an employee userId observed by the robot, suitable for group @."""
+        target = self._normalize_display_name(name)
+        if not target:
+            return ""
+        try:
+            observed_ids = json.loads(self.get_setting("dingtalk_staff_ids") or "{}")
+        except json.JSONDecodeError:
+            observed_ids = {}
+        if isinstance(observed_ids, dict):
+            staff_id = str(observed_ids.get(target, "")).strip()
+            if staff_id:
+                return staff_id
+        # The manually entered DingTalk ID is used to open a personal chat and
+        # is not necessarily the enterprise employee userId required by @.
+        for row in reversed(self.data.get("requirements", [])):
+            if not isinstance(row, dict):
+                continue
+            if self._normalize_display_name(str(row.get("recipient_name", ""))) != target:
+                continue
+            staff_id = str(row.get("recipient_dingtalk_id", "")).strip()
+            if staff_id and not staff_id.startswith("$:"):
+                return staff_id
+        return ""
+
+    def remember_dingtalk_staff_id(self, name: str, staff_id: str) -> None:
+        normalized_name = self._normalize_display_name(name)
+        normalized_id = staff_id.strip()
+        if not normalized_name or not normalized_id or normalized_id.startswith("$:"):
+            return
+        try:
+            observed_ids = json.loads(self.get_setting("dingtalk_staff_ids") or "{}")
+        except json.JSONDecodeError:
+            observed_ids = {}
+        if not isinstance(observed_ids, dict):
+            observed_ids = {}
+        if str(observed_ids.get(normalized_name, "")).strip() == normalized_id:
+            return
+        observed_ids[normalized_name] = normalized_id
+        self.set_setting("dingtalk_staff_ids", json.dumps(observed_ids, ensure_ascii=False))
 
     def name_for_dingtalk_id(self, dingtalk_id: str) -> str:
         target = dingtalk_id.strip().casefold()
@@ -3190,6 +3315,8 @@ class Database:
             if table not in tables:
                 if table in ("name_claims", "project_todos"):
                     tables[table] = []
+                elif table == "colleague_statuses":
+                    tables[table] = list(self.data.get(table, []))
                 elif table in ("deleted_projects", "deleted_records"):
                     tables[table] = list(self.data.get(table, []))
                 else:
@@ -3679,6 +3806,11 @@ class Database:
         return changed
 
     def _merge_existing_shared_row(self, table: str, existing: dict[str, Any], remote: dict[str, Any]) -> bool:
+        if table == "colleague_statuses":
+            if str(remote.get("updated_at", "")) <= str(existing.get("updated_at", "")):
+                return False
+            existing.update(remote)
+            return True
         if table == "requirements":
             remote_updated = str(remote.get("updated_at") or remote.get("created_at") or "")
             existing_updated = str(existing.get("updated_at") or existing.get("created_at") or "")

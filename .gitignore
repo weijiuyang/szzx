@@ -1,6 +1,9 @@
 .DS_Store
 .venv/
 .venv-old/
+.venv-macos-*/
+.env.server.local
+dingtalk_config.json
 __pycache__/
 .pycache-check/
 *.pyc

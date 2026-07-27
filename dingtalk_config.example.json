@@ -1,0 +1,12 @@
+{
+  "requirement_bot": {
+    "app_key": "dingg6agthmjs4zs6ehg",
+    "app_secret": "QynvMoHYsHsJfQr9LZM99IRqiVBP68W9aNTuxZWg_sVjR-2kVMQYiTO8DUdZ66Zx",
+    "bot_name": "需求搜集机器人"
+  },
+  "daily_report_bot": {
+    "app_key": "dingxmu1gj49txmmphhb",
+    "app_secret": "clIGXgE1vduIOrx1T2rOOF9UgHjP_-gc7AKIjiREpW8GzesDS8oXJV8umolrHmHL",
+    "robot_code": ""
+  }
+}

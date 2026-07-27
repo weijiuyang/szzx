@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from urllib.error import HTTPError, URLError
@@ -51,7 +52,8 @@ class CentralDataSync(QObject):
         self._pending = False
         self._pending_push = False
         self._server_ready = False
-        self._local_dirty = False
+        self._pending_sync_path = self._resolve_pending_sync_path()
+        self._local_dirty = self._pending_sync_exists()
         self._active_mode = "pull"
         self._bootstrap_snapshot = bootstrap_snapshot if isinstance(bootstrap_snapshot, dict) else None
         self._bootstrap_files_uploaded = False
@@ -60,9 +62,6 @@ class CentralDataSync(QObject):
         self._sync_failed.connect(self._handle_sync_failed)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.sync_now)
-        self.push_timer = QTimer(self)
-        self.push_timer.setSingleShot(True)
-        self.push_timer.timeout.connect(lambda: self.sync_now(push_first=True))
         self.db.add_after_save_callback(self._after_db_save)
 
     def start(self) -> None:
@@ -133,6 +132,11 @@ class CentralDataSync(QObject):
     def sync_now(self, push_first: bool = False) -> None:
         if not self.server_url:
             return
+        if self._local_dirty and not self._server_ready:
+            # Establish the server baseline first, then immediately upload the
+            # locally preserved changes. This also handles app/server restarts.
+            self._pending = True
+            self._pending_push = True
         if self._busy:
             if push_first:
                 self._local_dirty = True
@@ -148,16 +152,60 @@ class CentralDataSync(QObject):
         thread.start()
 
     def _after_db_save(self, bump_sync: bool) -> None:
-        if not bump_sync or not self._server_ready:
+        if not bump_sync:
             return
-        self._local_dirty = True
-        self.push_timer.start(800)
+        self._push_local_changes_now()
 
     def mark_local_dirty(self) -> None:
-        if not self._server_ready:
-            return
+        self._push_local_changes_now()
+
+    def _push_local_changes_now(self) -> None:
+        """Push a local save immediately, or immediately after server setup/pending I/O."""
         self._local_dirty = True
-        self.push_timer.start(50)
+        self._write_pending_sync_marker()
+        if not self.server_url:
+            return
+        if not self._server_ready:
+            # The first pull establishes the authoritative server baseline.
+            # Queue the push now so it runs as soon as that pull completes.
+            self._pending = True
+            self._pending_push = True
+            self.sync_now()
+            return
+        self.sync_now(push_first=True)
+
+    def _resolve_pending_sync_path(self) -> Path | None:
+        db_path = getattr(self.db, "path", None)
+        if db_path is None:
+            return None
+        try:
+            return Path(db_path).with_name(".pending-server-sync")
+        except TypeError:
+            return None
+
+    def _pending_sync_exists(self) -> bool:
+        return self._pending_sync_path is not None and self._pending_sync_path.exists()
+
+    def _write_pending_sync_marker(self) -> None:
+        path = self._pending_sync_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(str(time.time_ns()), encoding="utf-8")
+        except OSError:
+            # The database itself remains the source of truth; snapshot
+            # comparison on the next successful pull is the fallback.
+            pass
+
+    def _clear_pending_sync_marker(self) -> None:
+        path = self._pending_sync_path
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def list_server_backups(self) -> list[dict[str, Any]]:
         payload = self._admin_request("/backups")
@@ -183,6 +231,13 @@ class CentralDataSync(QObject):
         if not summary:
             raise ValueError("服务器没有返回整理结果")
         return summary
+
+    def send_yesterday_daily_reports(self) -> dict[str, Any]:
+        return self._admin_request(
+            "/dingtalk/daily-reports/send-yesterday",
+            data=b"{}",
+            timeout=45,
+        )
 
     def _admin_request(
         self,
@@ -277,7 +332,13 @@ class CentralDataSync(QObject):
                     self._bootstrap_files_uploaded = True
                     self._pending = True
             if self._active_mode == "push":
-                self._local_dirty = False
+                # A save may have happened while this upload was in flight. In
+                # that case the queued follow-up push still owns the marker.
+                if self._pending_push:
+                    self._local_dirty = True
+                else:
+                    self._local_dirty = False
+                    self._clear_pending_sync_marker()
         self._last_success = time.monotonic()
         if changed:
             self.data_synced.emit()
@@ -289,11 +350,10 @@ class CentralDataSync(QObject):
 
     def _handle_sync_failed(self, message: str) -> None:
         self._busy = False
-        if self._pending:
-            pending_push = self._pending_push
-            self._pending = False
-            self._pending_push = False
-            self.sync_now(push_first=pending_push)
+        # Keep the durable dirty marker and retry on the regular sync tick.
+        # Avoid a tight retry loop while the server is powered off.
+        self._pending = False
+        self._pending_push = False
 
     def _post_bootstrap_files(self, server_snapshot: dict[str, Any]) -> bool:
         bootstrap = self._bootstrap_snapshot
