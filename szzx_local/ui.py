@@ -167,9 +167,14 @@ class AttachmentPreviewStrip(QWidget):
     def __init__(self, editor: ImagePasteLineEdit | ImagePasteTextEdit, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.editor = editor
+        self.setObjectName("attachmentPreviewStrip")
+        self.setStyleSheet(
+            "QWidget#attachmentPreviewStrip { background: #f4f6f1; border: 1px solid #dce3d7; border-radius: 8px; }"
+            "QWidget#attachmentPreviewStrip QLabel, QWidget#attachmentPreviewStrip QPushButton { border: none; background: transparent; }"
+        )
         self.row = QHBoxLayout(self)
-        self.row.setContentsMargins(0, 0, 0, 0)
-        self.row.setSpacing(6)
+        self.row.setContentsMargins(10, 6, 10, 6)
+        self.row.setSpacing(8)
         editor.attachmentsChanged.connect(self.refresh)
         self.refresh()
 
@@ -178,19 +183,28 @@ class AttachmentPreviewStrip(QWidget):
             item = self.row.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
+        count = len(self.editor.attachments)
+        if count:
+            summary = _label(f"已添加 {count} 张", "muted")
+            summary.setFixedWidth(76)
+            self.row.addWidget(summary)
         for value in self.editor.attachments:
             preview = QLabel()
-            preview.setPixmap(_pixmap_from_data_url(value).scaled(54, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            preview.setFixedSize(58, 44)
+            preview.setPixmap(_pixmap_from_data_url(value).scaled(48, 42, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            preview.setFixedSize(50, 44)
             preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.row.addWidget(preview)
         if self.editor.attachments:
-            clear = QPushButton("清空图片")
+            self.row.addStretch()
+            clear = QPushButton("移除")
             clear.setObjectName("smallButton")
+            clear.setFixedWidth(58)
             clear.clicked.connect(self.editor.clear_attachments)
             self.row.addWidget(clear)
-        self.row.addStretch()
-        self.setVisible(bool(self.editor.attachments))
+        visible = bool(self.editor.attachments)
+        self.setFixedHeight(58 if visible else 0)
+        self.setVisible(visible)
+        self.updateGeometry()
 
 
 class ImageViewerDialog(QDialog):
@@ -2082,6 +2096,7 @@ class TodoDetailDialog(QDialog):
         self.todo = todo
         self.reports = sorted(reports, key=lambda report: report.created_at)
         self.report_rows: dict[int, QWidget] = {}
+        self.assignment_row: QWidget | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -2128,31 +2143,28 @@ class TodoDetailDialog(QDialog):
         flow_scroller.setWidget(flow_panel)
         left_layout.addWidget(flow_scroller, 1)
 
-        if todo.attachments:
-            left_layout.addWidget(_label("指派时图片", "eyebrow"))
-            assignment_images = QHBoxLayout()
-            assignment_images.setSpacing(6)
-            for value in todo.attachments:
-                assignment_images.addWidget(_thumbnail(value, 72, 52, self))
-            assignment_images.addStretch()
-            left_layout.addLayout(assignment_images)
-
         columns.addWidget(left_panel, 4)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
-        right_layout.addWidget(_label("全部关联日报", "eyebrow"))
+        right_layout.addWidget(_label("任务记录与关联日报", "eyebrow"))
 
         reports_panel = QWidget()
         reports_layout = QVBoxLayout(reports_panel)
         reports_layout.setContentsMargins(0, 0, 0, 0)
         reports_layout.setSpacing(8)
+        self.assignment_row = self._assignment_record_row(todo)
+        reports_layout.addWidget(self.assignment_row)
         if not reports:
             reports_layout.addWidget(_label("暂无关联日报。", "muted"))
         for report in self.reports:
-            row = self._report_row(report, report.id == highlight_report_id)
+            row = self._report_row(
+                report,
+                report.id == highlight_report_id,
+                self._flow_entry_for_report(report, flow_entries),
+            )
             self.report_rows[report.id] = row
             reports_layout.addWidget(row)
         reports_layout.addStretch()
@@ -2166,6 +2178,30 @@ class TodoDetailDialog(QDialog):
 
         if highlight_report_id is not None and highlight_report_id in self.report_rows:
             QTimer.singleShot(0, lambda: self._focus_reports([highlight_report_id]))
+
+    def _assignment_record_row(self, todo: ProjectTodo) -> QWidget:
+        row = QWidget()
+        row.setObjectName("feedCard")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(12, 10, 12, 10)
+        row_layout.setSpacing(10)
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(4)
+        assigned_by = todo.assigned_by or todo.creator or "未记录"
+        assignee = todo.assignee or todo.current_handler or "未记录"
+        text_layout.addWidget(
+            _label(
+                f"{todo.created_at.strftime('%Y-%m-%d %H:%M')} · 任务指派 · {assigned_by} -> {assignee}",
+                "eyebrow",
+            )
+        )
+        content = _label(todo.title.strip() or "未填写指派内容")
+        content.setWordWrap(True)
+        text_layout.addWidget(content)
+        row_layout.addLayout(text_layout, 1)
+        for value in todo.attachments:
+            row_layout.addWidget(_thumbnail(value, 64, 46, self))
+        return row
 
     def _flow_row(self, entry: dict[str, object], index: int, entries: list[dict[str, object]]) -> QWidget:
         card = QWidget()
@@ -2182,24 +2218,37 @@ class TodoDetailDialog(QDialog):
         button.setToolTip("点击定位到这个阶段的关联日报")
         button.clicked.connect(lambda checked=False, selected=index: self._jump_to_flow_reports(selected, entries))
         card_layout.addWidget(button)
-        note = str(entry.get("note", "")).strip()
-        if note:
-            note_label = _label(f"说明：{note}", "muted")
-            note_label.setWordWrap(True)
-            card_layout.addWidget(note_label)
-        attachments = entry.get("attachments", [])
-        if isinstance(attachments, list):
-            image_row = QHBoxLayout()
-            image_row.setSpacing(5)
-            for value in attachments:
-                if str(value).startswith("data:image/"):
-                    image_row.addWidget(_thumbnail(str(value), 58, 42, self))
-            image_row.addStretch()
-            card_layout.addLayout(image_row)
         return card
+
+    def _flow_entry_for_report(
+        self,
+        report: DailyReport,
+        entries: list[dict[str, object]],
+    ) -> dict[str, object] | None:
+        candidates = [
+            entry for entry in entries
+            if str(entry.get("note", "")).strip() or entry.get("attachments")
+        ]
+        for entry in reversed(candidates):
+            happened_at = self._flow_time(entry)
+            actor = str(entry.get("actor", "")).strip()
+            if happened_at is None or abs((report.created_at - happened_at).total_seconds()) > 1:
+                continue
+            if not actor or actor == report.member_name.strip():
+                return entry
+        normalized_content = report.content.replace(" ", "")
+        for entry in reversed(candidates):
+            action = str(entry.get("action", "")).replace(" ", "").replace("，", "")
+            if action and (action in normalized_content.replace("，", "") or action.split("，", 1)[0] in normalized_content):
+                return entry
+        return None
 
     def _jump_to_flow_reports(self, index: int, entries: list[dict[str, object]]) -> None:
         entry = entries[index]
+        action = str(entry.get("action", ""))
+        if index == 0 or "指派" in action:
+            self._focus_reports([-1])
+            return
         start = self._flow_time(entry)
         end = self._flow_time(entries[index + 1]) if index + 1 < len(entries) else None
         matching = [
@@ -2212,6 +2261,11 @@ class TodoDetailDialog(QDialog):
 
     def _focus_reports(self, report_ids: list[int]) -> None:
         selected = set(report_ids)
+        if self.assignment_row is not None:
+            self.assignment_row.setStyleSheet(
+                "QWidget#feedCard { border: 2px solid #8f2d1f; background: #fff8f4; border-radius: 8px; }"
+                if -1 in selected else ""
+            )
         for report in self.reports:
             row = self.report_rows.get(report.id)
             if row is None:
@@ -2220,7 +2274,9 @@ class TodoDetailDialog(QDialog):
                 "QWidget#feedCard { border: 2px solid #8f2d1f; background: #fff8f4; border-radius: 8px; }"
                 if report.id in selected else ""
             )
-        if report_ids and report_ids[0] in self.report_rows:
+        if report_ids and report_ids[0] == -1 and self.assignment_row is not None:
+            self.reports_scroller.ensureWidgetVisible(self.assignment_row, 0, 12)
+        elif report_ids and report_ids[0] in self.report_rows:
             self.reports_scroller.ensureWidgetVisible(self.report_rows[report_ids[0]], 0, 12)
 
     def _flow_time(self, entry: dict[str, object]) -> datetime | None:
@@ -2244,7 +2300,12 @@ class TodoDetailDialog(QDialog):
             return "产品" in report.role or report.member_name.strip() == self.todo.acceptor.strip()
         return False
 
-    def _report_row(self, report: DailyReport, highlighted: bool) -> QWidget:
+    def _report_row(
+        self,
+        report: DailyReport,
+        highlighted: bool,
+        flow_entry: dict[str, object] | None = None,
+    ) -> QWidget:
         row = QWidget()
         row.setObjectName("feedCard")
         row_layout = QHBoxLayout(row)
@@ -2263,8 +2324,20 @@ class TodoDetailDialog(QDialog):
             content.setStyleSheet("color: #8f2d1f; font-weight: 600;")
         text_layout.addWidget(meta)
         text_layout.addWidget(content)
+        note = str(flow_entry.get("note", "")).strip() if flow_entry is not None else ""
+        if note:
+            note_label = _label(f"环节说明：{note}", "muted")
+            note_label.setWordWrap(True)
+            text_layout.addWidget(note_label)
         row_layout.addLayout(text_layout, 1)
-        for value in report.attachments:
+        display_attachments = list(report.attachments)
+        flow_attachments = flow_entry.get("attachments", []) if flow_entry is not None else []
+        if isinstance(flow_attachments, list):
+            for value in flow_attachments:
+                image = str(value)
+                if image.startswith("data:image/") and image not in display_attachments:
+                    display_attachments.append(image)
+        for value in display_attachments:
             row_layout.addWidget(_thumbnail(value, 64, 46, self))
         return row
 
@@ -3938,16 +4011,14 @@ class MainWindow(QMainWindow):
         daily_layout.setContentsMargins(0, 0, 0, 0)
         daily_layout.setSpacing(8)
         daily_layout.addWidget(_label("日报", "eyebrow"))
-        self.daily_member_label = _label("当前身份：自己", "muted")
         self.daily_todo_link = QComboBox()
         self.daily_todo_link.addItem("不关联代办", 0)
         self.daily_editor = ImagePasteTextEdit()
-        self.daily_editor.setFixedHeight(76)
+        self.daily_editor.setFixedHeight(92)
         self.daily_editor.setPlaceholderText("今天完成了什么、遇到什么阻塞、明天准备做什么。可直接粘贴图片。")
         self.save_daily_button = QPushButton("保存日报")
         self.save_daily_button.setObjectName("primaryButton")
         self.save_daily_button.clicked.connect(self._save_daily_report)
-        daily_layout.addWidget(self.daily_member_label)
         daily_layout.addWidget(self.daily_todo_link)
         daily_layout.addWidget(self.daily_editor)
         self.daily_attachment_preview = AttachmentPreviewStrip(self.daily_editor)
@@ -6021,9 +6092,6 @@ class MainWindow(QMainWindow):
         self.daily_editor.setEnabled(can_write_daily)
         self.save_daily_button.setEnabled(can_write_daily)
         self._refresh_daily_todo_links(project, current_member, is_manager, can_write_daily)
-        self.daily_member_label.setText(
-            f"当前身份：{current_member.name} · {current_member.role}" if current_member is not None else "当前身份：非项目成员"
-        )
         self.member_name.setEnabled(is_manager)
         self.member_role.setEnabled(is_manager)
         self.add_member_button.setEnabled(is_manager)
@@ -6212,7 +6280,6 @@ class MainWindow(QMainWindow):
         self._set_metric(self.metric_weekly, 0)
         self._set_metric(self.metric_decks, 0)
         self._clear_layout(self.member_cards_layout)
-        self.daily_member_label.setText("当前身份：自己")
         self.daily_editor.clear()
         self.daily_editor.setEnabled(False)
         if hasattr(self, "daily_todo_link"):
