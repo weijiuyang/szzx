@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-import ipaddress
+import base64
 import json
 import platform
 import subprocess
@@ -13,8 +13,8 @@ from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from xml.sax.saxutils import escape
 
-from PySide6.QtCore import QProcess, QRect, QStandardPaths, QThread, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextCursor, QTextDocument
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QProcess, QRect, QStandardPaths, QThread, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextCursor, QTextDocument
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
     QApplication,
@@ -87,6 +87,163 @@ class AutoHeightTextEdit(QTextEdit):
         self.document().setTextWidth(max(1, self.viewport().width()))
         content_height = int(self.document().size().height()) + 28
         self.setFixedHeight(max(self._auto_minimum_height, content_height))
+
+
+def _image_data_url(image: QImage) -> str:
+    if image.isNull():
+        return ""
+    if image.width() > 2560 or image.height() > 2560:
+        image = image.scaled(2560, 2560, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    payload = QByteArray()
+    buffer = QBuffer(payload)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "JPEG", 90)
+    return "data:image/jpeg;base64," + bytes(payload.toBase64()).decode("ascii")
+
+
+def _pixmap_from_data_url(value: str) -> QPixmap:
+    pixmap = QPixmap()
+    try:
+        pixmap.loadFromData(base64.b64decode(value.split(",", 1)[1]))
+    except (IndexError, ValueError):
+        pass
+    return pixmap
+
+
+class _ImagePasteMixin:
+    attachmentsChanged = Signal()
+
+    def _init_image_paste(self) -> None:
+        self.attachments: list[str] = []
+
+    def _paste_clipboard_image(self) -> bool:
+        mime = QApplication.clipboard().mimeData()
+        if not mime.hasImage():
+            return False
+        if len(self.attachments) >= 4:
+            QApplication.beep()
+            return True
+        image = mime.imageData()
+        if not isinstance(image, QImage):
+            image = QImage(image)
+        encoded = _image_data_url(image)
+        if encoded:
+            self.attachments.append(encoded)
+            self.attachmentsChanged.emit()
+        return True
+
+    def clear_attachments(self) -> None:
+        self.attachments.clear()
+        self.attachmentsChanged.emit()
+
+
+class ImagePasteLineEdit(_ImagePasteMixin, QLineEdit):
+    attachmentsChanged = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._init_image_paste()
+
+    def keyPressEvent(self, event: object) -> None:  # type: ignore[override]
+        if event.matches(QKeySequence.StandardKey.Paste) and self._paste_clipboard_image():
+            return
+        super().keyPressEvent(event)
+
+
+class ImagePasteTextEdit(_ImagePasteMixin, QTextEdit):
+    attachmentsChanged = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._init_image_paste()
+
+    def keyPressEvent(self, event: object) -> None:  # type: ignore[override]
+        if event.matches(QKeySequence.StandardKey.Paste) and self._paste_clipboard_image():
+            return
+        super().keyPressEvent(event)
+
+
+class AttachmentPreviewStrip(QWidget):
+    def __init__(self, editor: ImagePasteLineEdit | ImagePasteTextEdit, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.editor = editor
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(0, 0, 0, 0)
+        self.row.setSpacing(6)
+        editor.attachmentsChanged.connect(self.refresh)
+        self.refresh()
+
+    def refresh(self) -> None:
+        while self.row.count():
+            item = self.row.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        for value in self.editor.attachments:
+            preview = QLabel()
+            preview.setPixmap(_pixmap_from_data_url(value).scaled(54, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            preview.setFixedSize(58, 44)
+            preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.row.addWidget(preview)
+        if self.editor.attachments:
+            clear = QPushButton("清空图片")
+            clear.setObjectName("smallButton")
+            clear.clicked.connect(self.editor.clear_attachments)
+            self.row.addWidget(clear)
+        self.row.addStretch()
+        self.setVisible(bool(self.editor.attachments))
+
+
+class ImageViewerDialog(QDialog):
+    def __init__(self, value: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("查看图片")
+        self.resize(1000, 760)
+        self.setStyleSheet(APP_STYLE)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        pixmap = _pixmap_from_data_url(value)
+        image = QLabel()
+        image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image.setPixmap(pixmap)
+        scroller = QScrollArea()
+        scroller.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        scroller.setWidget(image)
+        layout.addWidget(scroller, 1)
+        close = QPushButton("关闭")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+
+
+def _open_image(value: str, parent: QWidget | None = None) -> None:
+    ImageViewerDialog(value, parent).exec()
+
+
+def _add_full_images(layout: QVBoxLayout, attachments: tuple[str, ...], parent: QWidget | None = None) -> None:
+    gallery = QWidget()
+    gallery_layout = QHBoxLayout(gallery)
+    gallery_layout.setContentsMargins(0, 0, 0, 0)
+    gallery_layout.setSpacing(10)
+    for value in attachments:
+        label = _thumbnail(value, 150, 100, parent)
+        gallery_layout.addWidget(label)
+    gallery_layout.addStretch()
+    scroller = QScrollArea()
+    scroller.setWidgetResizable(True)
+    scroller.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroller.setMaximumHeight(125)
+    scroller.setWidget(gallery)
+    layout.addWidget(scroller)
+
+
+def _thumbnail(value: str, width: int = 72, height: int = 52, parent: QWidget | None = None) -> QLabel:
+    label = QLabel()
+    label.setFixedSize(width, height)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    label.setPixmap(_pixmap_from_data_url(value).scaled(width, height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+    label.setCursor(Qt.CursorShape.PointingHandCursor)
+    label.setToolTip("点击查看大图")
+    label.mousePressEvent = lambda event, image=value: _open_image(image, parent or label)  # type: ignore[method-assign]
+    return label
 
 
 def _is_qt_object_alive(obj: object) -> bool:
@@ -1698,14 +1855,21 @@ class ProjectMemberDailyDialog(QDialog):
         item.setFlags(Qt.ItemFlag.NoItemFlags)
         card = QWidget()
         card.setObjectName("feedCard")
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setToolTip("查看日报详情")
+        card.mousePressEvent = lambda event, selected=report: DailyReportDetailDialog(  # type: ignore[method-assign]
+            selected, None, "", False, self
+        ).exec()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
         layout.addWidget(_label(report.created_at.strftime("%Y-%m-%d %H:%M"), "eyebrow"))
         layout.addWidget(_label(report.content.strip() or "空日报"))
+        if report.attachments:
+            layout.addWidget(_thumbnail(report.attachments[0]))
 
-        item.setSizeHint(QSize(0, self._card_height(report.content)))
+        item.setSizeHint(QSize(0, self._card_height(report.content) + (60 if report.attachments else 0)))
         self.report_list.addItem(item)
         self.report_list.setItemWidget(item, card)
 
@@ -1738,7 +1902,17 @@ class ProjectMetricDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
         layout.addWidget(_label(f"{project.name} · {title}", "sectionTitle"))
-        layout.addWidget(_label(f"共 {len(rows)} 条", "muted"))
+        daily_groups: list[list[DailyReport]] = []
+        daily_group_renderer = None
+        if title == "日报" and parent is not None:
+            grouper = getattr(parent, "_daily_report_groups", None)
+            renderer = getattr(parent, "_add_daily_report_group_card", None)
+            if callable(grouper) and callable(renderer):
+                daily_groups = grouper([row for row in rows if isinstance(row, DailyReport)])
+                daily_group_renderer = renderer
+        count = len(daily_groups) if daily_group_renderer is not None else len(rows)
+        unit = "份日报" if title == "日报" else "条"
+        layout.addWidget(_label(f"共 {count} {unit}", "muted"))
 
         self.list_widget = QListWidget()
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1750,8 +1924,12 @@ class ProjectMetricDialog(QDialog):
             self.list_widget.addItem(item)
             return
 
-        for row in rows:
-            self._add_row(row)
+        if daily_group_renderer is not None:
+            for group in daily_groups:
+                daily_group_renderer(self.list_widget, group)
+        else:
+            for row in rows:
+                self._add_row(row)
 
     def _add_row(self, row: object) -> None:
         item = QListWidgetItem()
@@ -1777,6 +1955,9 @@ class ProjectMetricDialog(QDialog):
             body.addWidget(_label(meta, "eyebrow"))
         body.addWidget(_label(content))
         layout.addLayout(body, 1)
+
+        if isinstance(row, (ProjectTodo, DailyReport)) and row.attachments:
+            layout.addWidget(_thumbnail(row.attachments[0]))
 
         if isinstance(row, ProjectDocument) and self.open_document is not None:
             open_button = QPushButton("打开")
@@ -1910,6 +2091,20 @@ class TodoDetailDialog(QDialog):
         detail.setMinimumHeight(420)
         detail.setHtml(self._detail_html(todo, project_name, reports, highlight_report_id))
         layout.addWidget(detail)
+        if todo.attachments:
+            layout.addWidget(_label("指派时图片", "eyebrow"))
+            _add_full_images(layout, todo.attachments, self)
+        stage_groups = self._todo_flow_image_groups(todo)
+        for stage_title, stage_attachments in stage_groups:
+            layout.addWidget(_label(stage_title, "eyebrow"))
+            _add_full_images(layout, stage_attachments, self)
+        stage_values = {value for _, values in stage_groups for value in values}
+        report_attachments = tuple(
+            value for report in reports for value in report.attachments if value not in stage_values
+        )
+        if report_attachments:
+            layout.addWidget(_label("关联日报图片", "eyebrow"))
+            _add_full_images(layout, report_attachments, self)
 
     def _detail_html(
         self,
@@ -2009,10 +2204,30 @@ class TodoDetailDialog(QDialog):
             time_text = str(item.get("time", "")).replace("T", " ")[:16]
             actor = str(item.get("actor", "")).strip() or "未记录"
             action = str(item.get("action", "")).strip() or "流转"
+            note = str(item.get("note", "")).strip()
             handler = str(item.get("handler", "")).strip()
             handler_text = f" -> {handler}" if handler else ""
-            lines.append(f"{time_text} · {actor} · {action}{handler_text}")
+            note_text = f"\n说明：{note}" if note else ""
+            lines.append(f"{time_text} · {actor} · {action}{handler_text}{note_text}")
         return lines
+
+    def _todo_flow_image_groups(self, todo: ProjectTodo) -> list[tuple[str, tuple[str, ...]]]:
+        try:
+            entries = json.loads(todo.flow_history.strip() or "[]")
+        except (TypeError, ValueError):
+            return []
+        groups: list[tuple[str, tuple[str, ...]]] = []
+        for item in entries if isinstance(entries, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("attachments"), list):
+                continue
+            attachments = tuple(
+                str(value) for value in item["attachments"] if str(value).startswith("data:image/")
+            )
+            if attachments:
+                action = str(item.get("action", "环节记录")).strip() or "环节记录"
+                actor = str(item.get("actor", "")).strip()
+                groups.append((f"{action}{f' · {actor}' if actor else ''}", attachments))
+        return groups
 
 
 class DailyReportDetailDialog(QDialog):
@@ -2046,6 +2261,9 @@ class DailyReportDetailDialog(QDialog):
         content.setMinimumHeight(220)
         content.setPlainText(report.content)
         layout.addWidget(content)
+        if report.attachments:
+            layout.addWidget(_label("图片附件", "eyebrow"))
+            _add_full_images(layout, report.attachments, self)
 
         actions = QHBoxLayout()
         actions.addStretch()
@@ -2078,10 +2296,11 @@ class TodoDailyReportDialog(QDialog):
         layout.addWidget(_label("记录代办日报", "sectionTitle"))
         layout.addWidget(_label(f"{project_name} · {todo.title}", "muted"))
 
-        self.editor = QTextEdit()
+        self.editor = ImagePasteTextEdit()
         self.editor.setMinimumHeight(180)
-        self.editor.setPlaceholderText("记录这条代办今天的进展、问题或下一步。")
+        self.editor.setPlaceholderText("记录这条代办今天的进展、问题或下一步。可直接粘贴图片。")
         layout.addWidget(self.editor)
+        layout.addWidget(AttachmentPreviewStrip(self.editor))
 
         actions = QHBoxLayout()
         actions.addStretch()
@@ -2096,6 +2315,43 @@ class TodoDailyReportDialog(QDialog):
 
     def content(self) -> str:
         return self.editor.toPlainText().strip()
+
+    def attachments(self) -> list[str]:
+        return list(self.editor.attachments)
+
+
+class TodoWorkflowActionDialog(QDialog):
+    def __init__(self, title: str, todo: ProjectTodo, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setFixedWidth(580)
+        self.setStyleSheet(APP_STYLE)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+        layout.addWidget(_label(title, "sectionTitle"))
+        layout.addWidget(_label(todo.title, "muted"))
+        self.editor = ImagePasteTextEdit()
+        self.editor.setMinimumHeight(130)
+        self.editor.setPlaceholderText("可填写本环节说明，并直接粘贴截图或成果图片（选填）。")
+        layout.addWidget(self.editor)
+        layout.addWidget(AttachmentPreviewStrip(self.editor))
+        actions = QHBoxLayout()
+        actions.addStretch()
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        confirm = QPushButton("确认")
+        confirm.setObjectName("primaryButton")
+        confirm.clicked.connect(self.accept)
+        actions.addWidget(cancel)
+        actions.addWidget(confirm)
+        layout.addLayout(actions)
+
+    def note(self) -> str:
+        return self.editor.toPlainText().strip()
+
+    def attachments(self) -> list[str]:
+        return list(self.editor.attachments)
 
 
 class RosterBlockedNamesDialog(QDialog):
@@ -2580,7 +2836,6 @@ class MainWindow(QMainWindow):
         self.current_lan_peers: list[LanPeer] = []
         self._lan_logs_signature: tuple[object, ...] | None = None
         self._lan_peer_scroll_generation = 0
-        self.lan_direct_peers = self._load_lan_direct_peers()
         self.calendar_mode = "rest"
         self.rest_calendar_month = date.today().replace(day=1)
         self.selected_rest_day: date | None = None
@@ -2618,7 +2873,6 @@ class MainWindow(QMainWindow):
         self._refresh_badge_wall()
 
         if self.discovery is not None:
-            self.discovery.set_direct_peer_addresses(self.lan_direct_peers)
             self.discovery.peers_changed.connect(self._refresh_peers)
             self.discovery.data_synced.connect(self._refresh_after_lan_sync)
             self.discovery.start()
@@ -3521,13 +3775,15 @@ class MainWindow(QMainWindow):
         todo_layout.addWidget(self.assigned_todo_deadline_row)
         todo_input_row = QHBoxLayout()
         todo_input_row.setSpacing(8)
-        self.project_todo_input = QLineEdit()
-        self.project_todo_input.setPlaceholderText("新增一个代办")
+        self.project_todo_input = ImagePasteLineEdit()
+        self.project_todo_input.setPlaceholderText("新增一个代办（可直接粘贴图片）")
         self.add_todo_button = QPushButton("添加")
         self.add_todo_button.clicked.connect(self._add_project_todo)
         todo_input_row.addWidget(self.project_todo_input, 1)
         todo_input_row.addWidget(self.add_todo_button)
         todo_layout.addLayout(todo_input_row)
+        self.todo_attachment_preview = AttachmentPreviewStrip(self.project_todo_input)
+        todo_layout.addWidget(self.todo_attachment_preview)
         self.todo_board = QListWidget()
         self.todo_board.setMinimumHeight(168)
         self.todo_board.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -3548,15 +3804,17 @@ class MainWindow(QMainWindow):
         self.daily_member_label = _label("当前身份：自己", "muted")
         self.daily_todo_link = QComboBox()
         self.daily_todo_link.addItem("不关联代办", 0)
-        self.daily_editor = QTextEdit()
+        self.daily_editor = ImagePasteTextEdit()
         self.daily_editor.setFixedHeight(76)
-        self.daily_editor.setPlaceholderText("今天完成了什么、遇到什么阻塞、明天准备做什么。")
+        self.daily_editor.setPlaceholderText("今天完成了什么、遇到什么阻塞、明天准备做什么。可直接粘贴图片。")
         self.save_daily_button = QPushButton("保存日报")
         self.save_daily_button.setObjectName("primaryButton")
         self.save_daily_button.clicked.connect(self._save_daily_report)
         daily_layout.addWidget(self.daily_member_label)
         daily_layout.addWidget(self.daily_todo_link)
         daily_layout.addWidget(self.daily_editor)
+        self.daily_attachment_preview = AttachmentPreviewStrip(self.daily_editor)
+        daily_layout.addWidget(self.daily_attachment_preview)
         daily_layout.addWidget(self.save_daily_button)
 
         self.weekly_form = QWidget()
@@ -5198,12 +5456,16 @@ class MainWindow(QMainWindow):
         if current_member is None:
             QMessageBox.information(self, "不能保存", "只有项目成员可以写日报。")
             return
-        if not content:
-            QMessageBox.information(self, "日报为空", "先写一点日报内容。")
+        if not content and not self.daily_editor.attachments:
+            QMessageBox.information(self, "日报为空", "先写一点日报内容或粘贴图片。")
             return
         linked_todo_id = int(self.daily_todo_link.currentData() or 0) if hasattr(self, "daily_todo_link") else 0
-        self.db.add_daily_report(project.id, current_member.name, current_member.role, content, todo_id=linked_todo_id or None)
+        self.db.add_daily_report(
+            project.id, current_member.name, current_member.role, content,
+            todo_id=linked_todo_id or None, attachments=self.daily_editor.attachments,
+        )
         self.daily_editor.clear()
+        self.daily_editor.clear_attachments()
         if hasattr(self, "daily_todo_link"):
             self.daily_todo_link.setCurrentIndex(0)
         self._refresh_project_workspace()
@@ -5230,7 +5492,7 @@ class MainWindow(QMainWindow):
             return
         title = self.project_todo_input.text().strip()
         if not title:
-            QMessageBox.information(self, "代办为空", "先写一个代办。")
+            QMessageBox.information(self, "代办为空", "先写一个代办标题；图片可以作为补充说明。")
             return
         assignee = ""
         due_at = None
@@ -5271,8 +5533,10 @@ class MainWindow(QMainWindow):
             tester=tester,
             acceptor=acceptor,
             assigned_by_pet=self.db.pet_kind(),
+            attachments=self.project_todo_input.attachments,
         )
         self.project_todo_input.clear()
+        self.project_todo_input.clear_attachments()
         self.assigned_todo_deadline_days = None
         self._refresh_assigned_deadline_buttons()
         self._refresh_project_workspace()
@@ -5343,11 +5607,16 @@ class MainWindow(QMainWindow):
         if todo.scope == "assigned" and not self._todo_visible_to_current_user(todo):
             QMessageBox.information(self, "不能流转", "只有当前处理人可以处理这条代办。")
             return
+        action_dialog = TodoWorkflowActionDialog(self._todo_primary_action_text(todo), todo, self)
+        if action_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
         report = self.db.complete_project_todo(
             todo.id,
             current_member.name,
             current_member.role,
             completed_by_pet=self.db.pet_kind(),
+            note=action_dialog.note(),
+            attachments=action_dialog.attachments(),
         )
         if report is None:
             QMessageBox.information(self, "不能流转", "这个代办已经完成、状态不匹配，或已经不存在。")
@@ -5381,7 +5650,13 @@ class MainWindow(QMainWindow):
         if not self._todo_can_reject(todo) or not self._todo_visible_to_current_user(todo):
             QMessageBox.information(self, "不能打回", "只有测试人在待测试阶段可以打回开发。")
             return
-        report = self.db.reject_project_todo(todo.id, current_member.name, current_member.role)
+        action_dialog = TodoWorkflowActionDialog("测试不通过，打回开发", todo, self)
+        if action_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        report = self.db.reject_project_todo(
+            todo.id, current_member.name, current_member.role,
+            note=action_dialog.note(), attachments=action_dialog.attachments(),
+        )
         if report is None:
             QMessageBox.information(self, "不能打回", "这个代办状态已经变化或不存在。")
             return
@@ -5404,7 +5679,13 @@ class MainWindow(QMainWindow):
         if not self._todo_can_skip_ui(todo) or not self._todo_visible_to_current_user(todo):
             QMessageBox.information(self, "不能跳过", "只有 UI/设计在待 UI 阶段可以跳过。")
             return
-        report = self.db.skip_project_todo_ui(todo.id, current_member.name, current_member.role)
+        action_dialog = TodoWorkflowActionDialog("跳过 UI，提交开发", todo, self)
+        if action_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        report = self.db.skip_project_todo_ui(
+            todo.id, current_member.name, current_member.role,
+            note=action_dialog.note(), attachments=action_dialog.attachments(),
+        )
         if report is None:
             QMessageBox.information(self, "不能跳过", "这个代办状态已经变化或不存在。")
             return
@@ -5506,7 +5787,8 @@ class MainWindow(QMainWindow):
             developer_scroll_value = developer_scrollbar.value()
             developer_was_at_bottom = developer_scrollbar.value() >= developer_scrollbar.maximum() - 2
         members = self.db.list_project_members(project.id)
-        daily_reports = self.db.list_daily_reports(project.id)
+        daily_reports = self.db.list_daily_reports(project.id, limit=1000)
+        daily_report_groups = self._daily_report_groups(daily_reports)
         weekly_reports = self.db.list_project_weekly_reports(project.id)
         documents = self.db.list_project_documents(project.id)
         open_todos = self.db.list_project_todos(project.id)
@@ -5558,7 +5840,7 @@ class MainWindow(QMainWindow):
                 self.config_project_notes.setPlainText(project.project_notes if can_view_project_notes else "")
         self._set_metric(self.metric_members, len(members))
         self._set_metric(self.metric_todos, len(open_todos))
-        self._set_metric(self.metric_daily, len(daily_reports))
+        self._set_metric(self.metric_daily, len(daily_report_groups))
         self._set_metric(self.metric_weekly, len(weekly_reports))
         self._set_metric(self.metric_decks, len(documents))
 
@@ -5750,7 +6032,7 @@ class MainWindow(QMainWindow):
                 max_content_lines=None,
                 visual_chars_per_line=46,
             )
-        for group in self._daily_report_groups(visible_daily_reports)[:5]:
+        for group in daily_report_groups[:5]:
             self._add_daily_report_group_card(self.developer_feed, group)
         QTimer.singleShot(
             0,
@@ -6377,6 +6659,9 @@ class MainWindow(QMainWindow):
                 body.addWidget(_label(progress_text, "muted"))
         layout.addLayout(body, 1)
 
+        if todo is not None and todo.attachments:
+            layout.addWidget(_thumbnail(todo.attachments[0]))
+
         if todo is not None:
             is_assigned_creator = todo.scope == "assigned" and self.db.is_current_user_name(todo.assigned_by)
             can_operate = can_complete
@@ -6422,7 +6707,7 @@ class MainWindow(QMainWindow):
                 extra_lines += 1
             if self._todo_progress_text(todo):
                 extra_lines += 1
-        item.setSizeHint(QSize(0, 72 + extra_lines * 24))
+        item.setSizeHint(QSize(0, max(72 + extra_lines * 24, 78 if todo is not None and todo.attachments else 0)))
         self.todo_board.addItem(item)
         self.todo_board.setItemWidget(item, card)
 
@@ -6455,10 +6740,13 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         content = dialog.content()
-        if not content:
-            QMessageBox.information(self, "日报为空", "先写一点代办进展。")
+        if not content and not dialog.attachments():
+            QMessageBox.information(self, "日报为空", "先写一点代办进展或粘贴图片。")
             return
-        self.db.add_daily_report(project.id, current_member.name, current_member.role, content, todo_id=latest.id)
+        self.db.add_daily_report(
+            project.id, current_member.name, current_member.role, content,
+            todo_id=latest.id, attachments=dialog.attachments(),
+        )
         self._refresh_project_workspace()
         self._refresh_my_panel()
         self._refresh_rest_calendar()
@@ -6513,6 +6801,8 @@ class MainWindow(QMainWindow):
             body.addWidget(meta)
         body.addWidget(text)
         layout.addLayout(body, 1)
+        if daily_report is not None and daily_report.attachments:
+            layout.addWidget(_thumbnail(daily_report.attachments[0]))
         linked_todo = self._todo_for_daily_report(daily_report) if daily_report is not None else None
 
         if document is not None:
@@ -6577,6 +6867,8 @@ class MainWindow(QMainWindow):
                 meta_text=meta_text,
                 visual_chars_per_line=visual_chars_per_line,
             )
+        if daily_report is not None and daily_report.attachments:
+            height = max(height, 76)
         if flat:
             height = max(64, height - 24)
         item.setSizeHint(QSize(0, height))
@@ -7589,22 +7881,6 @@ class MainWindow(QMainWindow):
         panel_layout.setSpacing(14)
         self.lan_panel_title = _label("在线同事", "eyebrow")
         panel_layout.addWidget(self.lan_panel_title)
-        direct_peer_row = QHBoxLayout()
-        direct_peer_row.setSpacing(8)
-        self.lan_direct_peer_input = QLineEdit()
-        self.lan_direct_peer_input.setPlaceholderText("跨网段同事 IP，例如 192.168.11.71")
-        self.lan_direct_peer_input.returnPressed.connect(self._add_lan_direct_peer)
-        add_direct_peer = QPushButton("添加直连")
-        add_direct_peer.clicked.connect(self._add_lan_direct_peer)
-        clear_direct_peer = QPushButton("清空")
-        clear_direct_peer.clicked.connect(self._clear_lan_direct_peers)
-        direct_peer_row.addWidget(self.lan_direct_peer_input, 1)
-        direct_peer_row.addWidget(add_direct_peer)
-        direct_peer_row.addWidget(clear_direct_peer)
-        panel_layout.addLayout(direct_peer_row)
-        self.lan_direct_peer_hint = _label("", "muted")
-        panel_layout.addWidget(self.lan_direct_peer_hint)
-        self._refresh_lan_direct_peer_hint()
         self.peer_list = QListWidget()
         self.peer_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.peer_list.itemClicked.connect(self._open_lan_log_item)
@@ -8063,58 +8339,6 @@ class MainWindow(QMainWindow):
     def _announce_presence(self) -> None:
         if self.discovery is not None:
             self.discovery.announce_burst()
-
-    def _load_lan_direct_peers(self) -> list[str]:
-        raw = self.db.get_setting("lan_direct_peers") or "[]"
-        try:
-            values = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
-        if not isinstance(values, list):
-            return []
-        addresses: list[str] = []
-        for value in values:
-            address = str(value).strip()
-            try:
-                ipaddress.ip_address(address)
-            except ValueError:
-                continue
-            if address not in addresses:
-                addresses.append(address)
-        return addresses
-
-    def _save_lan_direct_peers(self) -> None:
-        self.db.set_setting("lan_direct_peers", json.dumps(self.lan_direct_peers), save=True)
-        if self.discovery is not None:
-            self.discovery.set_direct_peer_addresses(self.lan_direct_peers)
-        self._refresh_lan_direct_peer_hint()
-
-    def _refresh_lan_direct_peer_hint(self) -> None:
-        if not hasattr(self, "lan_direct_peer_hint"):
-            return
-        if self.lan_direct_peers:
-            self.lan_direct_peer_hint.setText(f"直连 IP：{', '.join(self.lan_direct_peers)}")
-        else:
-            self.lan_direct_peer_hint.setText("跨网段时，可添加一位同事的 IP 来辅助发现。")
-
-    def _add_lan_direct_peer(self) -> None:
-        address = self.lan_direct_peer_input.text().strip()
-        try:
-            ipaddress.ip_address(address)
-        except ValueError:
-            QMessageBox.information(self, "IP 无效", "请输入完整的 IPv4 或 IPv6 地址。")
-            return
-        if address not in self.lan_direct_peers:
-            self.lan_direct_peers.append(address)
-            self._save_lan_direct_peers()
-        self.lan_direct_peer_input.clear()
-        self._manual_lan_refresh()
-
-    def _clear_lan_direct_peers(self) -> None:
-        if not self.lan_direct_peers:
-            return
-        self.lan_direct_peers = []
-        self._save_lan_direct_peers()
 
     def _manual_lan_refresh(self) -> None:
         if self.discovery is None:

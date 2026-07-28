@@ -1482,6 +1482,7 @@ class Database:
         role: str,
         content: str,
         todo_id: int | None = None,
+        attachments: list[str] | tuple[str, ...] | None = None,
     ) -> DailyReport:
         created_at = datetime.now()
         row = self._with_operator({
@@ -1491,6 +1492,7 @@ class Database:
             "role": role.strip(),
             "content": content.strip(),
             "todo_id": todo_id or "",
+            "attachments": list(attachments or ()),
             "created_at": created_at.isoformat(timespec="seconds"),
         })
         self.data["daily_reports"].append(row)
@@ -2267,6 +2269,7 @@ class Database:
             content=str(row["content"]),
             created_at=_parse_time(str(row["created_at"])),
             todo_id=todo_id,
+            attachments=tuple(str(value) for value in row.get("attachments", []) if str(value).startswith("data:image/")),
         )
 
     def add_project_todo(
@@ -2284,6 +2287,7 @@ class Database:
         tester: str = "",
         acceptor: str = "",
         assigned_by_pet: str = "penguin",
+        attachments: list[str] | tuple[str, ...] | None = None,
     ) -> ProjectTodo:
         created_at = datetime.now()
         todo_scope = scope if scope in {"personal", "project", "assigned"} else "personal"
@@ -2323,6 +2327,7 @@ class Database:
             "current_handler": initial_handler,
             "flow_history": json.dumps(flow_history, ensure_ascii=False) if flow_history else "",
             "assigned_by_pet": assigned_by_pet.strip() or "penguin",
+            "attachments": list(attachments or ()),
         })
         self.data["project_todos"].append(row)
         self._save()
@@ -2554,6 +2559,8 @@ class Database:
         role: str,
         progress_prefix: str = "完成代办",
         completed_by_pet: str = "penguin",
+        note: str = "",
+        attachments: list[str] | tuple[str, ...] | None = None,
     ) -> DailyReport | ProjectTodo | None:
         for row in self.data["project_todos"]:
             if int(row["id"]) != todo_id:
@@ -2561,7 +2568,10 @@ class Database:
             if str(row.get("status", "todo")) == "done":
                 return None
             if str(row.get("workflow", "")) == "dev_test_accept":
-                return self.advance_project_todo(todo_id, member_name, role, "pass", completed_by_pet)
+                return self.advance_project_todo(
+                    todo_id, member_name, role, "pass", completed_by_pet,
+                    note=note, attachments=attachments,
+                )
             completed_at = datetime.now()
             row["status"] = "done"
             row["completed_by"] = member_name.strip()
@@ -2577,6 +2587,7 @@ class Database:
                 role,
                 f"{progress_prefix}：{str(row.get('title', '')).strip()}",
                 todo_id=todo_id,
+                attachments=attachments,
             )
             return report
         return None
@@ -2588,6 +2599,8 @@ class Database:
         role: str,
         action: str = "pass",
         completed_by_pet: str = "penguin",
+        note: str = "",
+        attachments: list[str] | tuple[str, ...] | None = None,
     ) -> DailyReport | ProjectTodo | None:
         for row in self.data["project_todos"]:
             if int(row["id"]) != todo_id:
@@ -2605,13 +2618,14 @@ class Database:
                 row["status"] = "dev_todo"
                 row["current_handler"] = developer
                 action_text = "跳过UI，提交开发" if action == "skip_ui" else "UI完成，提交开发"
-                self._append_todo_flow(row, member_name, action_text, "dev_todo", developer, now)
+                self._append_todo_flow(row, member_name, action_text, "dev_todo", developer, now, note, attachments)
                 report = self.add_daily_report(
                     int(row["project_id"]),
                     member_name,
                     role,
                     f"{action_text}：{str(row.get('title', '')).strip()}",
                     todo_id=todo_id,
+                    attachments=attachments,
                 )
                 return report
             if status == "dev_doing":
@@ -2632,25 +2646,27 @@ class Database:
                         return None
                     row["status"] = "accept_todo"
                     row["current_handler"] = acceptor
-                    self._append_todo_flow(row, member_name, "开发完成，提交验收", "accept_todo", acceptor, now)
+                    self._append_todo_flow(row, member_name, "开发完成，提交验收", "accept_todo", acceptor, now, note, attachments)
                     report = self.add_daily_report(
                         project_id,
                         member_name,
                         role,
                         f"开发完成，提交验收：{str(row.get('title', '')).strip()}",
                         todo_id=todo_id,
+                        attachments=attachments,
                     )
                     return report
                 row["status"] = "test_todo"
                 row["current_handler"] = tester
                 row["tester"] = tester
-                self._append_todo_flow(row, member_name, "开发完成，提交测试", "test_todo", tester, now)
+                self._append_todo_flow(row, member_name, "开发完成，提交测试", "test_todo", tester, now, note, attachments)
                 report = self.add_daily_report(
                     project_id,
                     member_name,
                     role,
                     f"开发完成，提交测试：{str(row.get('title', '')).strip()}",
                     todo_id=todo_id,
+                    attachments=attachments,
                 )
                 return report
             if status == "test_todo":
@@ -2661,24 +2677,26 @@ class Database:
                 if action == "reject":
                     row["status"] = "dev_todo"
                     row["current_handler"] = developer
-                    self._append_todo_flow(row, member_name, "测试不通过，打回开发", "dev_todo", developer, now)
+                    self._append_todo_flow(row, member_name, "测试不通过，打回开发", "dev_todo", developer, now, note, attachments)
                     report = self.add_daily_report(
                         int(row["project_id"]),
                         member_name,
                         role,
                         f"测试不通过，打回开发：{str(row.get('title', '')).strip()}",
                         todo_id=todo_id,
+                        attachments=attachments,
                     )
                     return report
                 row["status"] = "accept_todo"
                 row["current_handler"] = acceptor
-                self._append_todo_flow(row, member_name, "测试通过，提交验收", "accept_todo", acceptor, now)
+                self._append_todo_flow(row, member_name, "测试通过，提交验收", "accept_todo", acceptor, now, note, attachments)
                 report = self.add_daily_report(
                     int(row["project_id"]),
                     member_name,
                     role,
                     f"测试通过，提交验收：{str(row.get('title', '')).strip()}",
                     todo_id=todo_id,
+                    attachments=attachments,
                 )
                 return report
             if status == "accept_todo":
@@ -2689,23 +2707,24 @@ class Database:
                 row["completed_by_pet"] = completed_by_pet.strip() or "penguin"
                 row["completed_at"] = now.isoformat(timespec="seconds")
                 row["current_handler"] = ""
-                self._append_todo_flow(row, member_name, "验收通过，完成代办", "done", "", now)
+                self._append_todo_flow(row, member_name, "验收通过，完成代办", "done", "", now, note, attachments)
                 report = self.add_daily_report(
                     int(row["project_id"]),
                     member_name,
                     role,
                     f"验收完成：{str(row.get('title', '')).strip()}",
                     todo_id=todo_id,
+                    attachments=attachments,
                 )
                 return report
             return None
         return None
 
-    def reject_project_todo(self, todo_id: int, member_name: str, role: str) -> DailyReport | ProjectTodo | None:
-        return self.advance_project_todo(todo_id, member_name, role, "reject")
+    def reject_project_todo(self, todo_id: int, member_name: str, role: str, note: str = "", attachments: list[str] | tuple[str, ...] | None = None) -> DailyReport | ProjectTodo | None:
+        return self.advance_project_todo(todo_id, member_name, role, "reject", note=note, attachments=attachments)
 
-    def skip_project_todo_ui(self, todo_id: int, member_name: str, role: str) -> DailyReport | ProjectTodo | None:
-        return self.advance_project_todo(todo_id, member_name, role, "skip_ui")
+    def skip_project_todo_ui(self, todo_id: int, member_name: str, role: str, note: str = "", attachments: list[str] | tuple[str, ...] | None = None) -> DailyReport | ProjectTodo | None:
+        return self.advance_project_todo(todo_id, member_name, role, "skip_ui", note=note, attachments=attachments)
 
     def _todo_from_row(self, row: dict[str, Any]) -> ProjectTodo:
         completed_at = str(row.get("completed_at", "")).strip()
@@ -2742,6 +2761,7 @@ class Database:
             flow_history=str(row.get("flow_history", "")),
             assigned_by_pet=str(row.get("assigned_by_pet", "penguin")) or "penguin",
             completed_by_pet=str(row.get("completed_by_pet", "penguin")) or "penguin",
+            attachments=tuple(str(value) for value in row.get("attachments", []) if str(value).startswith("data:image/")),
         )
 
     def _todo_current_handler(self, row: dict[str, Any]) -> str:
@@ -2819,18 +2839,25 @@ class Database:
         status: str,
         handler: str,
         happened_at: datetime | None = None,
+        note: str = "",
+        attachments: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         history = self._todo_flow_entries(row)
-        history.append({
+        entry: dict[str, Any] = {
             "time": (happened_at or datetime.now()).isoformat(timespec="seconds"),
             "actor": actor.strip(),
             "action": action,
             "status": status,
             "handler": handler.strip(),
-        })
+        }
+        if note.strip():
+            entry["note"] = note.strip()
+        if attachments:
+            entry["attachments"] = list(attachments)
+        history.append(entry)
         row["flow_history"] = json.dumps(history, ensure_ascii=False)
 
-    def _todo_flow_entries(self, row: dict[str, Any]) -> list[dict[str, str]]:
+    def _todo_flow_entries(self, row: dict[str, Any]) -> list[dict[str, Any]]:
         raw = str(row.get("flow_history", "")).strip()
         if not raw:
             return []
@@ -2840,11 +2867,11 @@ class Database:
             return []
         if not isinstance(loaded, list):
             return []
-        entries: list[dict[str, str]] = []
+        entries: list[dict[str, Any]] = []
         for item in loaded:
             if not isinstance(item, dict):
                 continue
-            entries.append({str(key): str(value) for key, value in item.items()})
+            entries.append({str(key): value for key, value in item.items()})
         return entries
 
     def add_project_weekly_report(self, project_id: int, author: str, content: str) -> ProjectWeeklyReport:
@@ -4047,18 +4074,21 @@ class Database:
             return right, left
         return left, right
 
-    def _daily_report_row_score(self, row: dict[str, Any]) -> tuple[int, int, int]:
+    def _daily_report_row_score(self, row: dict[str, Any]) -> tuple[int, int, int, int]:
         has_source = 1 if self._row_source_key(row) is not None else 0
         has_todo = 1 if str(row.get("todo_id", "")).strip() else 0
+        has_attachments = 1 if row.get("attachments") else 0
         try:
             row_id = int(row.get("id", 0) or 0)
         except (TypeError, ValueError):
             row_id = 0
-        return has_source, has_todo, row_id
+        return has_source, has_todo, has_attachments, row_id
 
     def _merge_daily_report_duplicate_metadata(self, keep: dict[str, Any], drop: dict[str, Any]) -> None:
         if not str(keep.get("todo_id", "")).strip() and str(drop.get("todo_id", "")).strip():
             keep["todo_id"] = str(drop.get("todo_id", "")).strip()
+        if not keep.get("attachments") and isinstance(drop.get("attachments"), list):
+            keep["attachments"] = list(drop["attachments"])
         for key in ("operator", "operator_device_id", "source_device_id", "source_id"):
             if not str(keep.get(key, "")).strip() and str(drop.get(key, "")).strip():
                 keep[key] = str(drop.get(key, "")).strip()

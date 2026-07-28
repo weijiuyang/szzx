@@ -54,7 +54,6 @@ class LanDiscovery(QObject):
     data_server_seen = Signal(object)
     _snapshot_fetched = Signal(object, object, bool)
     _snapshot_failed = Signal(object)
-    _direct_peer_seen = Signal(object)
 
     def __init__(
         self,
@@ -76,7 +75,6 @@ class LanDiscovery(QObject):
         self.update_package_path = self._find_update_package()
         self._pulling_peer_ids: set[str] = set()
         self._last_pull_started: dict[str, float] = {}
-        self.direct_peer_addresses: list[str] = []
 
         self.listen_socket = QUdpSocket(self)
         self.send_socket = QUdpSocket(self)
@@ -101,7 +99,6 @@ class LanDiscovery(QObject):
         self.sweep_timer.timeout.connect(self._sweep)
         self._snapshot_fetched.connect(self._apply_fetched_snapshot)
         self._snapshot_failed.connect(self._finish_snapshot_pull)
-        self._direct_peer_seen.connect(self._apply_direct_peer_seen)
 
     def start(self) -> None:
         if self.peer_data_sync_enabled or self.update_package_path is not None:
@@ -115,15 +112,6 @@ class LanDiscovery(QObject):
     def set_display_name(self, name: str) -> None:
         self.display_name = name.strip() or self.display_name
         self.announce()
-
-    def set_direct_peer_addresses(self, addresses: list[str]) -> None:
-        self.direct_peer_addresses = []
-        for address in addresses:
-            address = address.strip()
-            if address and address not in self.direct_peer_addresses:
-                self.direct_peer_addresses.append(address)
-        self.announce_burst()
-        self._poll_direct_peers()
 
     def _presence_payload(self, kind: str = "presence", direct_reply: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -170,7 +158,6 @@ class LanDiscovery(QObject):
         if self.db is None:
             return
         self._send_broadcast_payload(self._presence_payload("db_state"))
-        self._poll_direct_peers()
         self._pull_newer_peer_snapshots()
 
     def _send_broadcast_payload(self, payload: dict[str, Any]) -> None:
@@ -180,36 +167,10 @@ class LanDiscovery(QObject):
     def _send_broadcast(self, data: bytes) -> None:
         for address in self._broadcast_targets():
             self.send_socket.writeDatagram(data, address, self.port)
-        for address in self.direct_peer_addresses:
-            self.send_socket.writeDatagram(data, QHostAddress(address), self.port)
 
     def _send_direct_presence_reply(self, address: QHostAddress) -> None:
         data = json.dumps(self._presence_payload("presence", direct_reply=True), ensure_ascii=False).encode("utf-8")
         self.send_socket.writeDatagram(data, address, self.port)
-
-    def _poll_direct_peers(self) -> None:
-        for address in self.direct_peer_addresses:
-            thread = threading.Thread(target=self._fetch_direct_peer_worker, args=(address,), daemon=True)
-            thread.start()
-
-    def _fetch_direct_peer_worker(self, address: str) -> None:
-        try:
-            peer = self._fetch_peer_info(address, self.sync_port)
-        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-            return
-        self._direct_peer_seen.emit(peer)
-
-    def _fetch_peer_info(self, address: str, sync_port: int) -> LanPeer:
-        with socket.create_connection((address, sync_port), timeout=1.5) as client:
-            client.settimeout(3)
-            client.sendall(PEER_MAGIC)
-            size = struct.unpack("!I", self._recv_exact(client, 4))[0]
-            if size <= 0 or size > 64 * 1024:
-                raise ValueError("peer info size is invalid")
-            payload = json.loads(self._recv_exact(client, size).decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("peer info is invalid")
-        return self._peer_from_payload(payload, address)
 
     def _broadcast_targets(self) -> list[QHostAddress]:
         targets: dict[str, QHostAddress] = {}
@@ -529,14 +490,6 @@ class LanDiscovery(QObject):
                 else []
             ),
         )
-
-    def _apply_direct_peer_seen(self, peer: object) -> None:
-        if not isinstance(peer, LanPeer) or not peer.device_id or peer.device_id == self.device_id:
-            return
-        self.peers[peer.device_id] = peer
-        self.peers_changed.emit(self.sorted_peers())
-        if self.peer_data_sync_enabled:
-            self._pull_peer_snapshot_if_newer(peer)
 
     def _pull_newer_peer_snapshots(self) -> None:
         for peer in list(self.peers.values()):

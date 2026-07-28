@@ -38,6 +38,7 @@ class DailyReport:
     content: str
     created_at: datetime
     todo_id: int | None
+    attachments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ class ProjectTodo:
     flow_history: str = ""
     assigned_by_pet: str = "penguin"
     completed_by_pet: str = "penguin"
+    attachments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
