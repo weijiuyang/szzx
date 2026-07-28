@@ -2076,8 +2076,12 @@ class TodoDetailDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("代办详情")
-        self.setFixedWidth(620)
+        self.resize(1120, 760)
+        self.setMinimumSize(920, 620)
         self.setStyleSheet(APP_STYLE)
+        self.todo = todo
+        self.reports = sorted(reports, key=lambda report: report.created_at)
+        self.report_rows: dict[int, QWidget] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -2086,36 +2090,159 @@ class TodoDetailDialog(QDialog):
         layout.addWidget(_label(todo.title, "sectionTitle"))
         layout.addWidget(_label(project_name, "muted"))
 
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
+        left_layout.addWidget(_label("任务分配与当前节点", "eyebrow"))
+        current_node = self._todo_status_text(todo)
+        current_handler = todo.current_handler or ("已结束" if todo.status == "done" else todo.assignee or "未记录")
+        current_label = _label(f"当前节点：{current_node} · 当前处理人：{current_handler}")
+        current_label.setStyleSheet("color: #b42318; font-weight: 700;")
+        current_label.setWordWrap(True)
+        left_layout.addWidget(current_label)
         detail = QTextEdit()
         detail.setReadOnly(True)
-        detail.setMinimumHeight(300)
+        detail.setMinimumHeight(260)
         detail.setHtml(self._detail_html(todo, project_name, reports, highlight_report_id))
-        layout.addWidget(detail)
+        left_layout.addWidget(detail, 1)
 
-        layout.addWidget(_label("关联日报", "eyebrow"))
+        left_layout.addWidget(_label("流转记录", "eyebrow"))
+        flow_panel = QWidget()
+        flow_layout = QVBoxLayout(flow_panel)
+        flow_layout.setContentsMargins(0, 0, 0, 0)
+        flow_layout.setSpacing(6)
+        flow_entries = self._todo_flow_entries(todo)
+        if not flow_entries:
+            flow_layout.addWidget(_label("暂无流转记录。", "muted"))
+        for index, entry in enumerate(flow_entries):
+            flow_layout.addWidget(self._flow_row(entry, index, flow_entries))
+        flow_layout.addStretch()
+        flow_scroller = QScrollArea()
+        flow_scroller.setWidgetResizable(True)
+        flow_scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        flow_scroller.setWidget(flow_panel)
+        left_layout.addWidget(flow_scroller, 1)
+
+        if todo.attachments:
+            left_layout.addWidget(_label("指派时图片", "eyebrow"))
+            assignment_images = QHBoxLayout()
+            assignment_images.setSpacing(6)
+            for value in todo.attachments:
+                assignment_images.addWidget(_thumbnail(value, 72, 52, self))
+            assignment_images.addStretch()
+            left_layout.addLayout(assignment_images)
+
+        columns.addWidget(left_panel, 4)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+        right_layout.addWidget(_label("全部关联日报", "eyebrow"))
+
         reports_panel = QWidget()
         reports_layout = QVBoxLayout(reports_panel)
         reports_layout.setContentsMargins(0, 0, 0, 0)
         reports_layout.setSpacing(8)
         if not reports:
             reports_layout.addWidget(_label("暂无关联日报。", "muted"))
-        for report in reports:
-            reports_layout.addWidget(self._report_row(report, report.id == highlight_report_id))
+        for report in self.reports:
+            row = self._report_row(report, report.id == highlight_report_id)
+            self.report_rows[report.id] = row
+            reports_layout.addWidget(row)
         reports_layout.addStretch()
-        reports_scroller = QScrollArea()
-        reports_scroller.setWidgetResizable(True)
-        reports_scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        reports_scroller.setMaximumHeight(280)
-        reports_scroller.setWidget(reports_panel)
-        layout.addWidget(reports_scroller)
+        self.reports_scroller = QScrollArea()
+        self.reports_scroller.setWidgetResizable(True)
+        self.reports_scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.reports_scroller.setWidget(reports_panel)
+        right_layout.addWidget(self.reports_scroller, 1)
+        columns.addWidget(right_panel, 6)
+        layout.addLayout(columns, 1)
 
-        if todo.attachments:
-            layout.addWidget(_label("指派时图片", "eyebrow"))
-            _add_full_images(layout, todo.attachments, self)
-        stage_groups = self._todo_flow_image_groups(todo)
-        for stage_title, stage_attachments in stage_groups:
-            layout.addWidget(_label(stage_title, "eyebrow"))
-            _add_full_images(layout, stage_attachments, self)
+        if highlight_report_id is not None and highlight_report_id in self.report_rows:
+            QTimer.singleShot(0, lambda: self._focus_reports([highlight_report_id]))
+
+    def _flow_row(self, entry: dict[str, object], index: int, entries: list[dict[str, object]]) -> QWidget:
+        card = QWidget()
+        card.setObjectName("feedCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+        card_layout.setSpacing(5)
+        time_text = str(entry.get("time", "")).replace("T", " ")[:16]
+        actor = str(entry.get("actor", "")).strip() or "未记录"
+        action = str(entry.get("action", "")).strip() or "流转"
+        handler = str(entry.get("handler", "")).strip()
+        button = QPushButton(f"{time_text} · {actor} · {action}{f' -> {handler}' if handler else ''}")
+        button.setObjectName("smallButton")
+        button.setToolTip("点击定位到这个阶段的关联日报")
+        button.clicked.connect(lambda checked=False, selected=index: self._jump_to_flow_reports(selected, entries))
+        card_layout.addWidget(button)
+        note = str(entry.get("note", "")).strip()
+        if note:
+            note_label = _label(f"说明：{note}", "muted")
+            note_label.setWordWrap(True)
+            card_layout.addWidget(note_label)
+        attachments = entry.get("attachments", [])
+        if isinstance(attachments, list):
+            image_row = QHBoxLayout()
+            image_row.setSpacing(5)
+            for value in attachments:
+                if str(value).startswith("data:image/"):
+                    image_row.addWidget(_thumbnail(str(value), 58, 42, self))
+            image_row.addStretch()
+            card_layout.addLayout(image_row)
+        return card
+
+    def _jump_to_flow_reports(self, index: int, entries: list[dict[str, object]]) -> None:
+        entry = entries[index]
+        start = self._flow_time(entry)
+        end = self._flow_time(entries[index + 1]) if index + 1 < len(entries) else None
+        matching = [
+            report.id for report in self.reports
+            if (start is None or report.created_at >= start) and (end is None or report.created_at < end)
+        ]
+        if not matching:
+            matching = [report.id for report in self.reports if self._report_matches_flow(report, entry)]
+        self._focus_reports(matching)
+
+    def _focus_reports(self, report_ids: list[int]) -> None:
+        selected = set(report_ids)
+        for report in self.reports:
+            row = self.report_rows.get(report.id)
+            if row is None:
+                continue
+            row.setStyleSheet(
+                "QWidget#feedCard { border: 2px solid #8f2d1f; background: #fff8f4; border-radius: 8px; }"
+                if report.id in selected else ""
+            )
+        if report_ids and report_ids[0] in self.report_rows:
+            self.reports_scroller.ensureWidgetVisible(self.report_rows[report_ids[0]], 0, 12)
+
+    def _flow_time(self, entry: dict[str, object]) -> datetime | None:
+        try:
+            return datetime.fromisoformat(str(entry.get("time", "")))
+        except ValueError:
+            return None
+
+    def _report_matches_flow(self, report: DailyReport, entry: dict[str, object]) -> bool:
+        action = str(entry.get("action", ""))
+        actor = str(entry.get("actor", "")).strip()
+        if actor and report.member_name.strip() == actor:
+            return True
+        if "UI" in action or "设计" in action:
+            return "UI" in report.role.upper() or "设计" in report.role
+        if "开发" in action:
+            return "开发" in report.role or report.member_name.strip() == self.todo.developer.strip()
+        if "测试" in action:
+            return "测试" in report.role or report.member_name.strip() == self.todo.tester.strip()
+        if "验收" in action:
+            return "产品" in report.role or report.member_name.strip() == self.todo.acceptor.strip()
+        return False
 
     def _report_row(self, report: DailyReport, highlighted: bool) -> QWidget:
         row = QWidget()
@@ -2177,25 +2304,6 @@ class TodoDetailDialog(QDialog):
             lines.append(f"完成人：{todo.completed_by}")
 
         parts = [f"<div style='white-space: pre-wrap;'>{escape(chr(10).join(lines))}</div>"]
-        current_node = self._todo_status_text(todo)
-        current_handler = todo.current_handler or ("已结束" if todo.status == "done" else todo.assignee or "未记录")
-        parts.append(
-            "<div style='margin-top: 12px; color: #b42318; font-weight: 700;'>"
-            f"当前节点：{escape(current_node)} · 当前处理人：{escape(current_handler)}</div>"
-        )
-
-        flow_lines = self._todo_flow_lines(todo)
-        if flow_lines:
-            parts.append("<div style='margin-top: 16px; font-weight: 700;'>流转记录</div>")
-            for index, flow_line in enumerate(flow_lines):
-                is_current = index == len(flow_lines) - 1 and todo.status != "done"
-                color = "#b42318" if is_current else "#596d5b"
-                weight = "700" if is_current else "400"
-                parts.append(
-                    f"<div style='margin-top: 6px; color: {color}; font-weight: {weight};'>"
-                    f"{escape(flow_line)}</div>"
-                )
-
         return "".join(parts)
 
     def _todo_status_text(self, todo: ProjectTodo) -> str:
@@ -2232,6 +2340,13 @@ class TodoDetailDialog(QDialog):
             note_text = f"\n说明：{note}" if note else ""
             lines.append(f"{time_text} · {actor} · {action}{handler_text}{note_text}")
         return lines
+
+    def _todo_flow_entries(self, todo: ProjectTodo) -> list[dict[str, object]]:
+        try:
+            loaded = json.loads(todo.flow_history.strip() or "[]")
+        except (TypeError, ValueError):
+            return []
+        return [dict(item) for item in loaded if isinstance(item, dict)] if isinstance(loaded, list) else []
 
     def _todo_flow_image_groups(self, todo: ProjectTodo) -> list[tuple[str, tuple[str, ...]]]:
         try:
