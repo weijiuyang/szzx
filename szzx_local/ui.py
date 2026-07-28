@@ -2088,9 +2088,27 @@ class TodoDetailDialog(QDialog):
 
         detail = QTextEdit()
         detail.setReadOnly(True)
-        detail.setMinimumHeight(420)
+        detail.setMinimumHeight(300)
         detail.setHtml(self._detail_html(todo, project_name, reports, highlight_report_id))
         layout.addWidget(detail)
+
+        layout.addWidget(_label("关联日报", "eyebrow"))
+        reports_panel = QWidget()
+        reports_layout = QVBoxLayout(reports_panel)
+        reports_layout.setContentsMargins(0, 0, 0, 0)
+        reports_layout.setSpacing(8)
+        if not reports:
+            reports_layout.addWidget(_label("暂无关联日报。", "muted"))
+        for report in reports:
+            reports_layout.addWidget(self._report_row(report, report.id == highlight_report_id))
+        reports_layout.addStretch()
+        reports_scroller = QScrollArea()
+        reports_scroller.setWidgetResizable(True)
+        reports_scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        reports_scroller.setMaximumHeight(280)
+        reports_scroller.setWidget(reports_panel)
+        layout.addWidget(reports_scroller)
+
         if todo.attachments:
             layout.addWidget(_label("指派时图片", "eyebrow"))
             _add_full_images(layout, todo.attachments, self)
@@ -2098,13 +2116,30 @@ class TodoDetailDialog(QDialog):
         for stage_title, stage_attachments in stage_groups:
             layout.addWidget(_label(stage_title, "eyebrow"))
             _add_full_images(layout, stage_attachments, self)
-        stage_values = {value for _, values in stage_groups for value in values}
-        report_attachments = tuple(
-            value for report in reports for value in report.attachments if value not in stage_values
+
+    def _report_row(self, report: DailyReport, highlighted: bool) -> QWidget:
+        row = QWidget()
+        row.setObjectName("feedCard")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(12, 9, 12, 9)
+        row_layout.setSpacing(10)
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(3)
+        meta = _label(
+            f"{report.created_at.strftime('%Y-%m-%d %H:%M')} · {report.member_name} · {report.role}",
+            "eyebrow",
         )
-        if report_attachments:
-            layout.addWidget(_label("关联日报图片", "eyebrow"))
-            _add_full_images(layout, report_attachments, self)
+        content = _label(report.content.strip() or "空日报")
+        content.setWordWrap(True)
+        if highlighted:
+            meta.setStyleSheet("color: #8f2d1f; font-weight: 700;")
+            content.setStyleSheet("color: #8f2d1f; font-weight: 600;")
+        text_layout.addWidget(meta)
+        text_layout.addWidget(content)
+        row_layout.addLayout(text_layout, 1)
+        for value in report.attachments:
+            row_layout.addWidget(_thumbnail(value, 64, 46, self))
+        return row
 
     def _detail_html(
         self,
@@ -2161,19 +2196,6 @@ class TodoDetailDialog(QDialog):
                     f"{escape(flow_line)}</div>"
                 )
 
-        parts.append("<div style='margin-top: 18px; font-weight: 700;'>关联日报</div>")
-        if not reports:
-            parts.append("<p>暂无关联日报。</p>")
-        for report in reports:
-            color = "#8f2d1f" if report.id == highlight_report_id else "#23241f"
-            weight = "600" if report.id == highlight_report_id else "400"
-            meta = f"{report.created_at.strftime('%Y-%m-%d %H:%M')} · {report.member_name} · {report.role}"
-            content = report.content.strip() or "空日报"
-            parts.append(
-                "<div style='white-space: pre-wrap; margin-top: 12px; "
-                f"color: {color}; font-weight: {weight};'>"
-                f"{escape(meta)}\n{escape(content)}</div>"
-            )
         return "".join(parts)
 
     def _todo_status_text(self, todo: ProjectTodo) -> str:
