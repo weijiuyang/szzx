@@ -2516,6 +2516,47 @@ class Database:
             return True
         return False
 
+    def transfer_project_todo(
+        self,
+        todo_id: int,
+        actor: str,
+        recipient_name: str,
+    ) -> ProjectTodo | None:
+        current_actor = actor.strip()
+        target = recipient_name.strip()
+        if not current_actor or not target:
+            return None
+        normalized_actor = self._normalize_display_name(current_actor)
+        normalized_target = self._normalize_display_name(target)
+        if not normalized_actor or normalized_actor == normalized_target:
+            return None
+        for row in self.data["project_todos"]:
+            if int(row["id"]) != todo_id:
+                continue
+            if str(row.get("scope", "personal")) != "assigned":
+                return None
+            if str(row.get("status", "todo")) == "done":
+                return None
+            if self._normalize_display_name(self._todo_current_handler(row)) != normalized_actor:
+                return None
+
+            status = str(row.get("status", "todo"))
+            row["current_handler"] = target
+            if str(row.get("workflow", "")) == "dev_test_accept":
+                handler_field = {
+                    "ui_todo": "designer",
+                    "dev_todo": "developer",
+                    "dev_doing": "developer",
+                    "test_todo": "tester",
+                    "accept_todo": "acceptor",
+                }.get(status)
+                if handler_field:
+                    row[handler_field] = target
+            self._append_todo_flow(row, current_actor, "转交任务", status, target)
+            self._save()
+            return self._todo_from_row(row)
+        return None
+
     def list_deleted_assigned_todos(self) -> list[dict[str, Any]]:
         rows = self.data.get("deleted_records", [])
         return [

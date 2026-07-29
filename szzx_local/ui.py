@@ -4891,7 +4891,9 @@ class MainWindow(QMainWindow):
         new_rows = [
             row for row in cancellations
             if f"{row.get('source_device_id', '')}:{row.get('source_id', '')}" not in seen
-            and self.db.is_current_user_name(str(row.get("assignee", "")))
+            and self.db.is_current_user_name(
+                str(row.get("current_handler", "")).strip() or str(row.get("assignee", ""))
+            )
         ]
         seen.update(cancellation_keys)
         self.db.set_setting(key, json.dumps(sorted(seen)[-300:]), save=True)
@@ -5309,6 +5311,11 @@ class MainWindow(QMainWindow):
                 skip_button.setObjectName("smallButton")
                 skip_button.clicked.connect(lambda checked=False, p=project, selected=todo: self._skip_todo_ui_for_project(p, selected))
                 layout.addWidget(skip_button)
+        if todo.scope == "assigned" and todo.status != "done" and self._todo_visible_to_current_user(todo):
+            transfer_button = QPushButton("转交")
+            transfer_button.setObjectName("smallButton")
+            transfer_button.clicked.connect(lambda checked=False, selected=todo: self._transfer_assigned_todo(selected))
+            layout.addWidget(transfer_button)
         if is_assigned_creator:
             delete_button = QPushButton("删除")
             delete_button.setObjectName("smallButton")
@@ -5316,6 +5323,100 @@ class MainWindow(QMainWindow):
             layout.addWidget(delete_button)
 
         return card
+
+    def _transfer_assigned_todo(self, todo: ProjectTodo) -> None:
+        if todo.scope != "assigned" or todo.status == "done" or not self._todo_visible_to_current_user(todo):
+            QMessageBox.information(self, "不能转交", "只有当前接收人可以转交进行中的分配代办。")
+            return
+        project = self.db.get_project(todo.project_id)
+        if project is None:
+            QMessageBox.warning(self, "转交失败", "这条代办关联的项目已不存在。")
+            return
+        members = self.db.list_project_members(project.id)
+        candidates: list[str] = []
+        for name in (project.owner, *(member.name for member in members)):
+            candidate = name.strip()
+            if not candidate or self.db.is_current_user_name(candidate) or candidate in candidates:
+                continue
+            member = self._project_member_by_name(members, candidate)
+            if not self._todo_transfer_candidate_matches_stage(todo, project, member, candidate):
+                continue
+            candidates.append(candidate)
+        if not candidates:
+            QMessageBox.information(self, "转交任务", "当前没有其他合适的项目成员可以接收。")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("转交任务")
+        dialog.setMinimumWidth(620)
+        outer = QVBoxLayout(dialog)
+        outer.setContentsMargins(24, 22, 24, 20)
+        outer.setSpacing(16)
+        outer.addWidget(_label("选择新的任务接收人", "sectionTitle"))
+        summary = QLabel(todo.title)
+        summary.setWordWrap(True)
+        summary.setObjectName("muted")
+        outer.addWidget(summary)
+
+        choices = QWidget()
+        grid = QGridLayout(choices)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(8)
+        group = QButtonGroup(dialog)
+        group.setExclusive(True)
+        for index, name in enumerate(candidates):
+            choice = QPushButton(name)
+            choice.setObjectName("requirementMemberChoice")
+            choice.setCheckable(True)
+            choice.setProperty("memberName", name)
+            group.addButton(choice)
+            grid.addWidget(choice, index // 3, index % 3)
+            if index == 0:
+                choice.setChecked(True)
+        for column in range(3):
+            grid.setColumnStretch(column, 1)
+        outer.addWidget(choices)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        confirm = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        confirm.setText("确认转交")
+        confirm.setObjectName("greenPrimaryButton")
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        outer.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = group.checkedButton()
+        target = str(selected.property("memberName")).strip() if selected is not None else ""
+        transferred = self.db.transfer_project_todo(todo.id, self.db.display_name(), target)
+        if transferred is None:
+            QMessageBox.warning(self, "转交失败", "任务状态或当前接收人已变化，请刷新后重试。")
+            return
+        self._refresh_my_panel()
+        self._refresh_project_workspace_if_current(project.id)
+        self._announce_presence()
+        QMessageBox.information(self, "转交任务", f"任务已转交给 {target}。")
+
+    def _todo_transfer_candidate_matches_stage(
+        self,
+        todo: ProjectTodo,
+        project: Project,
+        member: ProjectMember | None,
+        candidate_name: str,
+    ) -> bool:
+        if todo.workflow != "dev_test_accept":
+            return True
+        if todo.status == "ui_todo":
+            return self._member_is_designer(member)
+        if todo.status in {"dev_todo", "dev_doing"}:
+            return self._member_is_developer(member)
+        if todo.status == "test_todo":
+            return member is not None and "测试" in member.role.strip()
+        if todo.status == "accept_todo":
+            return candidate_name.strip() == project.owner.strip() or self._member_is_product(member)
+        return False
 
     def _my_message_card(self, todo: ProjectTodo, project_name: str) -> QWidget:
         card = QWidget()
@@ -5915,7 +6016,8 @@ class MainWindow(QMainWindow):
         if todo.status == "done":
             QMessageBox.information(self, "不能删除", "已完成的分配代办会作为提醒保留。")
             return
-        message = f"确定删除分配给「{todo.assignee}」的代办吗？"
+        current_handler = self._todo_current_handler(todo) or todo.assignee
+        message = f"确定删除分配给「{current_handler}」的代办吗？"
         if QMessageBox.question(self, "删除分配代办", message) != QMessageBox.StandardButton.Yes:
             return
         if not self.db.delete_project_todo(todo.id):
@@ -5923,7 +6025,7 @@ class MainWindow(QMainWindow):
             return
         if self._claim_task_pet_animation():
             self.pet.move_to_bottom_right()
-            self.pet.speak(f"我去通知{todo.assignee}任务取消。", mood="leave")
+            self.pet.speak(f"我去通知{current_handler}任务取消。", mood="leave")
         self._refresh_project_workspace()
         self._refresh_my_panel()
         self._announce_presence()
@@ -6534,9 +6636,7 @@ class MainWindow(QMainWindow):
         return todos
 
     def _todo_visible_to_current_user(self, todo: ProjectTodo) -> bool:
-        if todo.workflow == "dev_test_accept":
-            return self.db.is_current_user_name(todo.current_handler)
-        return self.db.is_current_user_name(todo.assignee)
+        return self.db.is_current_user_name(self._todo_current_handler(todo))
 
     def _todo_current_handler(self, todo: ProjectTodo) -> str:
         return todo.current_handler.strip() or todo.assignee.strip()
