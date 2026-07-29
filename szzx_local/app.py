@@ -2,18 +2,19 @@ from __future__ import annotations
 
 import sys
 import ctypes
+import platform
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject
-from PySide6.QtGui import QAction, QIcon
-from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PySide6.QtCore import QEvent, QObject, QProcess, QStandardPaths, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QIcon
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QProgressDialog, QSystemTrayIcon
 
 from .ai import LocalSummarizer
 from .autostart import set_autostart
 from .central_sync import CentralDataSync
 from .database import Database
-from .lan import LanDiscovery
+from .lan import LanDiscovery, best_lan_update_peer
 from .pet import DesktopPet
 from .single_instance import SingleInstanceController
 from .ui import LoginDialog, MainWindow, SettingsDialog
@@ -24,6 +25,59 @@ def _app_icon_path() -> Path:
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
     filename = "unframed_logo.png" if sys.platform == "win32" else "logo.png"
     return bundle_root / "szzx_local" / "assets" / "icon" / filename
+
+
+def _desktop_path() -> Path:
+    location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation)
+    return Path(location) if location else Path.home() / "Desktop"
+
+
+def _launch_update_package(target: Path) -> bool:
+    if sys.platform == "win32" and target.suffix.lower() == ".exe":
+        result = QProcess.startDetached(str(target), ["--update-restart"])
+        return result[0] if isinstance(result, tuple) else bool(result)
+    return QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
+
+def _force_startup_lan_update(app: QApplication, discovery: LanDiscovery) -> bool:
+    """Check before login; return False when this process must stop."""
+    progress = QProgressDialog("正在查找局域网内的最新版本…", "", 0, 0)
+    progress.setWindowTitle("启动检查")
+    progress.setCancelButton(None)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.show()
+    discovery.announce_burst()
+    deadline = time.monotonic() + 2.2
+    while time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.04)
+
+    peer = best_lan_update_peer(
+        discovery.sorted_peers(),
+        current_version=APP_VERSION,
+        local_platform=sys.platform,
+        local_architecture=platform.machine(),
+    )
+    if peer is None:
+        progress.close()
+        return True
+
+    package_version = str(peer.update_package.get("version") or peer.app_version).strip()
+    progress.setLabelText(f"发现 v{package_version}，正在从 {peer.name} 自动更新…")
+    app.processEvents()
+    try:
+        target = discovery.download_update_package(peer, _desktop_path())
+        started = _launch_update_package(target)
+    except Exception as exc:
+        progress.close()
+        QMessageBox.critical(None, "必须更新", f"发现局域网新版本 v{package_version}，但自动更新失败：\n{exc}\n\n请重新打开程序后再试。")
+        return False
+    progress.close()
+    if not started:
+        QMessageBox.critical(None, "必须更新", f"安装包已下载到桌面，但无法自动打开：\n{target}")
+        return False
+    return False
 
 
 class _WindowsTrayController(QObject):
@@ -108,10 +162,21 @@ def main() -> int:
     discovery.data_server_seen.connect(central_sync.set_discovered_server)
     discovery.start()
 
-    login = LoginDialog(db, central_sync)
-    if login.exec() != LoginDialog.DialogCode.Accepted:
+    if not _force_startup_lan_update(app, discovery):
         db.close()
         return 0
+
+    session_is_valid = False
+    if central_sync.auth_token and central_sync.server_url:
+        try:
+            session_is_valid = central_sync.validate_saved_session()
+        except Exception:
+            session_is_valid = False
+    if not session_is_valid:
+        login = LoginDialog(db, central_sync)
+        if login.exec() != LoginDialog.DialogCode.Accepted:
+            db.close()
+            return 0
 
     if not db.dingtalk_id().strip():
         required_profile = SettingsDialog(

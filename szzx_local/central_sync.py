@@ -47,7 +47,7 @@ class CentralDataSync(QObject):
         configured_url = server_url or os.environ.get("SZZX_DATA_SERVER_URL") or db.get_setting("data_server_url")
         self.server_url = self._normalize_url(configured_url or "")
         self.current_server: CentralDataServer | None = None
-        self.auth_token = ""
+        self.auth_token = self._saved_auth_token(self.server_url)
         self._busy = False
         self._pending = False
         self._pending_push = False
@@ -75,6 +75,7 @@ class CentralDataSync(QObject):
             return
         self.current_server = server
         self.server_url = server.url
+        self.auth_token = self._saved_auth_token(self.server_url)
         self.db.set_setting("data_server_url", self.server_url, save=True)
         self.server_changed.emit(server)
         if self.auth_token:
@@ -95,10 +96,23 @@ class CentralDataSync(QObject):
         if not isinstance(result, dict) or not result.get("token"):
             raise ValueError("服务器登录响应无效")
         self.auth_token = str(result["token"])
+        self._save_auth_token(self.server_url, self.auth_token)
         self.db.set_setting("display_name", str(result.get("username", username)).strip(), save=False)
         self.db.set_setting("display_name_locked", "false", save=False)
         self.db.save_local_settings()
         return result
+
+    def validate_saved_session(self) -> bool:
+        if not self.server_url or not self.auth_token:
+            return False
+        request = Request(
+            f"{self.server_url}/auth/session",
+            headers=self._auth_headers(),
+            method="GET",
+        )
+        with urlopen(request, timeout=5) as response:
+            result = json.loads(response.read(64 * 1024).decode("utf-8"))
+        return isinstance(result, dict) and result.get("ok") is True
 
     def change_account(self, current_password: str, username: str, new_password: str | None = None) -> str:
         values: dict[str, str] = {
@@ -124,10 +138,29 @@ class CentralDataSync(QObject):
             result = self._admin_request("/auth/password", data=legacy_payload)
         if result.get("token"):
             self.auth_token = str(result["token"])
+            self._save_auth_token(self.server_url, self.auth_token)
         return str(result.get("username", username)).strip()
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {}
+
+    def _saved_auth_tokens(self) -> dict[str, str]:
+        try:
+            value = json.loads(self.db.get_setting("data_server_auth_tokens") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            value = {}
+        return {str(url): str(token) for url, token in value.items()} if isinstance(value, dict) else {}
+
+    def _saved_auth_token(self, server_url: str) -> str:
+        return self._saved_auth_tokens().get(self._normalize_url(server_url), "")
+
+    def _save_auth_token(self, server_url: str, token: str) -> None:
+        normalized_url = self._normalize_url(server_url)
+        if not normalized_url or not token:
+            return
+        tokens = self._saved_auth_tokens()
+        tokens[normalized_url] = token
+        self.db.set_setting("data_server_auth_tokens", json.dumps(tokens, ensure_ascii=False))
 
     def sync_now(self, push_first: bool = False) -> None:
         if not self.server_url:

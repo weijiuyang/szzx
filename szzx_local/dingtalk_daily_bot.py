@@ -201,22 +201,20 @@ class DingTalkDailyBot:
             # DingTalk currently returns this value in milliseconds, while
             # retaining compatibility if it ever returns epoch seconds.
             expires_at_seconds = expires_at / 1000 if expires_at > 10_000_000_000 else expires_at
-            if not session_webhook or (expires_at_seconds and expires_at_seconds <= now + 30):
-                raise RuntimeError(
-                    "日报群的 @ 通道已过期。请在日报群里 @日报机器人发送“绑定日报群”，然后重新发送日报。"
-                )
-            self._request_json(
-                session_webhook,
-                {
-                    "msgtype": "markdown",
-                    "markdown": {"title": title, "text": text},
-                    "at": {
-                        "atUserIds": list(dict.fromkeys(mentioned_user_ids)),
-                        "isAtAll": False,
+            if session_webhook and not (expires_at_seconds and expires_at_seconds <= now + 30):
+                self._request_json(
+                    session_webhook,
+                    {
+                        "msgtype": "markdown",
+                        "markdown": {"title": title, "text": text},
+                        "at": {
+                            "atUserIds": list(dict.fromkeys(mentioned_user_ids)),
+                            "isAtAll": False,
+                        },
                     },
-                },
-            )
-            return
+                )
+                return
+            LOGGER.warning("日报群的 @ 通道已过期，改用企业机器人发送（本次不触发 @ 提醒）")
         payload = {
             "robotCode": self.robot_code,
             "openConversationId": conversation_id,

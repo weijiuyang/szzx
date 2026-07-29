@@ -164,6 +164,20 @@ class DailyReportBotTests(unittest.TestCase):
         )
         self.assertEqual(requests[0][0], "https://example.test/session")
 
+    def test_expired_mention_channel_falls_back_to_group_message(self):
+        db = _SettingsDatabase()
+        db.set_setting("dingtalk_daily_session_webhook", "https://example.test/session")
+        db.set_setting("dingtalk_daily_session_webhook_expires_at", "1")
+        bot = DingTalkDailyBot(db, "client", "secret")
+        requests = []
+        bot._get_access_token = lambda: "token"
+        bot._request_json = lambda url, payload, headers=None: requests.append((url, payload, headers)) or {}
+
+        bot._send_group_markdown("cid", "标题", "# @lisi01（李四）", ["lisi01"])
+
+        self.assertEqual(requests[0][0], "https://api.dingtalk.com/v1.0/robot/groupMessages/send")
+        self.assertEqual(requests[0][1]["openConversationId"], "cid")
+
     def test_resting_member_is_not_expected_to_submit(self):
         db = _SettingsDatabase()
         db.list_rest_days = lambda mine_only=True: [

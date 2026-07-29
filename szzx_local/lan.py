@@ -48,6 +48,40 @@ class LanPeer:
     today_project_logs: list[dict[str, Any]]
 
 
+def best_lan_update_peer(
+    peers: list[LanPeer],
+    current_version: str = APP_VERSION,
+    local_platform: str = sys.platform,
+    local_architecture: str | None = None,
+) -> LanPeer | None:
+    """Return the peer offering the highest compatible newer package."""
+    local_arch = (local_architecture or platform.machine()).lower()
+    candidates: list[LanPeer] = []
+    for peer in peers:
+        package = peer.update_package
+        if peer.platform != local_platform or not isinstance(package, dict) or not package:
+            continue
+        try:
+            package_size = int(package.get("size", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        package_version = str(package.get("version") or peer.app_version or "").strip()
+        package_arch = str(package.get("architecture") or "").lower()
+        if package_size <= 0 or not package_version:
+            continue
+        if local_platform == "darwin" and package_arch not in {local_arch, "universal2"}:
+            continue
+        if version_tuple(package_version) <= version_tuple(current_version):
+            continue
+        candidates.append(peer)
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: version_tuple(str(item.update_package.get("version") or item.app_version)),
+    )
+
+
 class LanDiscovery(QObject):
     peers_changed = Signal(list)
     data_synced = Signal()

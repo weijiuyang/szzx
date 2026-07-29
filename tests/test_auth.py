@@ -47,6 +47,23 @@ class DataServiceAuthTests(unittest.TestCase):
         self.assertEqual(self.service.authenticate(token), "Alice")
         self.assertGreater(self.service._sessions[token][1], time.time() + 11 * 60 * 60)
 
+    def test_session_survives_server_restart(self):
+        result = self.service.login("Alice", "long-enough-password")
+        restarted = DataService(self.db, "test", 45456)
+
+        self.assertEqual(restarted.authenticate(result["token"]), "Alice")
+
+    def test_password_change_revokes_other_persistent_sessions(self):
+        first = self.service.login("Alice", "long-enough-password")["token"]
+        second = self.service.login("Alice", "long-enough-password")["token"]
+
+        changed = self.service.change_password(first, "long-enough-password", "new-long-password")
+        restarted = DataService(self.db, "test", 45456)
+
+        with self.assertRaises(PermissionError):
+            restarted.authenticate(second)
+        self.assertEqual(restarted.authenticate(changed["token"]), "Alice")
+
     def test_change_password_requires_current_password(self):
         result = self.service.login("Alice", "long-enough-password")
         with self.assertRaises(PermissionError):

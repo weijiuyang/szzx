@@ -3,6 +3,11 @@ from __future__ import annotations
 
 CHANGELOG = [
     {
+        "version": "0.2.63",
+        "date": "2026-07-29",
+        "notes": "每次启动都会在登录前自动检查局域网最高兼容版本；发现新版本后强制下载安装并退出旧程序，无需手动查找同事。",
+    },
+    {
         "version": "0.2.62",
         "date": "2026-07-28",
         "notes": [

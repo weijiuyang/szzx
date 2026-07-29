@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import logging
 import os
@@ -127,6 +128,9 @@ class DataService:
                 raise PermissionError("invalid username or password")
             token = secrets.token_urlsafe(32)
             self._sessions[token] = (key, time.time() + 12 * 60 * 60)
+            sessions = self._persistent_sessions()
+            sessions[self._token_digest(token)] = key
+            self._save_persistent_sessions(sessions)
         return {"ok": True, "token": token, "username": username, "created": created}
 
     def change_account(
@@ -159,8 +163,13 @@ class DataService:
                 users[next_key] = account
             self._save_auth_users(users)
             self._sessions = {value: session for value, session in self._sessions.items() if session[0] != key}
+            sessions = {
+                digest: owner for digest, owner in self._persistent_sessions().items() if owner != key
+            }
             next_token = secrets.token_urlsafe(32)
             self._sessions[next_token] = (next_key, time.time() + 12 * 60 * 60)
+            sessions[self._token_digest(next_token)] = next_key
+            self._save_persistent_sessions(sessions)
         return {"ok": True, "token": next_token, "username": username}
 
     def change_password(self, token: str, current_password: str, new_password: str) -> dict[str, Any]:
@@ -169,6 +178,11 @@ class DataService:
     def authenticate(self, token: str) -> str:
         with self.lock:
             session = self._sessions.get(token)
+            if session is None:
+                key = self._persistent_sessions().get(self._token_digest(token)) if token else None
+                if key:
+                    session = (key, time.time() + 12 * 60 * 60)
+                    self._sessions[token] = session
             if session is None or session[1] <= time.time():
                 self._sessions.pop(token, None)
                 raise PermissionError("authentication required")
@@ -193,6 +207,20 @@ class DataService:
 
     def _save_auth_users(self, users: dict[str, dict[str, str]]) -> None:
         self.db.set_setting("auth_users", json.dumps(users, ensure_ascii=False))
+
+    @staticmethod
+    def _token_digest(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _persistent_sessions(self) -> dict[str, str]:
+        try:
+            value = json.loads(self.db.get_setting("auth_sessions") or "{}")
+        except json.JSONDecodeError:
+            value = {}
+        return {str(digest): str(user) for digest, user in value.items()} if isinstance(value, dict) else {}
+
+    def _save_persistent_sessions(self, sessions: dict[str, str]) -> None:
+        self.db.set_setting("auth_sessions", json.dumps(sessions, ensure_ascii=False))
 
     @property
     def ai_config_path(self) -> Path:
@@ -530,6 +558,9 @@ class DataServiceHandler(BaseHTTPRequestHandler):
             return
         actor = self._authenticated_actor()
         if actor is None:
+            return
+        if self.path == "/auth/session":
+            self._send_json({"ok": True, "username": actor})
             return
         if self.path == "/snapshot":
             self._send_json(self.service.snapshot(actor, self._request_origin()))
