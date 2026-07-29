@@ -2495,7 +2495,9 @@ class DailyReportDetailDialog(QDialog):
 class TodoDailyReportDialog(QDialog):
     def __init__(self, todo: ProjectTodo, project_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("记录代办日报")
+        is_testing = todo.workflow == "dev_test_accept" and todo.status == "test_todo"
+        dialog_title = "记录测试情况" if is_testing else "记录代办日报"
+        self.setWindowTitle(dialog_title)
         self.setFixedWidth(560)
         self.setStyleSheet(APP_STYLE)
 
@@ -2503,12 +2505,16 @@ class TodoDailyReportDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
 
-        layout.addWidget(_label("记录代办日报", "sectionTitle"))
+        layout.addWidget(_label(dialog_title, "sectionTitle"))
         layout.addWidget(_label(f"{project_name} · {todo.title}", "muted"))
 
         self.editor = ImagePasteTextEdit()
         self.editor.setMinimumHeight(180)
-        self.editor.setPlaceholderText("记录这条代办今天的进展、问题或下一步。可直接粘贴图片。")
+        self.editor.setPlaceholderText(
+            "记录测试进度、结果、问题或复现步骤。可直接粘贴截图。"
+            if is_testing
+            else "记录这条代办今天的进展、问题或下一步。可直接粘贴图片。"
+        )
         layout.addWidget(self.editor)
         layout.addWidget(AttachmentPreviewStrip(self.editor))
 
@@ -5283,7 +5289,7 @@ class MainWindow(QMainWindow):
                 start_button.clicked.connect(lambda checked=False, selected=todo: self._start_project_todo(selected))
                 layout.addWidget(start_button)
             elif todo.scope == "assigned" and self._todo_can_record(todo):
-                record_button = QPushButton("记录")
+                record_button = QPushButton("记录测试" if todo.status == "test_todo" else "记录")
                 record_button.setObjectName("smallButton")
                 record_button.clicked.connect(lambda checked=False, selected=todo: self._record_todo_daily_report(selected))
                 layout.addWidget(record_button)
@@ -6565,7 +6571,7 @@ class MainWindow(QMainWindow):
 
     def _todo_can_record(self, todo: ProjectTodo) -> bool:
         if todo.workflow == "dev_test_accept":
-            return todo.status in {"ui_todo", "dev_doing"}
+            return todo.status in {"ui_todo", "dev_doing", "test_todo"}
         return todo.started_at is not None
 
     def _todo_can_reject(self, todo: ProjectTodo) -> bool:
@@ -6875,7 +6881,7 @@ class MainWindow(QMainWindow):
                 start_button.clicked.connect(lambda checked=False, selected=todo: self._start_project_todo(selected))
                 layout.addWidget(start_button)
             elif can_operate and todo.scope == "assigned" and self._todo_can_record(todo):
-                record_button = QPushButton("记录")
+                record_button = QPushButton("记录测试" if todo.status == "test_todo" else "记录")
                 record_button.setObjectName("smallButton")
                 record_button.clicked.connect(lambda checked=False, selected=todo: self._record_todo_daily_report(selected))
                 layout.addWidget(record_button)
