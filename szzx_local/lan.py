@@ -700,27 +700,23 @@ class LanDiscovery(QObject):
             if package_size <= 0 or package_size > 500 * 1024 * 1024:
                 raise ValueError("安装包大小异常。")
             filename = Path(str(metadata.get("name") or "SZZXLocalDesk-update")).name
-            target = self._unique_target(target_dir / filename)
+            target = target_dir / filename
+            partial = target.with_name(f"{target.name}.part")
+            try:
+                partial.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+            except OSError as exc:
+                raise OSError("无法清理旧更新包，请关闭可能正在打开的安装包后重试。") from exc
             remaining = package_size
-            with target.open("wb") as file:
+            with partial.open("wb") as file:
                 while remaining > 0:
                     chunk = client.recv(min(1024 * 1024, remaining))
                     if not chunk:
                         raise OSError("连接中断，安装包没有下载完整。")
                     file.write(chunk)
                     remaining -= len(chunk)
+            partial.replace(target)
         return target
-
-    def _unique_target(self, target: Path) -> Path:
-        if not target.exists():
-            return target
-        stem = target.stem or "SZZXLocalDesk-update"
-        suffix = target.suffix
-        for index in range(1, 1000):
-            candidate = target.with_name(f"{stem}-{index}{suffix}")
-            if not candidate.exists():
-                return candidate
-        return target.with_name(f"{stem}-{datetime.now().strftime('%Y%m%d%H%M%S')}{suffix}")
 
     def _recv_exact(self, client: socket.socket, size: int) -> bytes:
         chunks: list[bytes] = []

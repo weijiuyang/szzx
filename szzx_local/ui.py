@@ -66,6 +66,7 @@ from .models import (
     WeeklyReport,
 )
 from .pet import DesktopPet, PET_ACTIONS, PET_KINDS
+from .self_update import clear_old_update_packages, start_in_place_update, update_cache_dir
 from .updater import check_for_update, configured_update_url, version_tuple
 from .version import APP_VERSION
 
@@ -1710,6 +1711,98 @@ class ProjectProgressDeleteDialog(QDialog):
         confirm_button.setObjectName("dangerButton")
         confirm_button.clicked.connect(self.accept)
         confirm_button.setDefault(True)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(confirm_button)
+        layout.addLayout(buttons)
+
+
+class TodoDeleteConfirmDialog(QDialog):
+    def __init__(self, todo_title: str, assignee: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("删除代办")
+        self.setModal(True)
+        self.setFixedWidth(520)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 26, 30, 26)
+        layout.setSpacing(16)
+        layout.addWidget(_label("删除代办", "eyebrow"))
+
+        title = _label("确定删除这条代办？", "pageTitle")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        description = _label("删除后，这条代办将从任务列表中移除。", "muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        item_panel = _panel()
+        item_panel.setObjectName("softPanel")
+        item_layout = QVBoxLayout(item_panel)
+        item_layout.setContentsMargins(18, 14, 18, 14)
+        item_layout.setSpacing(6)
+        item_label = _label(todo_title)
+        item_label.setWordWrap(True)
+        item_layout.addWidget(item_label)
+        item_layout.addWidget(_label(f"接收人：{assignee}", "muted"))
+        layout.addWidget(item_panel)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch()
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(self.reject)
+        cancel_button.setDefault(True)
+        confirm_button = QPushButton("确认删除")
+        confirm_button.setObjectName("dangerButton")
+        confirm_button.clicked.connect(self.accept)
+        confirm_button.setAutoDefault(False)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(confirm_button)
+        layout.addLayout(buttons)
+
+
+class ProjectMemberDeleteDialog(QDialog):
+    def __init__(self, project_name: str, member_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("删除项目成员")
+        self.setModal(True)
+        self.setFixedWidth(520)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 26, 30, 26)
+        layout.setSpacing(16)
+        layout.addWidget(_label("删除项目成员", "eyebrow"))
+
+        title = _label("确定移除这位成员？", "pageTitle")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        description = _label("移除后，该成员将不再参与这个项目。", "muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        item_panel = _panel()
+        item_panel.setObjectName("softPanel")
+        item_layout = QVBoxLayout(item_panel)
+        item_layout.setContentsMargins(18, 14, 18, 14)
+        item_layout.setSpacing(6)
+        item_layout.addWidget(_label(member_name))
+        item_layout.addWidget(_label(f"项目：{project_name}", "muted"))
+        layout.addWidget(item_panel)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch()
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(self.reject)
+        cancel_button.setDefault(True)
+        confirm_button = QPushButton("确认移除")
+        confirm_button.setObjectName("dangerButton")
+        confirm_button.clicked.connect(self.accept)
+        confirm_button.setAutoDefault(False)
         buttons.addWidget(cancel_button)
         buttons.addWidget(confirm_button)
         layout.addLayout(buttons)
@@ -6223,8 +6316,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "不能删除", "已完成的分配代办会作为提醒保留。")
             return
         current_handler = self._todo_current_handler(todo) or todo.assignee
-        message = f"确定删除分配给「{current_handler}」的代办吗？"
-        if QMessageBox.question(self, "删除分配代办", message) != QMessageBox.StandardButton.Yes:
+        dialog = TodoDeleteConfirmDialog(todo.title, current_handler, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         if not self.db.delete_project_todo(todo.id):
             QMessageBox.warning(self, "删除失败", "这条代办已经不存在。")
@@ -7038,8 +7131,8 @@ class MainWindow(QMainWindow):
         if not self._is_super_admin() and (self.db.is_current_user_name(member.name) or member.name == project.owner):
             QMessageBox.information(self, "不能删除", "负责人不能从项目成员里删除。")
             return
-        message = f"确定从项目「{project.name}」删除成员「{member.name}」吗？"
-        if QMessageBox.question(self, "删除成员", message) != QMessageBox.StandardButton.Yes:
+        dialog = ProjectMemberDeleteDialog(project.name, member.name, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         if not self.db.delete_project_member(member.id):
             QMessageBox.warning(self, "删除失败", "这个成员记录已经不存在。")
@@ -9286,17 +9379,20 @@ class MainWindow(QMainWindow):
         ) != QMessageBox.StandardButton.Yes:
             return
         try:
-            target = self.discovery.download_update_package(peer, _desktop_path())
+            clear_old_update_packages()
+            target = self.discovery.download_update_package(peer, update_cache_dir())
         except Exception as exc:
             QMessageBox.warning(self, "下载失败", str(exc))
             return
-        if sys.platform == "win32" and target.suffix.lower() == ".exe":
+        if start_in_place_update(target):
+            started = True
+        elif sys.platform == "win32" and target.suffix.lower() == ".exe":
             result = QProcess.startDetached(str(target), ["--update-restart"])
             started = result[0] if isinstance(result, tuple) else bool(result)
         else:
             started = QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
         if not started:
-            QMessageBox.warning(self, "无法打开更新", f"安装包已保存到桌面，但未能自动打开：\n{target}")
+            QMessageBox.warning(self, "无法自动更新", f"更新包已经下载，但未能自动安装：\n{target}")
             return
         QApplication.quit()
 
@@ -9322,7 +9418,7 @@ class MainWindow(QMainWindow):
             f"从 {peer.name} 下载 v{package_version} 安装包吗？"
             f"{notes_text}"
             f"{history_text}"
-            "\n\n下载后需要手动关闭当前程序并运行安装包。"
+            "\n\n确认后会自动原地更新并重新打开，无需手动安装。"
         )
 
     def _peer_list_text(self, peer: LanPeer, seen: str) -> str:

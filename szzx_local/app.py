@@ -6,7 +6,7 @@ import platform
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QProcess, QStandardPaths, QUrl
+from PySide6.QtCore import QEvent, QObject, QProcess, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QProgressDialog, QSystemTrayIcon
 
@@ -16,6 +16,7 @@ from .central_sync import CentralDataSync
 from .database import Database
 from .lan import LanDiscovery, best_lan_update_peer
 from .pet import DesktopPet
+from .self_update import clear_old_update_packages, start_in_place_update, update_cache_dir
 from .single_instance import SingleInstanceController
 from .ui import LoginDialog, MainWindow, SettingsDialog
 from .version import APP_NAME, APP_VERSION
@@ -27,12 +28,9 @@ def _app_icon_path() -> Path:
     return bundle_root / "szzx_local" / "assets" / "icon" / filename
 
 
-def _desktop_path() -> Path:
-    location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation)
-    return Path(location) if location else Path.home() / "Desktop"
-
-
 def _launch_update_package(target: Path) -> bool:
+    if start_in_place_update(target):
+        return True
     if sys.platform == "win32" and target.suffix.lower() == ".exe":
         result = QProcess.startDetached(str(target), ["--update-restart"])
         return result[0] if isinstance(result, tuple) else bool(result)
@@ -67,7 +65,8 @@ def _force_startup_lan_update(app: QApplication, discovery: LanDiscovery) -> boo
     progress.setLabelText(f"发现 v{package_version}，正在从 {peer.name} 自动更新…")
     app.processEvents()
     try:
-        target = discovery.download_update_package(peer, _desktop_path())
+        clear_old_update_packages()
+        target = discovery.download_update_package(peer, update_cache_dir())
         started = _launch_update_package(target)
     except Exception as exc:
         progress.close()
@@ -75,7 +74,7 @@ def _force_startup_lan_update(app: QApplication, discovery: LanDiscovery) -> boo
         return False
     progress.close()
     if not started:
-        QMessageBox.critical(None, "必须更新", f"安装包已下载到桌面，但无法自动打开：\n{target}")
+        QMessageBox.critical(None, "必须更新", f"更新包已经下载，但无法自动安装：\n{target}")
         return False
     return False
 
