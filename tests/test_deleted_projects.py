@@ -24,6 +24,17 @@ class DeletedProjectVisibilityTests(unittest.TestCase):
         self.assertEqual([item.id for item in retained], [project.id])
         self.assertEqual(retained[0].status, "已删除")
 
+    def test_deleted_projects_are_hidden_from_member_profile(self):
+        project = self.db.add_project("个人项目", "朱世缘", "说明")
+        self.assertEqual(
+            [item["project_id"] for item in self.db.projects_for_member("朱世缘")],
+            [project.id],
+        )
+
+        self.assertIsNotNone(self.db.update_project_status(project.id, "已删除"))
+
+        self.assertEqual(self.db.projects_for_member("朱世缘"), [])
+
 
 class ColleagueStatusTests(unittest.TestCase):
     def setUp(self):

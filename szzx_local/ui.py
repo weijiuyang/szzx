@@ -400,6 +400,37 @@ QPushButton#smallButton {
     padding: 7px 12px;
     min-width: 58px;
 }
+QPushButton#feedOpenButton {
+    padding: 5px 12px;
+    min-width: 64px;
+    max-width: 64px;
+    min-height: 22px;
+    max-height: 22px;
+    background: #e4efe7;
+    color: #315f4b;
+    border-color: #bfd3c5;
+    border-radius: 7px;
+}
+QPushButton#feedOpenButton:hover {
+    background: #d8e9dd;
+    border-color: #9fbea9;
+}
+QPushButton#feedDeleteButton {
+    padding: 5px 8px;
+    min-width: 48px;
+    max-width: 48px;
+    min-height: 22px;
+    max-height: 22px;
+    background: #f2f2ee;
+    color: #2b2c27;
+    border-color: #d4d5ce;
+    border-radius: 7px;
+}
+QPushButton#feedDeleteButton:hover {
+    background: #e8e9e4;
+    color: #11120f;
+    border-color: #d4d5ce;
+}
 QPushButton#projectSearchButton {
     padding: 2px;
     min-width: 22px;
@@ -606,6 +637,14 @@ QWidget#feedCard {
     border: 1px solid #d8ded2;
     border-radius: 6px;
 }
+QScrollArea#todoDetailScroller {
+    background: #f3f6f1;
+    border: 1px solid #d8e0d5;
+    border-radius: 6px;
+}
+QWidget#todoDetailScrollContent {
+    background: #f3f6f1;
+}
 QWidget#dailyCalendarRow {
     background: transparent;
     border-bottom: 1px solid #e2e4dc;
@@ -790,6 +829,25 @@ DINGTALK_ICON_PATH = _asset_path("dingtalk.svg")
 def _desktop_path() -> Path:
     location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation)
     return Path(location) if location else Path.home() / "Desktop"
+
+
+def _downloads_path() -> Path:
+    location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+    return Path(location) if location else Path.home() / "Downloads"
+
+
+def _available_file_path(directory: Path, filename: str) -> Path:
+    target = directory / filename
+    if not target.exists():
+        return target
+    stem = target.stem
+    suffix = target.suffix
+    index = 1
+    while True:
+        candidate = directory / f"{stem} ({index}){suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
 
 
 def _label(text: str, object_name: str | None = None) -> QLabel:
@@ -1613,15 +1671,66 @@ class ProjectActionConfirmDialog(QDialog):
         layout.addLayout(buttons)
 
 
+class ProjectProgressDeleteDialog(QDialog):
+    def __init__(self, label: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("删除项目进展")
+        self.setModal(True)
+        self.setFixedWidth(520)
+        self.setStyleSheet(APP_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 26, 30, 26)
+        layout.setSpacing(16)
+        layout.addWidget(_label("删除项目进展", "eyebrow"))
+
+        title = _label("确定删除这条项目进展？", "pageTitle")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        description = _label("删除后，这条内容将不再出现在项目进展流中。", "muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        item_panel = _panel()
+        item_panel.setObjectName("softPanel")
+        item_layout = QVBoxLayout(item_panel)
+        item_layout.setContentsMargins(18, 14, 18, 14)
+        item_label = _label(label)
+        item_label.setWordWrap(True)
+        item_layout.addWidget(item_label)
+        layout.addWidget(item_panel)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch()
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(self.reject)
+        confirm_button = QPushButton("确认删除")
+        confirm_button.setObjectName("dangerButton")
+        confirm_button.clicked.connect(self.accept)
+        confirm_button.setDefault(True)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(confirm_button)
+        layout.addLayout(buttons)
+
+
 class ProjectLogHistoryDialog(QDialog):
     def __init__(
         self,
         member_name: str,
         logs: list[dict[str, object]],
         projects: list[dict[str, object]],
+        todos: list[ProjectTodo],
+        project_names: dict[int, str],
+        db: Database,
+        status_changed: object | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.member_name = member_name
+        self.db = db
+        self.status_changed = status_changed
         self.setWindowTitle(f"{member_name} 的个人主页")
         self.resize(900, 700)
         self.setStyleSheet(APP_STYLE)
@@ -1629,8 +1738,23 @@ class ProjectLogHistoryDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
-        layout.addWidget(_label(f"{member_name} 的个人主页", "sectionTitle"))
-        layout.addWidget(_label(f"参与 {len(projects)} 个项目，项目日志 {len(logs)} 条。", "muted"))
+        title_row = QHBoxLayout()
+        title_row.addWidget(_label(f"{member_name} 的个人主页", "sectionTitle"))
+        title_row.addStretch()
+        if db.can_manage_colleague_statuses() and not db.is_current_user_name(member_name):
+            self.departed_status = _label("", "muted")
+            title_row.addWidget(self.departed_status)
+            self.departed_button = QPushButton()
+            self.departed_button.clicked.connect(self._toggle_departed_status)
+            title_row.addWidget(self.departed_button)
+            self._refresh_departed_status()
+        layout.addLayout(title_row)
+        layout.addWidget(
+            _label(
+                f"参与 {len(projects)} 个项目，当前代办 {len(todos)} 个，项目日志 {len(logs)} 条。",
+                "muted",
+            )
+        )
 
         layout.addWidget(_label("参与项目", "eyebrow"))
         self.project_list = QListWidget()
@@ -1645,7 +1769,6 @@ class ProjectLogHistoryDialog(QDialog):
         self.project_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.project_list.setSpacing(10)
         self.project_list.setFixedHeight(138 if projects else 74)
-        self.project_list.itemClicked.connect(self._open_project_item)
         layout.addWidget(self.project_list)
         if projects:
             for project in projects:
@@ -1654,6 +1777,19 @@ class ProjectLogHistoryDialog(QDialog):
             item = QListWidgetItem("还没有同步到这个人的参与项目。")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.project_list.addItem(item)
+
+        layout.addWidget(_label("当前代办", "eyebrow"))
+        self.todo_list = QListWidget()
+        self.todo_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.todo_list.setFixedHeight(min(230, max(76, len(todos) * 82 + 8)))
+        layout.addWidget(self.todo_list)
+        if todos:
+            for todo in todos:
+                self._add_todo_card(todo, project_names.get(todo.project_id, "未知项目"))
+        else:
+            item = QListWidgetItem("当前没有待处理的代办。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.todo_list.addItem(item)
 
         layout.addWidget(_label("项目日志", "eyebrow"))
         self.log_list = QListWidget()
@@ -1669,37 +1805,82 @@ class ProjectLogHistoryDialog(QDialog):
         for log in logs:
             self._add_log_card(log)
 
+    def _add_todo_card(self, todo: ProjectTodo, project_name: str) -> None:
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        card = QWidget()
+        card.setObjectName("compactMemberCard")
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.setToolTip("查看代办详情")
+        card.mousePressEvent = lambda event, selected=todo.id: self._open_todo_detail_id(selected)  # type: ignore[method-assign]
+        row = QHBoxLayout(card)
+        row.setContentsMargins(14, 10, 14, 10)
+        row.setSpacing(12)
+
+        body = QVBoxLayout()
+        body.setSpacing(4)
+        body.addWidget(_label(todo.title, "memberName"))
+        status_names = {
+            "todo": "待处理",
+            "doing": "进行中",
+            "ui_todo": "待 UI",
+            "ui_doing": "UI 处理中",
+            "dev_todo": "待开发",
+            "dev_doing": "开发中",
+            "test_todo": "待测试",
+            "test_doing": "测试中",
+            "accept_todo": "待验收",
+            "accept_doing": "验收中",
+        }
+        meta_parts = [project_name, status_names.get(todo.status, todo.status or "待处理")]
+        if todo.due_at is not None:
+            meta_parts.append(f"截止 {todo.due_at.strftime('%m-%d %H:%M')}")
+        body.addWidget(_label(" · ".join(meta_parts), "muted"))
+        row.addLayout(body, 1)
+        row.addWidget(_label("查看详情", "eyebrow"))
+
+        item.setSizeHint(QSize(0, 76))
+        self.todo_list.addItem(item)
+        self.todo_list.setItemWidget(item, card)
+
+    def _refresh_departed_status(self) -> None:
+        departed = self.db.is_departed_colleague(self.member_name)
+        self.departed_status.setText("当前状态：已离职" if departed else "当前状态：在职")
+        self.departed_button.setText("恢复在职" if departed else "标记离职")
+        self.departed_button.setObjectName("" if departed else "dangerButton")
+        self.departed_button.style().unpolish(self.departed_button)
+        self.departed_button.style().polish(self.departed_button)
+
+    def _toggle_departed_status(self) -> None:
+        departed = self.db.is_departed_colleague(self.member_name)
+        next_departed = not departed
+        action = "恢复为在职" if departed else "标记为离职"
+        if QMessageBox.question(
+            self,
+            action,
+            f"确定将「{self.member_name}」{action}吗？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if not self.db.set_colleague_departed(self.member_name, next_departed):
+            QMessageBox.warning(self, "操作失败", "只有尉久洋可以修改同事状态。")
+            return
+        if callable(self.status_changed):
+            self.status_changed()
+        self._refresh_departed_status()
+
     def _add_project_card(self, project: dict[str, object]) -> None:
         item = QListWidgetItem()
-        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-        project_id = int(project.get("project_id", 0) or 0)
-        item.setData(Qt.ItemDataRole.UserRole, project_id)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
         card = QWidget()
         card.setObjectName("projectListCard")
         card.setFixedSize(170, 112)
-        card.setCursor(Qt.CursorShape.PointingHandCursor)
-        card.mousePressEvent = lambda event, selected=project_id: self._open_project_id(selected)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(5)
 
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(8)
         name = _label(str(project.get("project_name", "未知项目")), "memberName")
         name.setMaximumHeight(42)
-        top.addWidget(name, 1)
-        if str(project.get("project_notes", "")).strip():
-            top.addWidget(self._project_notes_button(project), 0, Qt.AlignmentFlag.AlignTop)
-        if str(project.get("project_link", "")).strip():
-            top.addWidget(self._project_link_button(project, "primary"), 0, Qt.AlignmentFlag.AlignTop)
-        if str(project.get("backup_project_link", "")).strip():
-            top.addWidget(self._project_link_button(project, "backup"), 0, Qt.AlignmentFlag.AlignTop)
-        if str(project.get("development_group_link", "")).strip():
-            top.addWidget(self._project_link_button(project, "development_group"), 0, Qt.AlignmentFlag.AlignTop)
-        if str(project.get("coordination_group_link", "")).strip():
-            top.addWidget(self._project_link_button(project, "coordination_group"), 0, Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(top)
+        layout.addWidget(name)
 
         role = str(project.get("role", "")).strip() or "未配置角色"
         owner = str(project.get("owner", "")).strip() or "未知负责人"
@@ -2128,6 +2309,7 @@ class TodoDetailDialog(QDialog):
 
         left_layout.addWidget(_label("流转记录", "eyebrow"))
         flow_panel = QWidget()
+        flow_panel.setObjectName("todoDetailScrollContent")
         flow_layout = QVBoxLayout(flow_panel)
         flow_layout.setContentsMargins(0, 0, 0, 0)
         flow_layout.setSpacing(6)
@@ -2138,6 +2320,7 @@ class TodoDetailDialog(QDialog):
             flow_layout.addWidget(self._flow_row(entry, index, flow_entries))
         flow_layout.addStretch()
         flow_scroller = QScrollArea()
+        flow_scroller.setObjectName("todoDetailScroller")
         flow_scroller.setWidgetResizable(True)
         flow_scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         flow_scroller.setWidget(flow_panel)
@@ -2152,6 +2335,7 @@ class TodoDetailDialog(QDialog):
         right_layout.addWidget(_label("任务记录与关联日报", "eyebrow"))
 
         reports_panel = QWidget()
+        reports_panel.setObjectName("todoDetailScrollContent")
         reports_layout = QVBoxLayout(reports_panel)
         reports_layout.setContentsMargins(0, 0, 0, 0)
         reports_layout.setSpacing(8)
@@ -2169,6 +2353,7 @@ class TodoDetailDialog(QDialog):
             reports_layout.addWidget(row)
         reports_layout.addStretch()
         self.reports_scroller = QScrollArea()
+        self.reports_scroller.setObjectName("todoDetailScroller")
         self.reports_scroller.setWidgetResizable(True)
         self.reports_scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.reports_scroller.setWidget(reports_panel)
@@ -2286,19 +2471,18 @@ class TodoDetailDialog(QDialog):
             return None
 
     def _report_matches_flow(self, report: DailyReport, entry: dict[str, object]) -> bool:
-        action = str(entry.get("action", ""))
+        action = str(entry.get("action", "")).strip()
         actor = str(entry.get("actor", "")).strip()
-        if actor and report.member_name.strip() == actor:
-            return True
-        if "UI" in action or "设计" in action:
-            return "UI" in report.role.upper() or "设计" in report.role
-        if "开发" in action:
-            return "开发" in report.role or report.member_name.strip() == self.todo.developer.strip()
-        if "测试" in action:
-            return "测试" in report.role or report.member_name.strip() == self.todo.tester.strip()
-        if "验收" in action:
-            return "产品" in report.role or report.member_name.strip() == self.todo.acceptor.strip()
-        return False
+        if actor and report.member_name.strip() != actor:
+            return False
+        normalized_action = action.replace(" ", "").replace("，", "").replace("：", "")
+        normalized_content = report.content.replace(" ", "").replace("，", "").replace("：", "")
+        if not normalized_action:
+            return False
+        action_prefix = normalized_action.split("提交", 1)[0]
+        return normalized_action in normalized_content or (
+            len(action_prefix) >= 4 and action_prefix in normalized_content
+        )
 
     def _report_row(
         self,
@@ -2836,7 +3020,9 @@ class NextWeekRosterDialog(QDialog):
         names = [
             name
             for name in self.db.known_display_names()
-            if "@" not in name and self._name_key(name) not in blocked_keys
+            if "@" not in name
+            and not self.db.is_departed_colleague(name)
+            and self._name_key(name) not in blocked_keys
         ]
         rest_days = self.db.list_rest_days(mine_only=False)
         rest_lookup = {(item.author, item.day) for item in rest_days}
@@ -2868,7 +3054,11 @@ class NextWeekRosterDialog(QDialog):
 
     def _configure_blocked_names(self) -> None:
         dialog = RosterBlockedNamesDialog(
-            self.db.known_display_names(),
+            [
+                name
+                for name in self.db.known_display_names()
+                if not self.db.is_departed_colleague(name)
+            ],
             set(self._blocked_names()),
             self,
         )
@@ -2883,13 +3073,11 @@ class NextWeekRosterDialog(QDialog):
 
     def _export_excel(self) -> None:
         default_name = f"下周休息安排-{self.days[0].strftime('%Y%m%d')}.xlsx"
-        target, _ = QFileDialog.getSaveFileName(self, "导出 Excel", default_name, "Excel 工作簿 (*.xlsx)")
-        if not target:
-            return
-        if not target.lower().endswith(".xlsx"):
-            target = f"{target}.xlsx"
+        download_dir = _downloads_path()
         try:
-            self._write_xlsx(Path(target), [["姓名", *[self._day_header(day) for day in self.days]], *self._roster_rows()])
+            download_dir.mkdir(parents=True, exist_ok=True)
+            target = _available_file_path(download_dir, default_name)
+            self._write_xlsx(target, [["姓名", *[self._day_header(day) for day in self.days]], *self._roster_rows()])
         except OSError as exc:
             QMessageBox.warning(self, "导出失败", f"保存 Excel 失败：{exc}")
             return
@@ -5139,8 +5327,26 @@ class MainWindow(QMainWindow):
     def _open_person_home(self, name: str) -> None:
         logs = self.db.project_logs_for_member(name)
         projects = self._projects_with_notes_for_current_user(self.db.projects_for_member(name))
-        dialog = ProjectLogHistoryDialog(name, logs, projects, self)
+        todos = self.db.list_current_todos_for_member(name)
+        project_names = {project.id: project.name for project in self.db.list_projects()}
+        dialog = ProjectLogHistoryDialog(
+            name,
+            logs,
+            projects,
+            todos,
+            project_names,
+            self.db,
+            self._colleague_status_changed,
+            self,
+        )
         dialog.exec()
+
+    def _colleague_status_changed(self) -> None:
+        central_sync = getattr(self, "central_sync", None)
+        if central_sync is not None:
+            central_sync.mark_local_dirty()
+            central_sync.sync_now(push_first=True)
+        self._refresh_after_lan_sync()
 
     def _open_project_member_daily_reports(self, member: ProjectMember) -> None:
         project = self._current_project()
@@ -6848,8 +7054,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "不能删除", "只有这个项目的产品经理或最高权限用户可以删除项目进展。")
             return
         item_type, record_id, label = payload
-        message = f"确定从项目进展流删除「{label}」吗？"
-        if QMessageBox.question(self, "删除项目进展", message) != QMessageBox.StandardButton.Yes:
+        dialog = ProjectProgressDeleteDialog(label, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         deleted = False
@@ -7117,29 +7323,29 @@ class MainWindow(QMainWindow):
 
         if document is not None:
             actions = QHBoxLayout()
-            actions.setSpacing(8)
+            actions.setSpacing(4)
             open_button = QPushButton("打开")
-            open_button.setObjectName("smallButton")
+            open_button.setObjectName("feedOpenButton")
             open_button.clicked.connect(lambda checked=False, selected=document: self._open_deck_file(selected))
             actions.addWidget(open_button)
             if progress_delete is not None:
                 delete_button = QPushButton("删除")
-                delete_button.setObjectName("smallButton")
+                delete_button.setObjectName("feedDeleteButton")
                 delete_button.clicked.connect(
                     lambda checked=False, payload=progress_delete: self._delete_project_progress_item(payload)
                 )
                 actions.addWidget(delete_button)
             elif self.db.is_current_user_name(document.uploader):
                 delete_button = QPushButton("删除")
-                delete_button.setObjectName("smallButton")
+                delete_button.setObjectName("feedDeleteButton")
                 delete_button.clicked.connect(lambda checked=False, selected=document: self._delete_project_document(selected))
                 actions.addWidget(delete_button)
             layout.addLayout(actions)
         elif progress_delete is not None:
             actions = QHBoxLayout()
-            actions.setSpacing(8)
+            actions.setSpacing(4)
             delete_button = QPushButton("删除")
-            delete_button.setObjectName("smallButton")
+            delete_button.setObjectName("feedDeleteButton")
             delete_button.clicked.connect(
                 lambda checked=False, payload=progress_delete: self._delete_project_progress_item(payload)
             )
@@ -8167,19 +8373,14 @@ class MainWindow(QMainWindow):
         title_box.addWidget(self.lan_subtitle)
         header.addLayout(title_box)
         header.addStretch()
-        self.lan_peers_button = QPushButton("在线同事")
-        self.lan_peers_button.setCheckable(True)
-        self.lan_peers_button.setChecked(True)
-        self.lan_peers_button.setObjectName("primaryButton")
-        self.lan_peers_button.clicked.connect(lambda: self._set_lan_view("peers"))
-        self.lan_logs_button = QPushButton("日志视角")
-        self.lan_logs_button.setCheckable(True)
-        self.lan_logs_button.clicked.connect(lambda: self._set_lan_view("logs"))
-        colleague_list = QPushButton("同事列表")
-        colleague_list.clicked.connect(self._open_colleague_list)
-        header.addWidget(self.lan_peers_button)
-        header.addWidget(self.lan_logs_button)
-        header.addWidget(colleague_list)
+        self.lan_search = QLineEdit()
+        self.lan_search.setPlaceholderText("搜索同事、版本或日志")
+        self.lan_search.setClearButtonEnabled(True)
+        self.lan_search.setMinimumWidth(260)
+        self.lan_search.textChanged.connect(
+            lambda _text: self._refresh_peers(self.current_lan_peers)
+        )
+        header.addWidget(self.lan_search)
         refresh = QPushButton("刷新")
         refresh.clicked.connect(self._manual_lan_refresh)
         header.addWidget(refresh)
@@ -8189,7 +8390,7 @@ class MainWindow(QMainWindow):
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(20, 20, 20, 20)
         panel_layout.setSpacing(14)
-        self.lan_panel_title = _label("在线同事", "eyebrow")
+        self.lan_panel_title = _label("在线同事与今日日志", "eyebrow")
         panel_layout.addWidget(self.lan_panel_title)
         self.peer_list = QListWidget()
         self.peer_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -8679,144 +8880,46 @@ class MainWindow(QMainWindow):
         self._refresh_document_library()
         self._refresh_home()
         self._refresh_badge_wall()
-        if self.lan_view_mode == "logs":
-            self._refresh_lan_logs(self.current_lan_peers)
+        if hasattr(self, "peer_list"):
+            self._refresh_peers(self.current_lan_peers)
 
     def _set_lan_view(self, mode: str) -> None:
-        self.lan_view_mode = "logs" if mode == "logs" else "peers"
-        if self.lan_view_mode != "logs":
-            self._lan_logs_signature = None
-        self.lan_peers_button.setChecked(self.lan_view_mode == "peers")
-        self.lan_logs_button.setChecked(self.lan_view_mode == "logs")
-        self.lan_peers_button.setObjectName("primaryButton" if self.lan_view_mode == "peers" else "")
-        self.lan_logs_button.setObjectName("primaryButton" if self.lan_view_mode == "logs" else "")
-        for button in (self.lan_peers_button, self.lan_logs_button):
-            button.style().unpolish(button)
-            button.style().polish(button)
+        # 在线状态和今日日志已合并为同一个同事卡片。
+        self.lan_view_mode = "peers"
         self._refresh_peers(self.current_lan_peers)
-
-    def _open_colleague_list(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("同事列表")
-        dialog.resize(760, 680)
-        outer = QVBoxLayout(dialog)
-        outer.setContentsMargins(24, 22, 24, 20)
-        outer.setSpacing(14)
-        outer.addWidget(_label("同事列表", "sectionTitle"))
-        can_manage = self.db.can_manage_colleague_statuses()
-        outer.addWidget(_label(
-            "尉久洋可以标记离职状态；已离职同事不会出现在昨天日报导出和钉钉群日报中。"
-            if can_manage else
-            "离职状态由尉久洋维护；已离职同事不会出现在昨天日报导出和钉钉群日报中。",
-            "muted",
-        ))
-        colleague_list = QListWidget()
-        colleague_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(colleague_list, 1)
-
-        peer_names = [peer.name for peer in self.current_lan_peers if peer.name.strip()]
-
-        def is_readable_colleague_name(name: str) -> bool:
-            value = " ".join(name.strip().split())
-            if len(value) < 2 or value.isdigit():
-                return False
-            # 系统自动生成的“用户名@电脑名”不是实际同事姓名。
-            return "@" not in value
-
-        def refresh() -> None:
-            colleague_list.clear()
-            names = [
-                name for name in self.db.colleague_names()
-                if is_readable_colleague_name(name) or self.db.is_departed_colleague(name)
-            ]
-            known = {" ".join(name.strip().split()).casefold() for name in names}
-            for name in peer_names:
-                normalized = " ".join(name.strip().split()).casefold()
-                if normalized and normalized not in known and is_readable_colleague_name(name):
-                    names.append(name.strip())
-                    known.add(normalized)
-            names.sort(key=lambda value: " ".join(value.strip().split()).casefold())
-            for name in names:
-                departed = self.db.is_departed_colleague(name)
-                item = QListWidgetItem()
-                item.setSizeHint(QSize(0, 82))
-                card = QWidget()
-                card.setObjectName("feedCard")
-                row = QHBoxLayout(card)
-                row.setContentsMargins(18, 12, 18, 12)
-                row.setSpacing(16)
-                name_label = _label(name, "cardTitle")
-                name_label.setMinimumHeight(44)
-                name_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                row.addWidget(name_label, 1)
-                row.addStretch()
-                status_label = _label("已离职" if departed else "在职", "muted")
-                status_label.setMinimumWidth(72)
-                status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                row.addWidget(status_label)
-                if can_manage and not self.db.is_current_user_name(name):
-                    action = QPushButton("恢复在职" if departed else "标记离职")
-                    action.setMinimumSize(118, 46)
-
-                    def toggle(checked: bool = False, colleague: str = name, next_departed: bool = not departed) -> None:
-                        if not self.db.set_colleague_departed(colleague, next_departed):
-                            QMessageBox.warning(dialog, "操作失败", "只有尉久洋可以修改同事状态。")
-                            return
-                        central_sync = getattr(self, "central_sync", None)
-                        if central_sync is not None:
-                            central_sync.mark_local_dirty()
-                            central_sync.sync_now(push_first=True)
-                        refresh()
-
-                    action.clicked.connect(toggle)
-                    row.addWidget(action)
-                colleague_list.addItem(item)
-                colleague_list.setItemWidget(item, card)
-            if not names:
-                item = QListWidgetItem("暂时还没有同事记录。")
-                item.setFlags(Qt.ItemFlag.NoItemFlags)
-                colleague_list.addItem(item)
-
-        refresh()
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
-        if close_button is not None:
-            close_button.setText("关闭")
-            close_button.setMinimumSize(100, 46)
-        buttons.rejected.connect(dialog.reject)
-        outer.addWidget(buttons)
-        dialog.exec()
 
     def _refresh_peers(self, peers: list[LanPeer]) -> None:
         if not hasattr(self, "peer_list"):
             return
         self.current_lan_peers = peers
         self._check_lan_update_reminder()
-        if self.lan_view_mode == "logs":
-            self._refresh_lan_logs(peers)
-            return
+        query = self.lan_search.text().strip().casefold() if hasattr(self, "lan_search") else ""
+        visible_peers = [peer for peer in peers if self._lan_peer_matches_search(peer, query)]
         scrollbar = self.peer_list.verticalScrollBar()
         scroll_value = scrollbar.value()
         was_at_bottom = scrollbar.maximum() > 0 and scroll_value >= scrollbar.maximum() - 4
         self._lan_peer_scroll_generation += 1
         scroll_generation = self._lan_peer_scroll_generation
         existing_peer_ids = [
-            str(self.peer_list.item(index).data(Qt.ItemDataRole.UserRole) or "")
+            str((self.peer_list.item(index).data(Qt.ItemDataRole.UserRole) or ("", "", ""))[2])
             for index in range(self.peer_list.count())
+            if isinstance(self.peer_list.item(index).data(Qt.ItemDataRole.UserRole), tuple)
+            and len(self.peer_list.item(index).data(Qt.ItemDataRole.UserRole)) >= 3
         ]
-        next_peer_ids = [peer.device_id for peer in peers]
-        if peers and existing_peer_ids == next_peer_ids:
-            self.lan_panel_title.setText("在线同事")
-            self.lan_subtitle.setText(f"我的名字：{self.db.display_name()}。发现 {len(peers)} 位在线同事。")
+        next_peer_ids = [peer.device_id for peer in visible_peers]
+        if visible_peers and existing_peer_ids == next_peer_ids:
+            self.lan_panel_title.setText("在线同事与今日日志")
+            done_count = sum(1 for peer in peers if peer.today_project_logs)
+            self._set_lan_peer_subtitle(len(peers), done_count, len(visible_peers), bool(query))
             self.peer_list.setUpdatesEnabled(False)
-            for index, peer in enumerate(peers):
+            for index, peer in enumerate(visible_peers):
                 self._add_peer_card(peer, peer.last_seen.strftime("%H:%M:%S"), self.peer_list.item(index))
             self.peer_list.setUpdatesEnabled(True)
             scrollbar.setValue(scroll_value)
             return
         self.peer_list.setUpdatesEnabled(False)
         self.peer_list.clear()
-        self.lan_panel_title.setText("在线同事")
+        self.lan_panel_title.setText("在线同事与今日日志")
         if self.discovery is not None and not self.discovery.is_bound:
             self.lan_subtitle.setText("局域网发现没有启动。请检查系统网络权限或端口占用。")
             item = QListWidgetItem("UDP 45454 端口未能绑定。")
@@ -8825,7 +8928,8 @@ class MainWindow(QMainWindow):
             self.peer_list.setUpdatesEnabled(True)
             self._schedule_lan_peer_scroll_restore(scroll_value, was_at_bottom, scroll_generation)
             return
-        self.lan_subtitle.setText(f"我的名字：{self.db.display_name()}。发现 {len(peers)} 位在线同事。")
+        done_count = sum(1 for peer in peers if peer.today_project_logs)
+        self._set_lan_peer_subtitle(len(peers), done_count, len(visible_peers), bool(query))
         if not peers:
             item = QListWidgetItem("暂时没有发现其他人。确认大家在同一局域网，并且都打开了数智中心。")
             item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -8833,11 +8937,54 @@ class MainWindow(QMainWindow):
             self.peer_list.setUpdatesEnabled(True)
             self._schedule_lan_peer_scroll_restore(scroll_value, was_at_bottom, scroll_generation)
             return
-        for peer in peers:
+        if not visible_peers:
+            item = QListWidgetItem("没有找到匹配的在线同事或日志。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.peer_list.addItem(item)
+            self.peer_list.setUpdatesEnabled(True)
+            self._schedule_lan_peer_scroll_restore(0, False, scroll_generation)
+            return
+        for peer in visible_peers:
             seen = peer.last_seen.strftime("%H:%M:%S")
             self._add_peer_card(peer, seen)
         self.peer_list.setUpdatesEnabled(True)
         self._schedule_lan_peer_scroll_restore(scroll_value, was_at_bottom, scroll_generation)
+
+    def _set_lan_peer_subtitle(
+        self,
+        peer_count: int,
+        done_count: int,
+        visible_count: int,
+        searching: bool,
+    ) -> None:
+        match_text = f"，匹配 {visible_count} 位" if searching else ""
+        self.lan_subtitle.setText(
+            f"我的名字：{self.db.display_name()}。发现 {peer_count} 位在线同事，"
+            f"{done_count} 位已写今日日志{match_text}。"
+        )
+
+    def _lan_peer_matches_search(self, peer: LanPeer, query: str) -> bool:
+        if not query:
+            return True
+        log_text = " ".join(
+            " ".join(
+                str(log.get(key, ""))
+                for key in ("project_name", "role", "content", "created_at")
+            )
+            for log in peer.today_project_logs
+            if isinstance(log, dict)
+        )
+        searchable = " ".join(
+            (
+                peer.name,
+                peer.address,
+                peer.platform,
+                peer.app_version,
+                self._peer_list_text(peer, ""),
+                log_text,
+            )
+        ).casefold()
+        return query in searchable
 
     def _schedule_lan_peer_scroll_restore(self, value: int, was_at_bottom: bool, generation: int) -> None:
         self._restore_lan_peer_scroll(value, was_at_bottom, generation)
@@ -8989,12 +9136,23 @@ class MainWindow(QMainWindow):
     def _open_lan_member_logs(self, member_name: str) -> None:
         logs = self.db.project_logs_for_member(member_name)
         projects = self._projects_with_notes_for_current_user(self.db.projects_for_member(member_name))
-        dialog = ProjectLogHistoryDialog(member_name, logs, projects, self)
+        todos = self.db.list_current_todos_for_member(member_name)
+        project_names = {project.id: project.name for project in self.db.list_projects()}
+        dialog = ProjectLogHistoryDialog(
+            member_name,
+            logs,
+            projects,
+            todos,
+            project_names,
+            self.db,
+            self._colleague_status_changed,
+            self,
+        )
         dialog.exec()
 
     def _open_lan_log_item(self, item: QListWidgetItem) -> None:
         data = item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(data, tuple) or len(data) != 2 or data[0] != "project_logs":
+        if not isinstance(data, tuple) or len(data) < 2 or data[0] != "project_logs":
             return
         self._open_lan_member_logs(str(data[1]))
 
@@ -9032,25 +9190,26 @@ class MainWindow(QMainWindow):
         is_new_item = item is None
         if item is None:
             item = QListWidgetItem()
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-        item.setData(Qt.ItemDataRole.UserRole, peer.device_id)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        item.setData(Qt.ItemDataRole.UserRole, ("project_logs", peer.name, peer.device_id))
         card = QWidget()
         card.setObjectName("feedCard")
-        layout = QHBoxLayout(card)
+        layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
+        header = QHBoxLayout()
         body = QVBoxLayout()
-        body.setSpacing(5)
+        body.setSpacing(4)
         body.addWidget(self._name_with_chat(peer.name))
         body.addWidget(_label(self._peer_list_text(peer, seen), "muted"))
-        layout.addLayout(body, 1)
+        header.addLayout(body, 1)
 
         if self._peer_has_lan_update(peer):
             download = QPushButton("下载更新")
             download.setObjectName("primaryButton")
             download.clicked.connect(lambda checked=False, selected=peer: self._download_lan_update(selected))
-            layout.addWidget(download)
+            header.addWidget(download)
         elif (
             peer.platform == sys.platform
             and bool(peer.app_version)
@@ -9058,9 +9217,32 @@ class MainWindow(QMainWindow):
         ):
             unavailable = QPushButton("无安装包")
             unavailable.setEnabled(False)
-            layout.addWidget(unavailable)
+            header.addWidget(unavailable)
 
-        item.setSizeHint(QSize(0, 92))
+        logs = [log for log in peer.today_project_logs if isinstance(log, dict)]
+        supports_logs = version_tuple(peer.app_version) >= version_tuple("0.1.24")
+        status = "已写" if logs else ("未写" if supports_logs else "未共享")
+        status_label = _label(f"{status} · {len(logs)} 条", "roleBadge")
+        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_label.setFixedWidth(92)
+        header.addWidget(status_label)
+        history_button = QPushButton("全部日志")
+        history_button.setObjectName("smallButton")
+        history_button.clicked.connect(
+            lambda checked=False, selected=peer.name: self._open_lan_member_logs(selected)
+        )
+        header.addWidget(history_button)
+        layout.addLayout(header)
+
+        if logs:
+            for log in logs:
+                layout.addWidget(self._lan_log_line(log))
+        else:
+            message = "今天还没有项目日志。" if supports_logs else "对方版本暂未共享日志状态。"
+            layout.addWidget(_label(message, "muted"))
+
+        logs_height = sum(self._lan_log_line_height(str(log.get("content", ""))) for log in logs)
+        item.setSizeHint(QSize(0, 82 + (logs_height if logs else 58)))
         if is_new_item:
             self.peer_list.addItem(item)
         self.peer_list.setItemWidget(item, card)

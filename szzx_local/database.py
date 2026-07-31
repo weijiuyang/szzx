@@ -2176,7 +2176,7 @@ class Database:
         projects_by_id = {
             int(row["id"]): row
             for row in self.data["projects"]
-            if isinstance(row, dict)
+            if isinstance(row, dict) and str(row.get("status", "")).strip() != "已删除"
         }
         entries: dict[int, dict[str, Any]] = {}
         today = date.today()
@@ -2497,6 +2497,24 @@ class Database:
         if not include_completed:
             rows = [row for row in rows if str(row.get("status", "todo")) != "done"]
         rows.sort(key=lambda row: int(row["id"]), reverse=True)
+        return [self._todo_from_row(row) for row in rows]
+
+    def list_current_todos_for_member(self, member_name: str) -> list[ProjectTodo]:
+        target = self._normalize_display_name(member_name)
+        if not target:
+            return []
+        rows = [
+            row
+            for row in self.data["project_todos"]
+            if str(row.get("status", "todo")) != "done"
+            and self._normalize_display_name(self._todo_current_handler(row)) == target
+        ]
+        rows.sort(
+            key=lambda row: (
+                str(row.get("due_at", "")).strip() or "9999-12-31T23:59:59",
+                -int(row["id"]),
+            )
+        )
         return [self._todo_from_row(row) for row in rows]
 
     def get_project_todo(self, todo_id: int) -> ProjectTodo | None:
