@@ -7,6 +7,7 @@
 dingtalk_config.json
 __pycache__/
 .pycache-check/
+.codex-tmp/
 *.pyc
 local_data/
 .pyinstaller-cache/
