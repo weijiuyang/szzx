@@ -16,7 +16,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 # build replace an older build.
 INSTANCE_CHANNEL = "com.szzx.localdesk.instance"
 _REPLACE_COMMAND = b"REPLACE\n"
-_GRACEFUL_EXIT_SECONDS = 3.0
+_GRACEFUL_EXIT_SECONDS = 32.0
 
 
 class SingleInstanceController(QObject):

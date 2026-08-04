@@ -60,11 +60,13 @@ def start_in_place_update(package: Path) -> bool:
 
 def _start_windows_update(package: Path, installed: Path) -> bool:
     script = update_cache_dir() / "apply-update.ps1"
+    log = update_cache_dir() / "apply-update.log"
     script.write_text(
         """
-param([int]$OldPid, [string]$Package, [string]$Installed, [string]$Script)
+param([int]$OldPid, [string]$Package, [string]$Installed, [string]$Script, [string]$Log)
 $ErrorActionPreference = "Stop"
 try {
+  "$(Get-Date -Format o) Starting update from $Package to $Installed" | Set-Content -LiteralPath $Log -Encoding UTF8
   Wait-Process -Id $OldPid -Timeout 30 -ErrorAction SilentlyContinue
   $deadline = (Get-Date).AddSeconds(30)
   do {
@@ -77,8 +79,14 @@ try {
   } until ($copied -or (Get-Date) -ge $deadline)
   if (-not $copied) { throw "无法替换旧程序" }
   Start-Process -FilePath $Installed -ArgumentList "--update-restart"
+  "$(Get-Date -Format o) Update completed" | Add-Content -LiteralPath $Log -Encoding UTF8
   Start-Sleep -Seconds 2
   Remove-Item -LiteralPath $Package -Force -ErrorAction SilentlyContinue
+} catch {
+  "$(Get-Date -Format o) Update failed: $($_.Exception.Message)" | Add-Content -LiteralPath $Log -Encoding UTF8
+  if (Test-Path -LiteralPath $Installed) {
+    Start-Process -FilePath $Installed -ArgumentList "--update-restart" -ErrorAction SilentlyContinue
+  }
 } finally {
   Remove-Item -LiteralPath $Script -Force -ErrorAction SilentlyContinue
 }
@@ -103,6 +111,8 @@ try {
                 str(installed),
                 "-Script",
                 str(script),
+                "-Log",
+                str(log),
             ],
             creationflags=flags,
             close_fds=True,

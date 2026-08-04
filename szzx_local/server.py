@@ -686,6 +686,10 @@ class DataServiceHandler(BaseHTTPRequestHandler):
             return
         try:
             snapshot = self._read_json_body(max_length=500 * 1024 * 1024)
+        except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError):
+            # A desktop client may close while an update or shutdown is in
+            # progress. No snapshot is merged until the complete body arrives.
+            return
         except ValueError:
             self.send_error(400, "invalid json")
             return

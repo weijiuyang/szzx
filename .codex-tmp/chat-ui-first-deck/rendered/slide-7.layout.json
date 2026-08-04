@@ -1,0 +1,1397 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/bse3a2",
+    "id": "bse3a2",
+    "slide": 7,
+    "layoutId": "4283399f-85a6-4904-85de-0398048bfafc",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "cb94ba39-9a40-4251-99c7-aa3882294fdd",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "Menlo",
+      "PingFang SC"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "4283399f-85a6-4904-85de-0398048bfafc",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "cb94ba39-9a40-4251-99c7-aa3882294fdd",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "cb94ba39-9a40-4251-99c7-aa3882294fdd",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/a14n6h8f",
+      "id": "1",
+      "name": "title-7",
+      "bbox": [
+        42,
+        30,
+        1160,
+        66
+      ],
+      "geometry": "rect",
+      "text": "Text-to-SQL 不是让模型随便查库，而是生成受控查询",
+      "textPreview": "Text-to-SQL 不是让模型随便查库，而是生成受控查询",
+      "resolvedFontSize": 37,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 37,
+        "typeface": "PingFang SC",
+        "color": "#202123",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Text-to-SQL 不是让模型随便查库，而是生成受控查询"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Text-to-SQL 不是让模型随便查库，而是生成受控查询",
+          "resolvedTextStyle": {
+            "fontSize": 37,
+            "typeface": "PingFang SC",
+            "color": "#202123",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Text-to-SQL 不是让模型随便查库，而是生成受控查询",
+              "fontSize": 37,
+              "typeface": "PingFang SC",
+              "color": "#202123",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/x4f6hw76",
+      "id": "2",
+      "name": "page-7",
+      "bbox": [
+        1180,
+        665,
+        55,
+        20
+      ],
+      "geometry": "rect",
+      "text": "07",
+      "textPreview": "07",
+      "resolvedFontSize": 8.67,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 13,
+        "typeface": "PingFang SC",
+        "color": "#6B7280",
+        "alignment": "right",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.67,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "07"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "07",
+          "resolvedTextStyle": {
+            "fontSize": 13,
+            "typeface": "PingFang SC",
+            "color": "#6B7280",
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "07",
+              "fontSize": 13,
+              "typeface": "PingFang SC",
+              "color": "#6B7280",
+              "alignment": "right"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/c3658rql",
+      "id": "3",
+      "name": "sql",
+      "bbox": [
+        42,
+        145,
+        600,
+        430
+      ],
+      "geometry": "roundRect",
+      "fillColor": "#111827",
+      "lineWidth": 0
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/z6xojmpc",
+      "id": "4",
+      "name": "sql-h",
+      "bbox": [
+        70,
+        170,
+        250,
+        27
+      ],
+      "geometry": "rect",
+      "text": "生成的查询（示意）",
+      "textPreview": "生成的查询（示意）",
+      "resolvedFontSize": 14.5,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 18,
+        "typeface": "PingFang SC",
+        "color": "#9CA3AF",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.81,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "生成的查询（示意）"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "生成的查询（示意）",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "PingFang SC",
+            "color": "#9CA3AF",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "生成的查询（示意）",
+              "fontSize": 18,
+              "typeface": "PingFang SC",
+              "color": "#9CA3AF",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/y5onah8r",
+      "id": "5",
+      "name": "sql-t",
+      "bbox": [
+        75,
+        225,
+        520,
+        275
+      ],
+      "geometry": "rect",
+      "text": "SELECT channel,\n       SUM(spend),\n       COUNT(valid_lead),\n       COUNT(recycle_order),\n       SUM(final_margin)\nFROM business_view\nWHERE date >= :last_30_days\n  AND channel IN ('抖音','百度')\nGROUP BY channel;",
+      "textPreview": "SELECT channel, |        SUM(spend), |        COUNT(valid_lead), |        COUNT(recycle_order), |        SUM(final_margin) | FROM busines...",
+      "resolvedFontSize": 18,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 18,
+        "typeface": "Menlo",
+        "color": "#FFFFFF",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 9,
+        "lines": [
+          {
+            "index": 1,
+            "text": "SELECT channel,"
+          },
+          {
+            "index": 2,
+            "text": "       SUM(spend),"
+          },
+          {
+            "index": 3,
+            "text": "       COUNT(valid_lead),"
+          },
+          {
+            "index": 4,
+            "text": "       COUNT(recycle_order),"
+          },
+          {
+            "index": 5,
+            "text": "       SUM(final_margin)"
+          },
+          {
+            "index": 6,
+            "text": "FROM business_view"
+          },
+          {
+            "index": 7,
+            "text": "WHERE date >= :last_30_days"
+          },
+          {
+            "index": 8,
+            "text": "  AND channel IN ('抖音','百度')"
+          },
+          {
+            "index": 9,
+            "text": "GROUP BY channel;"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "SELECT channel,",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "SELECT channel,",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 2,
+          "text": "       SUM(spend),",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "       SUM(spend),",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 3,
+          "text": "       COUNT(valid_lead),",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "       COUNT(valid_lead),",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 4,
+          "text": "       COUNT(recycle_order),",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "       COUNT(recycle_order),",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 5,
+          "text": "       SUM(final_margin)",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "       SUM(final_margin)",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 6,
+          "text": "FROM business_view",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "FROM business_view",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 7,
+          "text": "WHERE date >= :last_30_days",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "WHERE date >= :last_30_days",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 8,
+          "text": "  AND channel IN ('抖音','百度')",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "  AND channel IN ('抖音','百度')",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 9,
+          "text": "GROUP BY channel;",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "Menlo",
+            "color": "#FFFFFF",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "GROUP BY channel;",
+              "fontSize": 18,
+              "typeface": "Menlo",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/lsf6lw72",
+      "id": "6",
+      "name": "g-0",
+      "bbox": [
+        700,
+        145,
+        538,
+        70
+      ],
+      "geometry": "rect",
+      "fillColor": "#F7F7F8",
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/kr65crqh",
+      "id": "7",
+      "name": "gh-0",
+      "bbox": [
+        730,
+        163,
+        100,
+        30
+      ],
+      "geometry": "rect",
+      "text": "只读",
+      "textPreview": "只读",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 21,
+        "typeface": "PingFang SC",
+        "color": "#202123",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.81,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "只读"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "只读",
+          "resolvedTextStyle": {
+            "fontSize": 21,
+            "typeface": "PingFang SC",
+            "color": "#202123",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "只读",
+              "fontSize": 21,
+              "typeface": "PingFang SC",
+              "color": "#202123",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/7uhon6p8",
+      "id": "8",
+      "name": "gb-0",
+      "bbox": [
+        860,
+        163,
+        330,
+        30
+      ],
+      "geometry": "rect",
+      "text": "禁止修改业务数据",
+      "textPreview": "禁止修改业务数据",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 18,
+        "typeface": "PingFang SC",
+        "color": "#6B7280",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.94,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "禁止修改业务数据"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "禁止修改业务数据",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "PingFang SC",
+            "color": "#6B7280",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "禁止修改业务数据",
+              "fontSize": 18,
+              "typeface": "PingFang SC",
+              "color": "#6B7280",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mt87e18n",
+      "id": "9",
+      "name": "g-1",
+      "bbox": [
+        700,
+        233,
+        538,
+        70
+      ],
+      "geometry": "rect",
+      "fillColor": "#FFF3D1",
+      "lineWidth": 0
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/wbixo7ml",
+      "id": "10",
+      "name": "gh-1",
+      "bbox": [
+        730,
+        251,
+        100,
+        30
+      ],
+      "geometry": "rect",
+      "text": "权限",
+      "textPreview": "权限",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 21,
+        "typeface": "PingFang SC",
+        "color": "#202123",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.81,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "权限"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "权限",
+          "resolvedTextStyle": {
+            "fontSize": 21,
+            "typeface": "PingFang SC",
+            "color": "#202123",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "权限",
+              "fontSize": 21,
+              "typeface": "PingFang SC",
+              "color": "#202123",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hcrexc36",
+      "id": "11",
+      "name": "gb-1",
+      "bbox": [
+        860,
+        251,
+        330,
+        30
+      ],
+      "geometry": "rect",
+      "text": "只查询用户可见对象",
+      "textPreview": "只查询用户可见对象",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 18,
+        "typeface": "PingFang SC",
+        "color": "#6B7280",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.94,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "只查询用户可见对象"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "只查询用户可见对象",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "PingFang SC",
+            "color": "#6B7280",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "只查询用户可见对象",
+              "fontSize": 18,
+              "typeface": "PingFang SC",
+              "color": "#6B7280",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/u90fmh4v",
+      "id": "12",
+      "name": "g-2",
+      "bbox": [
+        700,
+        321,
+        538,
+        70
+      ],
+      "geometry": "rect",
+      "fillColor": "#F7F7F8",
+      "lineWidth": 0
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/va9wv2l0",
+      "id": "13",
+      "name": "gh-2",
+      "bbox": [
+        730,
+        339,
+        100,
+        30
+      ],
+      "geometry": "rect",
+      "text": "范围",
+      "textPreview": "范围",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 21,
+        "typeface": "PingFang SC",
+        "color": "#202123",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.81,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "范围"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "范围",
+          "resolvedTextStyle": {
+            "fontSize": 21,
+            "typeface": "PingFang SC",
+            "color": "#202123",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "范围",
+              "fontSize": 21,
+              "typeface": "PingFang SC",
+              "color": "#202123",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4f2xsrmx",
+      "id": "14",
+      "name": "gb-2",
+      "bbox": [
+        860,
+        339,
+        330,
+        30
+      ],
+      "geometry": "rect",
+      "text": "限定时间、行数和成本",
+      "textPreview": "限定时间、行数和成本",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 18,
+        "typeface": "PingFang SC",
+        "color": "#6B7280",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.94,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "限定时间、行数和成本"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "限定时间、行数和成本",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "PingFang SC",
+            "color": "#6B7280",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "限定时间、行数和成本",
+              "fontSize": 18,
+              "typeface": "PingFang SC",
+              "color": "#6B7280",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/5gbe1w3i",
+      "id": "15",
+      "name": "g-3",
+      "bbox": [
+        700,
+        409,
+        538,
+        70
+      ],
+      "geometry": "rect",
+      "fillColor": "#F7F7F8",
+      "lineWidth": 0
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/id0fqh4r",
+      "id": "16",
+      "name": "gh-3",
+      "bbox": [
+        730,
+        427,
+        100,
+        30
+      ],
+      "geometry": "rect",
+      "text": "语义",
+      "textPreview": "语义",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 21,
+        "typeface": "PingFang SC",
+        "color": "#202123",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.81,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "语义"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "语义",
+          "resolvedTextStyle": {
+            "fontSize": 21,
+            "typeface": "PingFang SC",
+            "color": "#202123",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "语义",
+              "fontSize": 21,
+              "typeface": "PingFang SC",
+              "color": "#202123",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/jetwzmlc",
+      "id": "17",
+      "name": "gb-3",
+      "bbox": [
+        860,
+        427,
+        330,
+        30
+      ],
+      "geometry": "rect",
+      "text": "优先使用已定义业务视图",
+      "textPreview": "优先使用已定义业务视图",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 18,
+        "typeface": "PingFang SC",
+        "color": "#6B7280",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.94,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "优先使用已定义业务视图"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "优先使用已定义业务视图",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "PingFang SC",
+            "color": "#6B7280",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "优先使用已定义业务视图",
+              "fontSize": 18,
+              "typeface": "PingFang SC",
+              "color": "#6B7280",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/s32xwrmt",
+      "id": "18",
+      "name": "g-4",
+      "bbox": [
+        700,
+        497,
+        538,
+        70
+      ],
+      "geometry": "rect",
+      "fillColor": "#F7F7F8",
+      "lineWidth": 0
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/d4bypw3e",
+      "id": "19",
+      "name": "gh-4",
+      "bbox": [
+        730,
+        515,
+        100,
+        30
+      ],
+      "geometry": "rect",
+      "text": "审计",
+      "textPreview": "审计",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 21,
+        "typeface": "PingFang SC",
+        "color": "#202123",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.81,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "审计"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "审计",
+          "resolvedTextStyle": {
+            "fontSize": 21,
+            "typeface": "PingFang SC",
+            "color": "#202123",
+            "bold": true,
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "审计",
+              "fontSize": 21,
+              "typeface": "PingFang SC",
+              "color": "#202123",
+              "bold": true,
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/10re9wvi",
+      "id": "20",
+      "name": "gb-4",
+      "bbox": [
+        860,
+        515,
+        330,
+        30
+      ],
+      "geometry": "rect",
+      "text": "保存 SQL、耗时与返回规模",
+      "textPreview": "保存 SQL、耗时与返回规模",
+      "resolvedFontSize": 17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 18,
+        "typeface": "PingFang SC",
+        "color": "#6B7280",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.94,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "保存 SQL、耗时与返回规模"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "保存 SQL、耗时与返回规模",
+          "resolvedTextStyle": {
+            "fontSize": 18,
+            "typeface": "PingFang SC",
+            "color": "#6B7280",
+            "alignment": "left"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "保存 SQL、耗时与返回规模",
+              "fontSize": 18,
+              "typeface": "PingFang SC",
+              "color": "#6B7280",
+              "alignment": "left"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 21,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/0zyxgrex",
+      "id": "21",
+      "name": "sql-note",
+      "bbox": [
+        150,
+        620,
+        980,
+        35
+      ],
+      "geometry": "rect",
+      "text": "SQL、API 调用或预定义指标服务都可以是工具；前端统一展示执行证据。",
+      "textPreview": "SQL、API 调用或预定义指标服务都可以是工具；前端统一展示执行证据。",
+      "resolvedFontSize": 21.17,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 22,
+        "typeface": "PingFang SC",
+        "color": "#202123",
+        "bold": true,
+        "alignment": "center",
+        "verticalAlignment": "top",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.96,
+        "insets": {
+          "top": 4.8,
+          "right": 9.6,
+          "bottom": 4.8,
+          "left": 9.6
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "SQL、API 调用或预定义指标服务都可以是工具；前端统一展示执行证据。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "SQL、API 调用或预定义指标服务都可以是工具；前端统一展示执行证据。",
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "typeface": "PingFang SC",
+            "color": "#202123",
+            "bold": true,
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "SQL、API 调用或预定义指标服务都可以是工具；前端统一展示执行证据。",
+              "fontSize": 22,
+              "typeface": "PingFang SC",
+              "color": "#202123",
+              "bold": true,
+              "alignment": "center"
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

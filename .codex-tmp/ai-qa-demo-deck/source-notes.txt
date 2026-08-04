@@ -1,0 +1,3 @@
+This deck is a conceptual product demo based on the user's described future AI Q&A product.
+All metrics, SQL snippets, agent outputs, interface states, and recommendations are fictional demo content.
+No external research or external visual assets were used.

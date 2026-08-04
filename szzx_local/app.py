@@ -3,10 +3,11 @@ from __future__ import annotations
 import sys
 import ctypes
 import platform
+import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QProcess, QUrl
+from PySide6.QtCore import QEvent, QObject, QProcess, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QProgressDialog, QSystemTrayIcon
 
@@ -64,14 +65,47 @@ def _force_startup_lan_update(app: QApplication, discovery: LanDiscovery) -> boo
     package_version = str(peer.update_package.get("version") or peer.app_version).strip()
     progress.setLabelText(f"发现 v{package_version}，正在从 {peer.name} 自动更新…")
     app.processEvents()
-    try:
-        clear_old_update_packages()
-        target = discovery.download_update_package(peer, update_cache_dir())
-        started = _launch_update_package(target)
-    except Exception as exc:
+    result: dict[str, object] = {}
+    download_progress = [0, 0]
+
+    def report_progress(received: int, total: int) -> None:
+        download_progress[:] = [received, total]
+
+    def download() -> None:
+        try:
+            clear_old_update_packages()
+            result["target"] = discovery.download_update_package(
+                peer, update_cache_dir(), progress_callback=report_progress
+            )
+        except Exception as exc:
+            result["error"] = exc
+
+    worker = threading.Thread(target=download, name="lan-update-download", daemon=True)
+    worker.start()
+    while worker.is_alive():
+        received, total = download_progress
+        if total > 0:
+            progress.setRange(0, 1000)
+            progress.setValue(min(1000, int(received * 1000 / total)))
+            progress.setLabelText(
+                f"正在从 {peer.name} 下载 v{package_version}… "
+                f"{received / 1024 / 1024:.1f}/{total / 1024 / 1024:.1f} MB"
+            )
+        app.processEvents()
+        time.sleep(0.03)
+    app.processEvents()
+
+    if "error" in result:
+        exc = result["error"]
         progress.close()
         QMessageBox.critical(None, "必须更新", f"发现局域网新版本 v{package_version}，但自动更新失败：\n{exc}\n\n请重新打开程序后再试。")
         return False
+    target = result.get("target")
+    if not isinstance(target, Path):
+        progress.close()
+        QMessageBox.critical(None, "必须更新", "更新包下载完成，但没有找到安装文件。")
+        return False
+    started = _launch_update_package(target)
     progress.close()
     if not started:
         QMessageBox.critical(None, "必须更新", f"更新包已经下载，但无法自动安装：\n{target}")
@@ -142,7 +176,6 @@ def main() -> int:
     instance_controller = None
     if "--smoke-test" not in sys.argv:
         instance_controller = SingleInstanceController(app)
-        instance_controller.replacement_requested.connect(app.quit)
         app.aboutToQuit.connect(instance_controller.close)
         if not instance_controller.take_over():
             return 1
@@ -158,6 +191,20 @@ def main() -> int:
     bootstrap_snapshot = db.shared_snapshot(include_files=True)
     discovery = LanDiscovery(db.device_id(), db.display_name(), db=db, peer_data_sync_enabled=False)
     central_sync = CentralDataSync(db, bootstrap_snapshot=bootstrap_snapshot)
+    if instance_controller is not None:
+        replacement_deadline = [0.0]
+
+        def finish_replacement() -> None:
+            if not getattr(central_sync, "_busy", False) or time.monotonic() >= replacement_deadline[0]:
+                app.quit()
+                return
+            QTimer.singleShot(100, finish_replacement)
+
+        def request_graceful_replacement() -> None:
+            replacement_deadline[0] = time.monotonic() + 30.0
+            finish_replacement()
+
+        instance_controller.replacement_requested.connect(request_graceful_replacement)
     discovery.data_server_seen.connect(central_sync.set_discovered_server)
     discovery.start()
 

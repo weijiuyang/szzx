@@ -1,5 +1,5 @@
 from __future__ import annotations
 
 
-APP_VERSION = "0.2.67"
+APP_VERSION = "0.2.68"
 APP_NAME = "数智中心"

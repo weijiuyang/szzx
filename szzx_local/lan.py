@@ -13,7 +13,7 @@ import zlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QNetworkDatagram, QNetworkInterface, QUdpSocket
@@ -675,7 +675,12 @@ class LanDiscovery(QObject):
             data = self._recv_exact(client, size)
         return json.loads(zlib.decompress(data).decode("utf-8"))
 
-    def download_update_package(self, peer: LanPeer, target_dir: Path) -> Path:
+    def download_update_package(
+        self,
+        peer: LanPeer,
+        target_dir: Path,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Path:
         target_dir.mkdir(parents=True, exist_ok=True)
         with socket.create_connection((peer.address, peer.sync_port), timeout=3) as client:
             client.settimeout(30)
@@ -708,6 +713,9 @@ class LanDiscovery(QObject):
             except OSError as exc:
                 raise OSError("无法清理旧更新包，请关闭可能正在打开的安装包后重试。") from exc
             remaining = package_size
+            downloaded = 0
+            if progress_callback is not None:
+                progress_callback(downloaded, package_size)
             with partial.open("wb") as file:
                 while remaining > 0:
                     chunk = client.recv(min(1024 * 1024, remaining))
@@ -715,6 +723,9 @@ class LanDiscovery(QObject):
                         raise OSError("连接中断，安装包没有下载完整。")
                     file.write(chunk)
                     remaining -= len(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(downloaded, package_size)
             partial.replace(target)
         return target
 
