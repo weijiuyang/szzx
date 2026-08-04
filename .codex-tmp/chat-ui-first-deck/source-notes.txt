@@ -1,4 +1,0 @@
-Custom UI-first concept deck.
-The interface is an original mockup inspired by common conversational AI patterns such as a conversation sidebar, centered chat thread, composer, tool progress, and expandable result artifacts.
-It does not reproduce OpenAI trademarks, logos, screenshots, or proprietary interface assets.
-All business data, SQL, agent status, and recommendations are fictional demo content.
