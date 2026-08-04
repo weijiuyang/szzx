@@ -1113,6 +1113,7 @@ class SettingsDialog(QDialog):
         self.peers = peers or []
         self.central_sync = central_sync
         self.require_dingtalk_id = require_dingtalk_id
+        self.switch_account_requested = False
         self.setObjectName("accountSettings")
         self.setWindowTitle("账户设置")
         self.setFixedWidth(520)
@@ -1140,6 +1141,9 @@ QDialog#accountSettings QPushButton#settingsSave {
 QDialog#accountSettings QPushButton#settingsSave:hover { background: #274f3e; }
 QDialog#accountSettings QPushButton#settingsCancel {
     background: transparent; border: none; color: #6f776e; padding: 10px 18px;
+}
+QDialog#accountSettings QPushButton#switchAccount {
+    background: transparent; border: none; color: #8a5148; padding: 10px 8px;
 }
 """)
 
@@ -1244,10 +1248,24 @@ QDialog#accountSettings QPushButton#settingsCancel {
         cancel.setVisible(not self.require_dingtalk_id)
         actions = QHBoxLayout()
         actions.setSpacing(10)
+        if self.require_dingtalk_id and self.central_sync is not None:
+            switch_account = QPushButton("切换账户")
+            switch_account.setObjectName("switchAccount")
+            switch_account.clicked.connect(self._switch_account)
+            actions.addWidget(switch_account)
         actions.addStretch()
         actions.addWidget(cancel)
         actions.addWidget(save)
         layout.addLayout(actions)
+
+    def _switch_account(self) -> None:
+        logout = getattr(self.central_sync, "logout", None)
+        if callable(logout):
+            logout()
+        self.switch_account_requested = True
+        # Bypass reject(): this dialog normally cannot close until a DingTalk
+        # ID is entered, but switching accounts must return to login instead.
+        self.done(QDialog.DialogCode.Rejected)
 
     def _save(self) -> None:
         name = self.display_name.text().strip()

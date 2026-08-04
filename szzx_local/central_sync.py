@@ -112,7 +112,25 @@ class CentralDataSync(QObject):
         )
         with urlopen(request, timeout=5) as response:
             result = json.loads(response.read(64 * 1024).decode("utf-8"))
-        return isinstance(result, dict) and result.get("ok") is True
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return False
+        username = str(result.get("username", "")).strip()
+        if username and username != self.db.display_name():
+            # The server session is authoritative.  Keeping a stale local name
+            # makes the account dialog try to rename the signed-in account.
+            self.db.set_setting("display_name", username, save=False)
+            self.db.set_setting("display_name_locked", "false", save=False)
+            self.db.save_local_settings()
+        return True
+
+    def logout(self) -> None:
+        """Forget the saved login for the current server on this device."""
+        normalized_url = self._normalize_url(self.server_url)
+        tokens = self._saved_auth_tokens()
+        if normalized_url in tokens:
+            del tokens[normalized_url]
+            self.db.set_setting("data_server_auth_tokens", json.dumps(tokens, ensure_ascii=False))
+        self.auth_token = ""
 
     def change_account(self, current_password: str, username: str, new_password: str | None = None) -> str:
         values: dict[str, str] = {

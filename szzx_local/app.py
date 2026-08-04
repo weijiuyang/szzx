@@ -165,25 +165,31 @@ def main() -> int:
         db.close()
         return 0
 
-    session_is_valid = False
-    if central_sync.auth_token and central_sync.server_url:
-        try:
-            session_is_valid = central_sync.validate_saved_session()
-        except Exception:
-            session_is_valid = False
-    if not session_is_valid:
-        login = LoginDialog(db, central_sync)
-        if login.exec() != LoginDialog.DialogCode.Accepted:
-            db.close()
-            return 0
+    while True:
+        session_is_valid = False
+        if central_sync.auth_token and central_sync.server_url:
+            try:
+                session_is_valid = central_sync.validate_saved_session()
+            except Exception:
+                session_is_valid = False
+        if not session_is_valid:
+            login = LoginDialog(db, central_sync)
+            if login.exec() != LoginDialog.DialogCode.Accepted:
+                db.close()
+                return 0
 
-    if not db.dingtalk_id().strip():
+        if db.dingtalk_id().strip():
+            break
         required_profile = SettingsDialog(
             db,
             central_sync=central_sync,
             require_dingtalk_id=True,
         )
         required_profile.exec()
+        if required_profile.switch_account_requested:
+            continue
+        if db.dingtalk_id().strip():
+            break
 
     if db.get_setting("autostart_enabled") != "false":
         set_autostart(True)
